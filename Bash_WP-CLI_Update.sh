@@ -22,6 +22,8 @@ declare -a wpc=(
 	'wp db repair'
 	'wp db optimize'
 )
+#	'wp theme auto-updates enable --all'
+#	'wp theme update --all'
 
 for i in "${arr[@]}"
 do
