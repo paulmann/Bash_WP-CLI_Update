@@ -53,7 +53,7 @@ do
 		WPCL+=" --path=${PTH}"
 		WPCL+=" --url=https://${DMN}/"
 		WPCL+=" --skip-plugins=saphali-woocommerce-lite,jet-compare-wishlist,jet-data-importer"
-		EXPT="export HOMEDIR=${HOMEDIR} && export HTTP_HOST=${DMN} && cd ${PTH}  && ${WPCL}"
+		EXPT="export DOCUMENT_URI=${DMN} && DOCUMENT_ROOT=${PTH} && HOMEDIR=${HOMEDIR} && export HTTP_HOST=${DMN} && cd ${PTH} && ${WPCL}"
 		CMND="su - '${USR}' -c '${EXPT}'"
 		echo ${CMND}
 		su - ${USR} -c "${EXPT}"
