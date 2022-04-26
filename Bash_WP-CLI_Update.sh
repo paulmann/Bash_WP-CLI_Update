@@ -8,8 +8,8 @@ wp cli update --allow-root
 # Array of WP sites:  '[WP Root Folder] | [User] | [WP Domain]'
 declare -a arr=(
 	'/var/www/md/data/www/paulman.ru/news | md | news.paulman.ru'
-	'/var/www/md/data/www/iya.ru'
-	'/var/www/md/data/www/sukulent.ru'
+	'/var/www/md/data/www/iya.ru | md | ya.ru'
+	'/var/www/md/data/www/sukulent.ru | md | sukulent.ru'
 	)
 
 
@@ -49,7 +49,9 @@ do
 
 	for WPCL in "${wpc[@]}"
 	do
-#		WPCL="wp plugin update --all"
+		WPCL+=" --path=${PTH}"
+		WPCL+=" --url=https://${DMN}/"
+		WPCL+=" --skip-plugins=saphali-woocommerce-lite"
 		EXPT="export HOMEDIR=${HOMEDIR} && export HTTP_HOST=${DMN} && cd ${PTH}  && ${WPCL}"
 		CMND="su - '${USR}' -c '${EXPT}'"
 		echo ${CMND}
