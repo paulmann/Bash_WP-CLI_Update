@@ -1,15 +1,16 @@
 #!/bin/bash
-# Bash_WP-CLI_Update 1.0
+# Bash_WP-CLI_Update 1.1
 # Mikhail Deynekin | https://fb.com/Deynekin
 # https://github.com/paulmann/Bash_WP-CLI_Update
 
 wp cli update --allow-root
 
 # Array of WP sites:  '[WP Root Folder] | [User] | [WP Domain]'
+# 'User' and 'Domain' can skipped if it can be found at WP path: /var/www/[USER]/data/www/[DOMAIN]
 declare -a arr=(
 	'/var/www/md/data/www/paulman.ru/news | md | news.paulman.ru'
 	'/var/www/md/data/www/iya.ru | md | ya.ru'
-	'/var/www/md/data/www/sukulent.ru | md | sukulent.ru'
+	'/var/www/md/data/www/sukulent.ru'
 	)
 
 
