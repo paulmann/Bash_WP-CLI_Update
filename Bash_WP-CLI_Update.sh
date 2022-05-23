@@ -17,6 +17,7 @@ declare -a arr=(
 declare -a wpc=(
 	'wp core update'
 	'wp plugin update --all'
+	'wp wc update'
 	'wp core update-db'
 	'wp cron event run --all'
 	'wp cache flush'
