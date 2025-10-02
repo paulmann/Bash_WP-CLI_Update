@@ -5,8 +5,7 @@
 # Scans multiple common web roots to locate real WordPress installations.
 # Validates core files to avoid false positives.
 #
-# Based on: https://github.com/paulmann/Bash_WP-CLI_Update/edit/main/Find_WP_Senior.sh
-# GitHub:   https://github.com/yourname/wp-find (replace with your repo)
+# https://github.com/paulmann/Bash_WP-CLI_Update/edit/main/Find_WP_Senior.sh
 #
 # Features:
 # • Multi-root scanning (supports /var/www, /home, /srv, etc.)
@@ -16,6 +15,15 @@
 # • Secure temporary handling & cleanup
 # • Works on CentOS 7+, RHEL, Ubuntu, Debian
 # ------------------------------------------------------------------------------
+
+# Test for bash features and adapt
+if [ -n "$BASH_VERSION" ]; then
+    # We're running in bash, can use some extensions
+    set -euo pipefail 2>/dev/null || true
+else
+    # POSIX mode
+    set -e
+fi
 
 set -euo pipefail
 IFS=$'\n\t'
