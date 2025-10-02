@@ -175,15 +175,12 @@ discover_wordpress() {
 	log "Starting WordPress discovery across ${#SEARCH_DIRS[@]} root(s)"
 	log "Exclusions: ${#EXCLUDE_PATTERNS[@]} patterns"
 
-	# Create temp file immediately — no delayed assignment
-	local raw_file
+	# Create temp file — assign immediately
+	local raw_file=""
 	raw_file="$(mktemp -t "${SCRIPT_NAME}.raw.XXXXXX")" || {
-		error "Failed to create temporary file"
-		exit 1
+	    error "Failed to create temp file"
+	    exit 1
 	}
-
-	# Ensure cleanup
-	trap 'rm -f "${raw_file}"' RETURN
 
 	# Collect raw paths
 	{
@@ -202,6 +199,9 @@ discover_wordpress() {
 	else
 		> "${TMP_DETAILS_FILE}"
 	fi
+
+	# Clean up — explicit, no trap needed
+	rm -f "${raw_file}"
 }
 
 # ──────────────────────────────────────────────────────────────────────────────
