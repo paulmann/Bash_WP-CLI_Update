@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # ------------------------------------------------------------------------------
 # wp-find.sh — Fast, reliable WordPress installation discovery
 #
@@ -6,6 +6,7 @@
 # Validates core files to avoid false positives.
 #
 # Based on: https://github.com/paulmann/Bash_WP-CLI_Update/edit/main/Find_WP_Senior.sh
+# GitHub:   https://github.com/yourname/wp-find (replace with your repo)
 #
 # Features:
 # • Multi-root scanning (supports /var/www, /home, /srv, etc.)
@@ -28,12 +29,8 @@ readonly MAX_DEPTH=6
 # ──────────────────────────────────────────────────────────────────────────────
 
 readonly -a DEFAULT_SEARCH_DIRS=(
-	/var/www
-	/home
-	/opt
-	/srv
-	/usr/share/nginx/html
-	/usr/share/httpd
+	/var/www/batterydb/data/www/
+	/var/www/bsgtech/data/www/
 )
 
 # Common directories to exclude by default (safe for most systems)
@@ -178,18 +175,26 @@ discover_wordpress() {
 	log "Starting WordPress discovery across ${#SEARCH_DIRS[@]} root(s)"
 	log "Exclusions: ${#EXCLUDE_PATTERNS[@]} patterns"
 
-	# First: collect raw paths
+	# Create temp file immediately — no delayed assignment
 	local raw_file
-	raw_file="$(mktemp -t "${SCRIPT_NAME}.raw.XXXXXX")"
+	raw_file="$(mktemp -t "${SCRIPT_NAME}.raw.XXXXXX")" || {
+		error "Failed to create temporary file"
+		exit 1
+	}
+
+	# Ensure cleanup
 	trap 'rm -f "${raw_file}"' RETURN
 
+	# Collect raw paths
 	{
 		for root in "${SEARCH_DIRS[@]}"; do
-			[[ -d "${root}" ]] && scan_root "${root}"
+			if [[ -d "${root}" ]]; then
+				scan_root "${root}"
+			fi
 		done
 	} > "${raw_file}"
 
-	# Second: enrich with user/group/date
+	# Enrich with metadata
 	if [[ -s "${raw_file}" ]]; then
 		sort -u "${raw_file}" | while IFS= read -r dir; do
 			get_wp_info "${dir}"
@@ -296,7 +301,12 @@ EOF
 		SEARCH_DIRS=("${DEFAULT_SEARCH_DIRS[@]}")
 	fi
 
-	EXCLUDE_PATTERNS=("${DEFAULT_EXCLUDE_PATTERNS[@]}" "${EXCLUDE_PATTERNS[@]}")
+ local -a merged_excludes=("${DEFAULT_EXCLUDE_PATTERNS[@]}")
+ if [[ ${#EXCLUDE_PATTERNS[@]} -gt 0 ]]; then
+ 	merged_excludes+=("${EXCLUDE_PATTERNS[@]}")
+ fi
+ EXCLUDE_PATTERNS=("${merged_excludes[@]}")
+
 	[[ -z "${OUTPUT_FILE:-}" ]] && OUTPUT_FILE="${DEFAULT_OUTPUT_FILE}"
 }
 
