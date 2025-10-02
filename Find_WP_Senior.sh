@@ -1,19 +1,49 @@
 #!/bin/sh
-# ------------------------------------------------------------------------------
-# wp-find.sh — Fast, reliable WordPress installation discovery
+#!/usr/bin/env bash
+# ==============================================================================
+# File:        Find_WP_Senior.sh
+# Project:     Bash WP-CLI Update
+# Repository:  https://github.com/paulmann/Bash_WP-CLI_Update
 #
-# Scans multiple common web roots to locate real WordPress installations.
-# Validates core files to avoid false positives.
+# Description:
+#   Scans one or more webroots for WordPress installations by locating
+#   'wp-content/themes/*/functions.php', excludes exact paths, deduplicates
+#   results, and writes unique site directories to a file.
 #
-# https://github.com/paulmann/Bash_WP-CLI_Update/edit/main/Find_WP_Senior.sh
+# Usage:
+#   ./Find_WP_Senior.sh [--help]
+#
+# Options:
+#   --help      Show this usage information and exit.
+#
+# Requirements:
+#   • Bash 4+ (CentOS 7 or newer)
+#   • find, sort, mktemp, wc available in PATH
+#
+# Configuration:
+#   Modify the following readonly variables near the top of the script:
+#     WWW_DIR         — webroot directory(s) to scan (default: /var/www)
+#     EXCLUDED_PATHS  — exact directories to skip
+#     OUTPUT_FILE     — path of the output file (default: wp_found.txt)
 #
 # Features:
-# • Multi-root scanning (supports /var/www, /home, /srv, etc.)
-# • Smart exclusions (system dirs, node_modules, backups, etc.)
-# • Shows USER, GROUP, and folder date for each install
-# • Colorized, user-friendly logging
-# • Secure temporary handling & cleanup
-# • Works on CentOS 7+, RHEL, Ubuntu, Debian
+#   • Multi-root scanning (supports /var/www, /home, /srv, etc.)
+#   • Smart exclusions (system dirs, node_modules, backups, etc.)
+#   • Shows USER, GROUP, and folder date for each install
+#   • Colorized, user-friendly logging
+#   • Secure temporary handling & cleanup
+#   • Works on CentOS 7+, RHEL, Ubuntu, Debian
+#
+# Author & Support:
+#   Paul Mann
+#   Email: paul@pmtech.com
+#   GitHub: https://github.com/paulmann
+#
+# License:
+#   MIT License — see LICENSE file in project root.
+#
+# Version:
+#   1.00.0 (2025-10-02)
 # ------------------------------------------------------------------------------
 
 # Test for bash features and adapt
@@ -37,12 +67,8 @@ readonly MAX_DEPTH=6
 # ──────────────────────────────────────────────────────────────────────────────
 
 readonly -a DEFAULT_SEARCH_DIRS=(
-	/var/www
-	/home
-	/opt
-	/srv
-	/usr/share/nginx/html
-	/usr/share/httpd
+	/var/www/batterydb/data/www/
+	/var/www/bsgtech/data/www/
 )
 
 # Common directories to exclude by default (safe for most systems)
