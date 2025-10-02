@@ -35,8 +35,8 @@
 #   • Works on CentOS 7+, RHEL, Ubuntu, Debian
 #
 # Author & Support:
-#   Paul Mann
-#   Email: paul@pmtech.com
+#   Mikhail Deynekin
+#   Email: mid1977@gmail.com
 #   GitHub: https://github.com/paulmann
 #
 # License:
