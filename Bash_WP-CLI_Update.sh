@@ -1,3 +1,4 @@
+#!/bin/sh
 #!/usr/bin/env bash
 ###############################################################################
 # WordPress Maintenance Automation
@@ -7,8 +8,8 @@
 # License: MIT
 # Version: 4.2
 ###############################################################################
-set -euo pipefail
-shopt -s inherit_errexit
+#set -euo pipefail
+#shopt -s inherit_errexit
 
 #########################################
 ###           CONSTANTS               ###
@@ -37,6 +38,7 @@ readonly RED='\033[0;31m'
 readonly GREEN='\033[0;32m'
 readonly YELLOW='\033[1;33m'
 readonly BLUE='\033[0;34m'
+readonly CYAN='\033[0;36m'
 readonly RESET='\033[0m'
 
 #########################################
@@ -47,6 +49,8 @@ declare -A STATS=(
 	[success_ops]=0
 	[error_ops]=0
 )
+
+DEBUG_MODE=false
 
 #########################################
 ###           FUNCTIONS               ###
@@ -62,6 +66,7 @@ log() {
 		"ERROR")   echo -e "${RED}✗ ${msg}${RESET}" >&2 ;;
 		"WARNING") echo -e "${YELLOW}⚠ ${msg}${RESET}" >&2 ;;
 		"SUCCESS") echo -e "${GREEN}✓ ${msg}${RESET}" >&2 ;;
+		"DEBUG")   echo -e "${CYAN}🐞 ${msg}${RESET}" >&2 ;;
 		*)         echo "${msg}" ;;
 	esac
 }
@@ -70,24 +75,40 @@ log_info()    { log "INFO" "$1"; }
 log_success() { log "SUCCESS" "$1"; }
 log_error()   { log "ERROR" "$1"; }
 log_warning() { log "WARNING" "$1"; }
+log_debug()   { 
+	if [[ "${DEBUG_MODE}" == true ]]; then
+		log "DEBUG" "$1"
+	fi
+}
+
+debug_echo() {
+	if [[ "${DEBUG_MODE}" == true ]]; then
+		echo -e "${CYAN}🐞 DEBUG: $1${RESET}" >&2
+	fi
+}
 
 usage() {
 	cat <<EOF
 WordPress Maintenance Automation v${SCRIPT_VERSION}
-Usage: $0 [MODE]
+Usage: $0 [MODE] [OPTIONS]
 
 Modes:
-  --full          : Full update (core, plugins, themes, DB optimize/repair, cron)
-  --core          : Update WordPress core only
-  --plugins       : Update all plugins
-  --themes        : Update all themes
-  --db-optimize   : Optimize and repair database
-  --db-fix        : Repair database only
-  --cron          : Run due cron events
+  --full, -f       : Full update (core, plugins, themes, DB optimize/repair, cron)
+  --core, -c       : Update WordPress core only
+  --plugins, -p    : Update all plugins
+  --themes, -t     : Update all themes
+  --db-optimize, -d: Optimize and repair database
+  --db-fix, -x     : Repair database only
+  --cron, -r       : Run due cron events
+
+Options:
+  --DEBUG, -D      : Enable debug mode with detailed logging
 
 Example:
   $0 --plugins
-  $0 --full
+  $0 -p
+  $0 --full --DEBUG
+  $0 -f -D
 
 Sites are read from: ${SITES_FILE}
 EOF
@@ -105,47 +126,170 @@ get_wp_user() {
 	local wp_root="$1"
 	local wp_config="${wp_root}/wp-config.php"
 
-	if [[ ! -f "${wp_config}" ]]; then
-		log_error "wp-config.php not found in ${wp_root}"
-		return 1
+	debug_echo "🚩 START get_wp_user for: ${wp_root}"
+	debug_echo "📁 Checking wp-config.php at: ${wp_config}"
+	
+	# Метод 1: Владелец файла wp-config.php
+	if [[ -f "${wp_config}" ]]; then
+		debug_echo "📄 wp-config.php exists, checking file owner"
+		local file_owner
+		file_owner="$(stat -c '%U' "${wp_config}" 2>&1 || echo "stat_error")"
+		debug_echo "👤 File owner of wp-config.php: '${file_owner}'"
+		
+		if [[ -n "${file_owner}" && "${file_owner}" != "root" && "${file_owner}" != "stat_error" ]]; then
+			debug_echo "✅ Using file owner: ${file_owner}"
+			if id -u "${file_owner}" >/dev/null 2>&1; then
+				debug_echo "✅ User ${file_owner} exists in system"
+				printf '%s' "${file_owner}"
+				return 0
+			else
+				debug_echo "❌ User ${file_owner} does NOT exist in system"
+			fi
+		else
+			debug_echo "❌ File owner not suitable: '${file_owner}'"
+		fi
+	else
+		debug_echo "❌ wp-config.php not found at: ${wp_config}"
 	fi
 
-	local db_user
-	db_user="$(grep -E "define\s*\(\s*'DB_USER'" "${wp_config}" 2>/dev/null | \
-	           sed -E "s/.*'DB_USER'\s*,\s*'([^']+)'.*/\1/" | tail -n1)"
+	# Метод 2: Владелец директории
+	debug_echo "📁 Checking directory owner"
+	local dir_owner
+	dir_owner="$(stat -c '%U' "${wp_root}" 2>&1 || echo "stat_error")"
+	debug_echo "👤 Directory owner: '${dir_owner}'"
 
-	if [[ -z "${db_user}" ]]; then
-		log_warning "DB_USER not found in wp-config.php; falling back to directory owner"
-		db_user="$(stat -c '%U' "${wp_root}")"
+	if [[ -n "${dir_owner}" && "${dir_owner}" != "root" && "${dir_owner}" != "stat_error" ]]; then
+		debug_echo "✅ Using directory owner: ${dir_owner}"
+		if id -u "${dir_owner}" >/dev/null 2>&1; then
+			debug_echo "✅ User ${dir_owner} exists in system"
+			printf '%s' "${dir_owner}"
+			return 0
+		else
+			debug_echo "❌ User ${dir_owner} does NOT exist in system"
+		fi
+	else
+		debug_echo "❌ Directory owner not suitable: '${dir_owner}'"
 	fi
 
-	if ! id -u "${db_user}" >/dev/null 2>&1; then
-		log_error "System user '${db_user}' does not exist"
-		return 1
+	# Метод 3: Извлечение из пути
+	debug_echo "🛣️  Trying to extract user from path"
+	IFS='/' read -r -a path_parts <<< "${wp_root}"
+	debug_echo "📊 Path parts: ${#path_parts[@]} - ${path_parts[*]}"
+	
+	if [[ ${#path_parts[@]} -ge 4 ]]; then
+		local potential_user="${path_parts[3]}"  # /var/www/USER/data/...
+		debug_echo "👤 Potential user from path: '${potential_user}'"
+		
+		if id -u "${potential_user}" >/dev/null 2>&1; then
+			debug_echo "✅ Using user from path: ${potential_user}"
+			printf '%s' "${potential_user}"
+			return 0
+		else
+			debug_echo "❌ User from path does NOT exist: ${potential_user}"
+		fi
+	else
+		debug_echo "❌ Path too short for extraction"
 	fi
 
-	printf '%s' "${db_user}"
+	# Метод 4: DB_USER из wp-config.php
+	if [[ -f "${wp_config}" ]]; then
+		debug_echo "🔍 Trying DB_USER from wp-config.php"
+		local db_user
+		db_user="$(grep -E "define\s*\(\s*'DB_USER'" "${wp_config}" 2>/dev/null | \
+		           sed -E "s/.*'DB_USER'\s*,\s*'([^']+)'.*/\1/" | tail -n1)"
+		debug_echo "👤 DB_USER from wp-config: '${db_user}'"
+
+		if [[ -n "${db_user}" ]] && id -u "${db_user}" >/dev/null 2>&1; then
+			debug_echo "✅ Using DB_USER: ${db_user}"
+			printf '%s' "${db_user}"
+			return 0
+		else
+			debug_echo "❌ DB_USER not found or invalid: '${db_user}'"
+		fi
+	fi
+
+	debug_echo "💥 ALL METHODS FAILED - Cannot determine WordPress user for: ${wp_root}"
+	return 1
 }
 
 run_wp_cli() {
 	local site_path="$1" user="$2" cmd=("${@:3}")
+	
+	debug_echo "🚩 START run_wp_cli"
+	debug_echo "📍 site_path: ${site_path}"
+	debug_echo "👤 user: ${user}"
+	debug_echo "⚡ command: wp ${cmd[*]}"
+	
+	# Проверяем существование пользователя
+	if ! id -u "${user}" >/dev/null 2>&1; then
+		debug_echo "💥 USER CHECK FAILED: User '${user}' does not exist"
+		log_error "User '${user}' does not exist. Cannot run WP-CLI command."
+		((STATS[error_ops]++))
+		return 1
+	fi
+	debug_echo "✅ User '${user}' exists"
+	
+	# Проверяем существование директории
+	if [[ ! -d "${site_path}" ]]; then
+		debug_echo "💥 DIRECTORY CHECK FAILED: Directory '${site_path}' does not exist"
+		log_error "Directory '${site_path}' does not exist."
+		((STATS[error_ops]++))
+		return 1
+	fi
+	debug_echo "✅ Directory '${site_path}' exists"
+	
 	log_info "Running: wp ${cmd[*]} on ${site_path} as ${user}"
-	if sudo -u "${user}" -- "${WP_CLI_PATH}" --path="${site_path}" "${cmd[@]}" --quiet --allow-root; then
+	
+	# Подготовка команды как в рабочем скрипте wp-cli.sh
+	local wp_command="${WP_CLI_PATH} --path=\"${site_path}\" ${cmd[*]} --skip-plugins=saphali-woocommerce-lite,jet-compare-wishlist,jet-data-importer --quiet --allow-root"
+	local home_dir="$(dirname "$(dirname "${site_path}")")"
+	local domain="$(basename "${site_path}")"
+	
+	debug_echo "🏠 home_dir: ${home_dir}"
+	debug_echo "🌐 domain: ${domain}"
+	debug_echo "🔧 wp_command: ${wp_command}"
+	
+	local export_vars="export DOCUMENT_URI=${domain} && DOCUMENT_ROOT=${site_path} && HOMEDIR=${home_dir} && export HTTP_HOST=${domain}"
+	local full_command="cd ${site_path} && ${export_vars} && ${wp_command}"
+	
+	debug_echo "🔧 full_command: ${full_command}"
+	debug_echo "👤 Executing as user: ${user}"
+	
+	debug_echo "🎯 EXECUTING COMMAND: su - \"${user}\" -c \"${full_command}\""
+	
+	# Выполняем команду и перехватываем ВЕСЬ вывод
+	local output
+	local exit_code=0
+	
+	output=$(su - "${user}" -c "${full_command}" 2>&1) || exit_code=$?
+	
+	debug_echo "📤 COMMAND OUTPUT: ${output}"
+	debug_echo "🔚 EXIT CODE: ${exit_code}"
+	
+	if [[ ${exit_code} -eq 0 ]]; then
 		log_success "Success: wp ${cmd[*]}"
 		((STATS[success_ops]++))
+		debug_echo "✅ Command completed successfully"
 		return 0
 	else
-		log_error "Failed: wp ${cmd[*]}"
+		log_error "Failed: wp ${cmd[*]} (exit code: ${exit_code})"
 		((STATS[error_ops]++))
+		debug_echo "💥 Command failed with exit code: ${exit_code}"
 		return 1
 	fi
 }
 
 execute_mode() {
 	local mode="$1" site_path="$2" wp_user="$3"
+	
+	debug_echo "🚩 START execute_mode"
+	debug_echo "📋 mode: ${mode}"
+	debug_echo "📍 site_path: ${site_path}"
+	debug_echo "👤 wp_user: ${wp_user}"
 
 	case "${mode}" in
 		"${MODE_FULL}")
+			debug_echo "🔧 Executing FULL mode operations"
 			run_wp_cli "${site_path}" "${wp_user}" core update
 			run_wp_cli "${site_path}" "${wp_user}" plugin update --all
 			run_wp_cli "${site_path}" "${wp_user}" theme update --all
@@ -155,23 +299,29 @@ execute_mode() {
 			run_wp_cli "${site_path}" "${wp_user}" cron event run --due-now
 			;;
 		"${MODE_CORE}")
+			debug_echo "🔧 Executing CORE mode operations"
 			run_wp_cli "${site_path}" "${wp_user}" core update
 			run_wp_cli "${site_path}" "${wp_user}" core update-db
 			;;
 		"${MODE_PLUGINS}")
+			debug_echo "🔧 Executing PLUGINS mode operations"
 			run_wp_cli "${site_path}" "${wp_user}" plugin update --all
 			;;
 		"${MODE_THEMES}")
+			debug_echo "🔧 Executing THEMES mode operations"
 			run_wp_cli "${site_path}" "${wp_user}" theme update --all
 			;;
 		"${MODE_DB_OPTIMIZE}")
+			debug_echo "🔧 Executing DB_OPTIMIZE mode operations"
 			run_wp_cli "${site_path}" "${wp_user}" db optimize
 			run_wp_cli "${site_path}" "${wp_user}" db repair
 			;;
 		"${MODE_DB_FIX}")
+			debug_echo "🔧 Executing DB_FIX mode operations"
 			run_wp_cli "${site_path}" "${wp_user}" db repair
 			;;
 		"${MODE_CRON}")
+			debug_echo "🔧 Executing CRON mode operations"
 			run_wp_cli "${site_path}" "${wp_user}" cron event run --due-now
 			;;
 		*)
@@ -179,11 +329,16 @@ execute_mode() {
 			return 1
 			;;
 	esac
+	
+	debug_echo "✅ COMPLETED execute_mode for ${mode}"
 }
 
 ensure_sites_file() {
+	debug_echo "🚩 START ensure_sites_file"
+	
 	if [[ -f "${SITES_FILE}" ]]; then
 		log_info "Sites file found: ${SITES_FILE}"
+		debug_echo "✅ Sites file exists"
 		return 0
 	fi
 
@@ -192,6 +347,7 @@ ensure_sites_file() {
 
 	if [[ -f "${DISCOVER_SCRIPT}" && -x "${DISCOVER_SCRIPT}" ]]; then
 		log_info "Running discovery script: ${DISCOVER_SCRIPT}"
+		debug_echo "🔍 Executing discovery script: ${DISCOVER_SCRIPT}"
 		if "${DISCOVER_SCRIPT}"; then
 			log_success "Discovery script completed."
 		else
@@ -217,6 +373,7 @@ ensure_sites_file() {
 	fi
 
 	user_path="$(trim "${user_path}")"
+	debug_echo "📝 User provided path: ${user_path}"
 
 	if [[ ! -d "${user_path}" ]]; then
 		log_error "Directory does not exist: ${user_path}"
@@ -231,60 +388,139 @@ ensure_sites_file() {
 	# Save to wp-found.txt (overwrite)
 	printf '%s\n' "${user_path}" > "${SITES_FILE}"
 	log_success "Path saved to ${SITES_FILE}. Continuing..."
+	debug_echo "✅ Completed ensure_sites_file"
 }
 
 #########################################
 ###           MAIN LOGIC              ###
 #########################################
 
+debug_echo "🚀 SCRIPT STARTING: ${SCRIPT_NAME}"
+
+# Parse arguments
+debug_echo "🔧 Parsing command line arguments: $*"
+
+DEBUG_MODE=false
+MODE=""
+
+while [[ $# -gt 0 ]]; do
+	case "$1" in
+		--DEBUG|-D)
+			DEBUG_MODE=true
+			debug_echo "🔍 DEBUG mode enabled"
+			shift
+			;;
+		--full|-f)
+			MODE="$MODE_FULL"
+			debug_echo "🎯 Mode set to: FULL"
+			shift
+			;;
+		--core|-c)
+			MODE="$MODE_CORE"
+			debug_echo "🎯 Mode set to: CORE"
+			shift
+			;;
+		--plugins|-p)
+			MODE="$MODE_PLUGINS"
+			debug_echo "🎯 Mode set to: PLUGINS"
+			shift
+			;;
+		--themes|-t)
+			MODE="$MODE_THEMES"
+			debug_echo "🎯 Mode set to: THEMES"
+			shift
+			;;
+		--db-optimize|-d)
+			MODE="$MODE_DB_OPTIMIZE"
+			debug_echo "🎯 Mode set to: DB_OPTIMIZE"
+			shift
+			;;
+		--db-fix|-x)
+			MODE="$MODE_DB_FIX"
+			debug_echo "🎯 Mode set to: DB_FIX"
+			shift
+			;;
+		--cron|-r)
+			MODE="$MODE_CRON"
+			debug_echo "🎯 Mode set to: CRON"
+			shift
+			;;
+		*)
+			log_error "Invalid argument: $1"
+			usage
+			;;
+	esac
+done
+
+if [[ -z "${MODE}" ]]; then
+	log_error "No mode specified."
+	usage
+fi
+
+readonly DEBUG_MODE
+readonly MODE
+
+debug_echo "🎯 Final mode: ${MODE}"
+debug_echo "🔍 Final DEBUG_MODE: ${DEBUG_MODE}"
+
 # Validate WP-CLI
+debug_echo "🔧 Validating WP-CLI installation at: ${WP_CLI_PATH}"
 if ! command -v "${WP_CLI_PATH}" >/dev/null 2>&1; then
 	log_error "WP-CLI not found at ${WP_CLI_PATH}. Please install it."
 	exit 1
 fi
+debug_echo "✅ WP-CLI validation passed"
 
 # Root check
+debug_echo "🔧 Checking if running as root"
 if [[ $EUID -ne 0 ]]; then
 	log_error "This script must be run as root (to switch users via sudo)."
 	exit 1
 fi
-
-# Parse mode
-if [[ $# -ne 1 ]]; then
-	usage
-fi
-
-case "$1" in
-	--full|--core|--plugins|--themes|--db-optimize|--db-fix|--cron)
-		readonly MODE="$1"
-		;;
-	*)
-		log_error "Invalid mode: $1"
-		usage
-		;;
-esac
+debug_echo "✅ Root check passed"
 
 # Ensure wp-found.txt exists
+debug_echo "🔧 Ensuring sites file exists"
 ensure_sites_file
 
 log_info "Starting WordPress maintenance in '${MODE}' mode"
 log_info "Reading sites from ${SITES_FILE}"
 
+debug_echo "🔄 Starting main processing loop"
 while IFS= read -r site_path || [[ -n "${site_path}" ]]; do
 	site_path="$(trim "${site_path}")"
-	[[ -z "${site_path}" || "${site_path}" =~ ^# ]] && continue
-	[[ -d "${site_path}" ]] || { log_warning "Skipping (not a dir): ${site_path}"; continue; }
-
-	log_info "Processing site: ${site_path}"
-	((STATS[total_sites]++))
-
-	wp_user="$(get_wp_user "${site_path}")" || {
-		log_error "Skipping site due to user resolution failure: ${site_path}"
+	[[ -z "${site_path}" || "${site_path}" =~ ^# ]] && {
+		debug_echo "⏩ Skipping empty or commented line"
+		continue
+	}
+	
+	debug_echo "📍 Processing site path: '${site_path}'"
+	
+	[[ -d "${site_path}" ]] || { 
+		log_warning "Skipping (not a dir): ${site_path}"
+		debug_echo "⏩ Path is not a directory, skipping"
 		continue
 	}
 
-	execute_mode "${MODE#--}" "${site_path}" "${wp_user}"
+	log_info "Processing site: ${site_path}"
+	((STATS[total_sites]++))
+	debug_echo "📊 Total sites counter: ${STATS[total_sites]}"
+
+	debug_echo "🔍 Getting WordPress user for: ${site_path}"
+	wp_user="$(get_wp_user "${site_path}")" || {
+		log_error "Skipping site due to user resolution failure: ${site_path}"
+		debug_echo "⏩ User resolution failed, skipping site"
+		continue
+	}
+	debug_echo "✅ Resolved WordPress user: '${wp_user}'"
+
+	debug_echo "🔧 Executing mode '${MODE}' for site: ${site_path}"
+	execute_mode "${MODE}" "${site_path}" "${wp_user}"
+	debug_echo "✅ Completed processing for site: ${site_path}"
+	
 done < "${SITES_FILE}"
+
+debug_echo "✅ Main processing loop completed"
 
 log_success "Maintenance completed."
 echo -e "\n${GREEN}=== SUMMARY ===${RESET}"
@@ -292,3 +528,5 @@ echo "Sites processed: ${STATS[total_sites]}"
 echo "Successful ops:  ${STATS[success_ops]}"
 echo "Errors:          ${STATS[error_ops]}"
 echo "Log file:        ${LOG_FILE}"
+
+debug_echo "🎉 Script completed successfully"
