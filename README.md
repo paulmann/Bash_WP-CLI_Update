@@ -7,6 +7,20 @@ A secure, fast, and modular WP-CLI management system for maintaining multiple Wo
 ![License](https://img.shields.io/badge/License-MIT-yellow.svg)
 ![Platform](https://img.shields.io/badge/Platform-Linux-lightgrey.svg)
 
+## 📋 Table of Contents
+
+- [Features](#-features)
+- [Prerequisites](#-prerequisites)
+- [Installation](#-installation)
+- [Configuration](#-configuration)
+- [Usage](#-usage)
+- [How It Works](#-how-it-works)
+- [Troubleshooting](#-troubleshooting)
+- [Contributing](#-contributing)
+- [License](#-license)
+- [Acknowledgments](#-acknowledgments)
+- [Author & Support](#author--support)
+
 ## 🚀 Features
 
 - **Multi-site Management**: Automate maintenance across multiple WordPress installations
@@ -233,13 +247,20 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 - **WordPress Community** for continuous improvement and updates
 - **Contributors** who help maintain and improve this tool
 
-## 📞 Support
+## 👨‍💻 Author & Support
 
-If you encounter any issues or have questions:
+**Mikhail Deynekin**
 
-1. Check the troubleshooting section above
-2. Review the debug output with `--DEBUG` flag
-3. Open an issue on GitHub with detailed information
+- 🌐 **Website**: [deynekin.com](https://deynekin.com)
+- 📧 **Email**: [mid1977@gmail.com](mailto:mid1977@gmail.com)
+- 🐙 **GitHub**: [@paulmann](https://github.com/paulmann)
+
+### Getting Help
+
+- 📖 **Documentation**: Read this README thoroughly
+- 🐛 **Bug Reports**: [Open an issue](https://github.com/paulmann/Bash_WP-CLI_Update/issues/new)
+- 💡 **Feature Requests**: [Request features](https://github.com/paulmann/Bash_WP-CLI_Update/issues/new)
+- 💬 **Questions**: [Check Discussions](https://github.com/paulmann/Bash_WP-CLI_Update/discussions)
 
 ---
 
