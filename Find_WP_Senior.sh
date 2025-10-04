@@ -67,8 +67,11 @@ readonly MAX_DEPTH=6
 # ──────────────────────────────────────────────────────────────────────────────
 
 readonly -a DEFAULT_SEARCH_DIRS=(
-	/var/www/batterydb/data/www/
-	/var/www/bsgtech/data/www/
+	/var/www
+	/usr/share/nginx/html
+	/srv
+	/usr/local/nginx/html
+	/usr/local/var/www
 )
 
 # Common directories to exclude by default (safe for most systems)
