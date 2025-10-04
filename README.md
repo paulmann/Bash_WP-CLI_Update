@@ -9,19 +9,28 @@ A secure, fast, and modular WP-CLI management system for maintaining multiple Wo
 
 ## 📋 Table of Contents
 
-- [Features](#-features)
-- [Prerequisites](#-prerequisites)
-- [Installation](#-installation)
-- [Configuration](#-configuration)
-- [Usage](#-usage)
-- [How It Works](#-how-it-works)
-- [Troubleshooting](#-troubleshooting)
-- [Contributing](#-contributing)
-- [License](#-license)
-- [Acknowledgments](#-acknowledgments)
-- [Author & Support](#author--support)
+1. [Features](#1-features)
+2. [Prerequisites](#2-prerequisites)
+3. [Installation](#3-installation)
+4. [Configuration](#4-configuration)
+5. [Usage](#5-usage)
+   - 5.1 [Basic Syntax](#51-basic-syntax)
+   - 5.2 [Operation Modes](#52-operation-modes)
+   - 5.3 [Options](#53-options)
+   - 5.4 [Examples](#54-examples)
+6. [How It Works](#6-how-it-works)
+   - 6.1 [User Detection](#61-user-detection)
+   - 6.2 [Safe Execution](#62-safe-execution)
+   - 6.3 [Logging System](#63-logging-system)
+7. [Troubleshooting](#7-troubleshooting)
+   - 7.1 [Common Issues](#71-common-issues)
+   - 7.2 [Debug Mode](#72-debug-mode)
+8. [Contributing](#8-contributing)
+9. [License](#9-license)
+10. [Acknowledgments](#10-acknowledgments)
+11. [Author & Support](#11-author--support)
 
-## 🚀 Features
+## 1. Features
 
 - **Multi-site Management**: Automate maintenance across multiple WordPress installations
 - **Flexible Operation Modes**: Choose specific maintenance tasks or run comprehensive updates
@@ -31,8 +40,10 @@ A secure, fast, and modular WP-CLI management system for maintaining multiple Wo
 - **Safe Operations**: Built-in safety checks and error handling
 - **Database Optimization**: Automatic database repair and optimization
 - **Cron Management**: Run WordPress cron events efficiently
+- **Astra Pro Support**: Specialized handling for Astra Pro plugin with license management
+- **Detailed Error Logging**: Comprehensive error tracking in `wp_cli_errors.log`
 
-## 📋 Prerequisites
+## 2. Prerequisites
 
 - **Operating System**: Linux (tested on CentOS, Ubuntu, Debian)
 - **Shell**: Bash 4.0 or higher
@@ -41,9 +52,9 @@ A secure, fast, and modular WP-CLI management system for maintaining multiple Wo
   - WP-CLI installed at `/usr/local/bin/wp`
   - Standard GNU core utilities
 
-## 🛠️ Installation
+## 3. Installation
 
-### 1. Download the Scripts
+### 3.1 Download the Scripts
 
 Clone the repository or download the scripts directly:
 
@@ -52,7 +63,7 @@ git clone https://github.com/paulmann/Bash_WP-CLI_Update.git
 cd Bash_WP-CLI_Update
 ```
 
-### 2. Set Execution Permissions
+### 3.2 Set Execution Permissions
 
 **Important**: Make both scripts executable:
 
@@ -61,7 +72,7 @@ chmod +x Bash_WP-CLI_Update.sh
 chmod +x Find_WP_Senior.sh
 ```
 
-### 3. Verify Script Interpreters
+### 3.3 Verify Script Interpreters
 
 Check that the shebang lines at the top of each script point to correct shell paths:
 
@@ -70,7 +81,7 @@ Check that the shebang lines at the top of each script point to correct shell pa
 
 Update if necessary for your system configuration.
 
-### 4. Verify WP-CLI Installation
+### 3.4 Verify WP-CLI Installation
 
 Ensure WP-CLI is installed at the expected location:
 
@@ -81,9 +92,9 @@ which wp
 
 If not installed, follow [WP-CLI installation instructions](https://wp-cli.org/#installing).
 
-## 🔧 Configuration
+## 4. Configuration
 
-### Automatic Site Discovery
+### 4.1 Automatic Site Discovery
 
 Run the discovery script to automatically find WordPress installations:
 
@@ -93,7 +104,7 @@ Run the discovery script to automatically find WordPress installations:
 
 This will create a `wp-found.txt` file with paths to all discovered WordPress installations.
 
-### Manual Site Configuration
+### 4.2 Manual Site Configuration
 
 If you prefer manual configuration, create or edit `wp-found.txt`:
 
@@ -108,15 +119,27 @@ Add one WordPress root directory per line:
 /var/www/site3.com
 ```
 
-## 📖 Usage
+### 4.3 Astra Pro License Configuration
 
-### Basic Syntax
+For Astra Pro plugin support, configure your license key in the main script:
+
+```bash
+# Edit the script and set your Astra Pro license key
+nano Bash_WP-CLI_Update.sh
+
+# Locate and update the ASTRA_KEY constant:
+readonly ASTRA_KEY="YOUR_ACTUAL_LICENSE_KEY_HERE"
+```
+
+## 5. Usage
+
+### 5.1 Basic Syntax
 
 ```bash
 ./Bash_WP-CLI_Update.sh [MODE] [OPTIONS]
 ```
 
-### Operation Modes
+### 5.2 Operation Modes
 
 | Mode | Short | Description |
 |------|-------|-------------|
@@ -127,14 +150,15 @@ Add one WordPress root directory per line:
 | `--db-optimize` | `-d` | Optimize and repair database |
 | `--db-fix` | `-x` | Repair database only |
 | `--cron` | `-r` | Run due cron events |
+| `--astra` | `-s` | Update Astra Pro plugin with license activation |
 
-### Options
+### 5.3 Options
 
 | Option | Short | Description |
 |--------|-------|-------------|
 | `--DEBUG` | `-D` | Enable detailed debug logging |
 
-### Examples
+### 5.4 Examples
 
 Update all plugins across all sites:
 ```bash
@@ -160,9 +184,14 @@ Run WordPress cron events:
 ./Bash_WP-CLI_Update.sh --cron
 ```
 
-## 🔍 How It Works
+Update Astra Pro plugin with license management:
+```bash
+./Bash_WP-CLI_Update.sh --astra
+```
 
-### User Detection
+## 6. How It Works
+
+### 6.1 User Detection
 The script automatically determines the correct system user for each WordPress installation by checking:
 
 1. File owner of `wp-config.php`
@@ -170,34 +199,32 @@ The script automatically determines the correct system user for each WordPress i
 3. Path structure patterns
 4. DB_USER from wp-config.php (fallback)
 
-### Safe Execution
+### 6.2 Safe Execution
 - Runs WP-CLI commands as the correct system user
 - Includes proper environment variables
 - Skips problematic plugins during updates
 - Provides comprehensive error handling
 
-### Logging
-All operations are logged to `wp_cli_manager.log` with timestamps and color-coded console output.
+### 6.3 Logging System
 
-## 📊 Output Example
+#### Main Log (`wp_cli_manager.log`)
+Structured logging with timestamps and color-coded console output:
+- `INFO` - General operation information
+- `SUCCESS` - Completed operations  
+- `WARNING` - Non-critical issues
+- `ERROR` - Operation failures
+- `DEBUG` - Detailed debugging information
 
-```
-Starting WordPress maintenance in 'plugins' mode
-Reading sites from /home/user/wp-cli/wp-found.txt
-Processing site: /var/www/example.com
-✓ Success: wp plugin update --all
-✓ Success: wp core update-db
+#### Error Log (`wp_cli_errors.log`)
+Detailed error logging for troubleshooting:
+- Complete command context
+- Full command output
+- Exit codes and error details
+- Timestamped error events
 
-=== SUMMARY ===
-Sites processed: 1
-Successful ops:  2
-Errors:          0
-Log file:        /home/user/wp-cli/wp_cli_manager.log
-```
+## 7. Troubleshooting
 
-## 🛠️ Troubleshooting
-
-### Common Issues
+### 7.1 Common Issues
 
 **Script stops after "Processing site"**:
 - Check that WP-CLI is installed at `/usr/local/bin/wp`
@@ -212,7 +239,12 @@ Log file:        /home/user/wp-cli/wp_cli_manager.log
 - Install WP-CLI globally or update the path in the script
 - Verify installation with `wp --info`
 
-### Debug Mode
+**Astra Pro license errors**:
+- Ensure `ASTRA_KEY` is set to your actual license key in the script
+- Verify Astra Pro plugin is installed and active
+- Check error log for detailed license activation issues
+
+### 7.2 Debug Mode
 
 For detailed troubleshooting, use debug mode:
 
@@ -226,7 +258,15 @@ This provides:
 - User detection process information
 - Environment variable settings
 
-## 🤝 Contributing
+### 7.3 Error Investigation
+
+Check the detailed error log for in-depth analysis:
+
+```bash
+tail -f wp_cli_errors.log
+```
+
+## 8. Contributing
 
 We welcome contributions! Please feel free to submit pull requests, report bugs, or suggest new features.
 
@@ -236,18 +276,20 @@ We welcome contributions! Please feel free to submit pull requests, report bugs,
 2. Add appropriate error handling
 3. Include debug information for new features
 4. Update documentation for changes
+5. Test changes thoroughly before submitting
 
-## 📄 License
+## 9. License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
-## 🙏 Acknowledgments
+## 10. Acknowledgments
 
 - **WP-CLI Team** for the excellent command-line interface
 - **WordPress Community** for continuous improvement and updates
+- **Astra Team** for the wonderful theme and plugin ecosystem
 - **Contributors** who help maintain and improve this tool
 
-## 👨‍💻 Author & Support
+## 11. Author & Support
 
 **Mikhail Deynekin**
 
