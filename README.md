@@ -4,6 +4,7 @@ A secure, fast, and modular WP-CLI management system for maintaining multiple Wo
 
 ![Bash](https://img.shields.io/badge/Bash-4.0%2B-blue.svg)
 ![WP-CLI](https://img.shields.io/badge/WP--CLI-2.0%2B-green.svg)
+![WordPress](https://img.shields.io/badge/WordPress-3.7%2B-0073aa?logo=wordpress&logoColor=white)
 ![License](https://img.shields.io/badge/License-MIT-yellow.svg)
 ![Platform](https://img.shields.io/badge/Platform-Linux-lightgrey.svg)
 
@@ -50,6 +51,7 @@ A secure, fast, and modular WP-CLI management system for maintaining multiple Wo
 - **Permissions**: Root access (for user switching)
 - **Dependencies**: 
   - WP-CLI installed at `/usr/local/bin/wp`
+  - WordPress 3.7 or higher
   - Standard GNU core utilities
 
 ## 3. Installation
