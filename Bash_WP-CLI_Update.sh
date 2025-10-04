@@ -6,7 +6,7 @@
 # Author: Mikhail Deynekin <mid1977@gmail.com>
 # Repository: https://github.com/paulmann/Bash_WP-CLI_Update
 # License: MIT
-# Version: 4.2
+# Version: 4.4
 ###############################################################################
 #set -euo pipefail
 #shopt -s inherit_errexit
@@ -22,6 +22,7 @@ readonly SCRIPT_VERSION="4.2"
 readonly SITES_FILE="${SCRIPT_DIR}/wp-found.txt"
 readonly DISCOVER_SCRIPT="${SCRIPT_DIR}/Find_WP_Senior.sh"
 readonly LOG_FILE="${SCRIPT_DIR}/wp_cli_manager.log"
+readonly ERROR_LOG_FILE="${SCRIPT_DIR}/wp_cli_errors.log"
 readonly WP_CLI_PATH="/usr/local/bin/wp"
 
 # Operation modes
@@ -32,6 +33,10 @@ readonly MODE_THEMES="themes"
 readonly MODE_DB_OPTIMIZE="db-optimize"
 readonly MODE_DB_FIX="db-fix"
 readonly MODE_CRON="cron"
+readonly MODE_ASTRA="astra"
+
+# Astra Pro license key (replace YOUR_KEY with actual license key)
+readonly ASTRA_KEY="YOUR_KEY"
 
 # ANSI colors
 readonly RED='\033[0;31m'
@@ -71,6 +76,21 @@ log() {
 	esac
 }
 
+log_error_detail() {
+	local context="$1" command="$2" output="$3" exit_code="$4"
+	local timestamp
+	timestamp="$(date '+%Y-%m-%d %H:%M:%S')"
+	
+	cat >> "${ERROR_LOG_FILE}" <<EOF
+[${timestamp}] [ERROR DETAIL]
+Context: ${context}
+Command: ${command}
+Exit Code: ${exit_code}
+Output: ${output}
+---
+EOF
+}
+
 log_info()    { log "INFO" "$1"; }
 log_success() { log "SUCCESS" "$1"; }
 log_error()   { log "ERROR" "$1"; }
@@ -100,6 +120,7 @@ Modes:
   --db-optimize, -d: Optimize and repair database
   --db-fix, -x     : Repair database only
   --cron, -r       : Run due cron events
+  --astra, -s      : Update Astra plugin with license activation if needed
 
 Options:
   --DEBUG, -D      : Enable debug mode with detailed logging
@@ -109,6 +130,7 @@ Example:
   $0 -p
   $0 --full --DEBUG
   $0 -f -D
+  $0 --astra
 
 Sites are read from: ${SITES_FILE}
 EOF
@@ -273,6 +295,7 @@ run_wp_cli() {
 		return 0
 	else
 		log_error "Failed: wp ${cmd[*]} (exit code: ${exit_code})"
+		log_error_detail "run_wp_cli" "wp ${cmd[*]}" "${output}" "${exit_code}"
 		((STATS[error_ops]++))
 		debug_echo "💥 Command failed with exit code: ${exit_code}"
 		return 1
@@ -292,6 +315,15 @@ execute_mode() {
 			debug_echo "🔧 Executing FULL mode operations"
 			run_wp_cli "${site_path}" "${wp_user}" core update
 			run_wp_cli "${site_path}" "${wp_user}" plugin update --all
+			
+			# Astra processing in full mode if key is set
+			if [[ "${ASTRA_KEY}" != "YOUR_KEY" ]]; then
+				debug_echo "🔧 Processing Astra in FULL mode"
+				_handle_astra_in_full_mode "${site_path}" "${wp_user}"
+			else
+				debug_echo "⏩ Skipping Astra in FULL mode - key not set"
+			fi
+			
 			run_wp_cli "${site_path}" "${wp_user}" theme update --all
 			run_wp_cli "${site_path}" "${wp_user}" core update-db
 			run_wp_cli "${site_path}" "${wp_user}" db optimize
@@ -324,6 +356,10 @@ execute_mode() {
 			debug_echo "🔧 Executing CRON mode operations"
 			run_wp_cli "${site_path}" "${wp_user}" cron event run --due-now
 			;;
+		"${MODE_ASTRA}")
+			debug_echo "🔧 Executing ASTRA mode operations"
+			_handle_astra_operations "${site_path}" "${wp_user}"
+			;;
 		*)
 			log_error "Unknown mode: ${mode}"
 			return 1
@@ -331,6 +367,154 @@ execute_mode() {
 	esac
 	
 	debug_echo "✅ COMPLETED execute_mode for ${mode}"
+}
+
+_handle_astra_in_full_mode() {
+	local site_path="$1" wp_user="$2"
+	
+	debug_echo "🚩 START _handle_astra_in_full_mode"
+	
+	# Check if Astra plugin is installed and active
+	log_info "Checking Astra plugin status for: ${site_path}"
+	
+	if ! run_wp_cli "${site_path}" "${wp_user}" plugin status astra-addon >/dev/null 2>&1; then
+		log_warning "Astra plugin not found or not active for: ${site_path}"
+		debug_echo "❌ Astra plugin check failed"
+		return 0  # Continue execution in full mode even if Astra not found
+	fi
+	
+	log_success "Astra plugin found and active"
+	debug_echo "✅ Astra plugin is installed and active"
+	
+	# Check if update is available
+	log_info "Checking if Astra plugin update is available"
+	debug_echo "🔍 Checking for available updates with dry-run"
+	
+	local dry_run_output
+	dry_run_output=$(su - "${wp_user}" -c "cd ${site_path} && ${WP_CLI_PATH} --path=\"${site_path}\" plugin update astra-addon --dry-run --skip-plugins=saphali-woocommerce-lite,jet-compare-wishlist,jet-data-importer --quiet --allow-root 2>&1")
+	
+	debug_echo "📊 Dry-run output: ${dry_run_output}"
+	
+	# If dry-run shows update is available, try to update
+	if echo "${dry_run_output}" | grep -q "Available"; then
+		log_info "Astra update available, attempting update"
+		debug_echo "🔄 Running Astra plugin update"
+		
+		if run_wp_cli "${site_path}" "${wp_user}" plugin update astra-addon; then
+			log_success "Astra plugin updated successfully in full mode"
+			debug_echo "✅ Astra plugin updated successfully"
+		else
+			log_warning "Astra plugin update failed, activating license and retrying"
+			debug_echo "🔑 Astra license activation needed"
+			
+			# Activate license and retry update
+			if run_wp_cli "${site_path}" "${wp_user}" brainstormforce license activate astra-addon "${ASTRA_KEY}"; then
+				log_success "Astra license activated successfully"
+				debug_echo "✅ License activation successful"
+				
+				# Retry update after license activation
+				if run_wp_cli "${site_path}" "${wp_user}" plugin update astra-addon; then
+					log_success "Astra plugin updated successfully after license activation"
+					debug_echo "✅ Astra plugin updated after license activation"
+				else
+					log_error "Astra plugin update failed even after license activation"
+					debug_echo "❌ Update failed after license activation"
+				fi
+			else
+				log_error "Failed to activate Astra license"
+				debug_echo "❌ License activation failed"
+			fi
+		fi
+	else
+		log_info "No Astra update available"
+		debug_echo "ℹ️ No Astra update available"
+	fi
+	
+	debug_echo "✅ COMPLETED _handle_astra_in_full_mode"
+}
+
+_handle_astra_operations() {
+	local site_path="$1" wp_user="$2"
+	
+	debug_echo "🚩 START _handle_astra_operations"
+	
+	# Check if Astra license key is set
+	if [[ "${ASTRA_KEY}" == "YOUR_KEY" ]]; then
+		log_error "Astra license key is not configured. Please set ASTRA_KEY in the script."
+		echo -e "${RED}❌ ERROR: Astra license key is not configured.${RESET}"
+		echo -e "${YELLOW}Please edit the script and set ASTRA_KEY to your actual license key.${RESET}"
+		return 1
+	fi
+	
+	# Check if Astra plugin is installed and active
+	log_info "Checking Astra plugin status for: ${site_path}"
+	
+	if ! run_wp_cli "${site_path}" "${wp_user}" plugin status astra-addon >/dev/null 2>&1; then
+		log_warning "Astra plugin not found or not active for: ${site_path}"
+		debug_echo "❌ Astra plugin check failed"
+		return 1
+	fi
+	
+	log_success "Astra plugin found and active"
+	debug_echo "✅ Astra plugin is installed and active"
+	
+	# Try to update Astra plugin
+	log_info "Attempting to update Astra plugin"
+	debug_echo "🔄 Running initial Astra plugin update"
+	
+	if run_wp_cli "${site_path}" "${wp_user}" plugin update astra-addon; then
+		log_success "Astra plugin updated successfully"
+		debug_echo "✅ Astra plugin updated on first attempt"
+		return 0
+	fi
+	
+	# If update failed, check if update is available with dry-run
+	log_warning "Astra plugin update failed, checking if update is available"
+	debug_echo "🔍 Checking for available updates with dry-run"
+	
+	local dry_run_output
+	dry_run_output=$(su - "${wp_user}" -c "cd ${site_path} && ${WP_CLI_PATH} --path=\"${site_path}\" plugin update astra-addon --dry-run --skip-plugins=saphali-woocommerce-lite,jet-compare-wishlist,jet-data-importer --quiet --allow-root 2>&1")
+	
+	debug_echo "📊 Dry-run output: ${dry_run_output}"
+	
+	# If dry-run shows update is available but previous update failed, likely license issue
+	if echo "${dry_run_output}" | grep -q "Available"; then
+		log_info "Astra update available but failed, activating license and retrying"
+		debug_echo "🔑 Astra license activation needed"
+		
+		# Activate license
+		log_info "Activating Astra license"
+		debug_echo "🔑 Activating license with key: ${ASTRA_KEY}"
+		
+		if run_wp_cli "${site_path}" "${wp_user}" brainstormforce license activate astra-addon "${ASTRA_KEY}"; then
+			log_success "Astra license activated successfully"
+			debug_echo "✅ License activation successful"
+			
+			# Retry update after license activation
+			log_info "Retrying Astra plugin update after license activation"
+			debug_echo "🔄 Retrying plugin update"
+			
+			if run_wp_cli "${site_path}" "${wp_user}" plugin update astra-addon; then
+				log_success "Astra plugin updated successfully after license activation"
+				debug_echo "✅ Astra plugin updated after license activation"
+				return 0
+			else
+				log_error "Astra plugin update failed even after license activation"
+				debug_echo "❌ Update failed after license activation"
+				return 1
+			fi
+		else
+			log_error "Failed to activate Astra license"
+			debug_echo "❌ License activation failed"
+			return 1
+		fi
+	else
+		log_info "No Astra update available or dry-run check failed"
+		debug_echo "ℹ️ No update available or dry-run issue"
+		return 0
+	fi
+	
+	debug_echo "✅ COMPLETED _handle_astra_operations"
 }
 
 ensure_sites_file() {
@@ -397,6 +581,10 @@ ensure_sites_file() {
 
 debug_echo "🚀 SCRIPT STARTING: ${SCRIPT_NAME}"
 
+# Initialize error log
+debug_echo "📝 Initializing error log: ${ERROR_LOG_FILE}"
+echo "=== WordPress CLI Error Log - Started at: $(date) ===" > "${ERROR_LOG_FILE}"
+
 # Parse arguments
 debug_echo "🔧 Parsing command line arguments: $*"
 
@@ -443,6 +631,11 @@ while [[ $# -gt 0 ]]; do
 		--cron|-r)
 			MODE="$MODE_CRON"
 			debug_echo "🎯 Mode set to: CRON"
+			shift
+			;;
+		--astra|-s)
+			MODE="$MODE_ASTRA"
+			debug_echo "🎯 Mode set to: ASTRA"
 			shift
 			;;
 		*)
@@ -528,5 +721,6 @@ echo "Sites processed: ${STATS[total_sites]}"
 echo "Successful ops:  ${STATS[success_ops]}"
 echo "Errors:          ${STATS[error_ops]}"
 echo "Log file:        ${LOG_FILE}"
+echo "Error log:       ${ERROR_LOG_FILE}"
 
 debug_echo "🎉 Script completed successfully"
