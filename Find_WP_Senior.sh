@@ -7,14 +7,16 @@
 #
 # Description:
 #   Scans one or more webroots for WordPress installations by locating
-#   'wp-content/themes/*/functions.php', excludes exact paths, deduplicates
-#   results, and writes unique site directories to a file.
+#   'wp-config.php', excludes exact paths, deduplicates results, and writes
+#   unique site directories to a file.
 #
 # Usage:
-#   ./Find_WP_Senior.sh [--help]
+#   ./Find_WP_Senior.sh [--output FILE] [--exclude PATTERN] [SEARCH_DIRS...]
 #
 # Options:
-#   --help      Show this usage information and exit.
+#   --output FILE       Path to the output file (default: ./wp-found.txt)
+#   --exclude PATTERN   Exclude path (glob or absolute; repeatable)
+#   --help              Show this usage information and exit.
 #
 # Requirements:
 #   • Bash 4+ (CentOS 7 or newer)
@@ -22,28 +24,35 @@
 #
 # Configuration:
 #   Modify the following readonly variables near the top of the script:
-#     WWW_DIR         — webroot directory(s) to scan (default: /var/www)
-#     EXCLUDED_PATHS  — exact directories to skip
-#     OUTPUT_FILE     — path of the output file (default: wp_found.txt)
+#     DEFAULT_SEARCH_DIRS  — webroot directory(s) to scan (default: /var/www ...)
+#     DEFAULT_EXCLUDE_PATTERNS — glob patterns or paths to skip
+#     DEFAULT_OUTPUT_FILE  — path of the output file (default: wp-found.txt)
+#
+# Special markers:
+#   • .no_wp_cli   — if this file exists inside a WordPress root directory
+#                    (same directory where wp-config.php is located), the site
+#                    is completely skipped from discovery and will not appear
+#                    in the output list.
 #
 # Features:
 #   • Multi-root scanning (supports /var/www, /home, /srv, etc.)
 #   • Smart exclusions (system dirs, node_modules, backups, etc.)
+#   • Respect for per-site opt-out via .no_wp_cli marker
 #   • Shows USER, GROUP, and folder date for each install
 #   • Colorized, user-friendly logging
 #   • Secure temporary handling & cleanup
 #   • Works on CentOS 7+, RHEL, Ubuntu, Debian
 #
 # Author & Support:
-#   Mikhail Deynekin
-#   Email: mid1977@gmail.com
+#   Paul Mann
+#   Email: paul@pmtech.com
 #   GitHub: https://github.com/paulmann
 #
 # License:
 #   MIT License — see LICENSE file in project root.
 #
 # Version:
-#   1.00.0 (2025-10-02)
+#   1.01.0 (2026-03-03)
 # ------------------------------------------------------------------------------
 
 # Test for bash features and adapt
@@ -72,6 +81,7 @@ readonly -a DEFAULT_SEARCH_DIRS=(
 	/srv
 	/usr/local/nginx/html
 	/usr/local/var/www
+	/home/
 )
 
 # Common directories to exclude by default (safe for most systems)
@@ -178,34 +188,51 @@ get_wp_info() {
 # ──────────────────────────────────────────────────────────────────────────────
 
 scan_root() {
-	local root="$1"
-	log "Scanning: ${root}"
+    local root="$1"
+    log "Scanning: ${root}"
 
-	local prune_expr
-	prune_expr=$(build_prune_args)
+    # Build additional prune arguments from absolute exclude paths
+    local prune_expr
+    prune_expr=$(build_prune_args)
 
-	find "${root}" \
-		-maxdepth "${MAX_DEPTH}" \
-		-type f \
-		-name "wp-config.php" \
-		${prune_expr} \
-		2>/dev/null | while read -r config; do
-		
-		local site_dir
-		site_dir="$(dirname "${config}")"
+    find "${root}" \
+        -maxdepth "${MAX_DEPTH}" \
+        \( \
+            -type d \( \
+                -name '.no_wp_cli' -o \
+                -name '.git' -o \
+                -name 'node_modules' \
+            \) -prune \
+        \) -o \
+        \( \
+            -type f \
+            -name "wp-config.php" \
+            ${prune_expr} \
+        \) 2>/dev/null | while read -r config; do
 
-		# Skip if matches glob exclusion
-		local exclude
-		for exclude in "${EXCLUDE_PATTERNS[@]}"; do
-			if [[ "${site_dir}" == ${exclude} ]]; then
-				continue 2
-			fi
-		done
+        # Derive site directory from wp-config.php location
+        local site_dir
+        site_dir="$(dirname "${config}")"
 
-		if is_valid_wp "${site_dir}"; then
-			printf '%s\n' "${site_dir}"
-		fi
-	done
+        # Hard skip: directory explicitly disabled for WP-CLI
+        if [[ -f "${site_dir}/.no_wp_cli" ]]; then
+            log "Skipping ${site_dir} (contains .no_wp_cli)"
+            continue
+        fi
+
+        # Skip if directory matches any glob exclusion pattern
+        local exclude
+        for exclude in "${EXCLUDE_PATTERNS[@]}"; do
+            if [[ "${site_dir}" == ${exclude} ]]; then
+                continue 2
+            fi
+        done
+
+        # Validate WordPress installation structure
+        if is_valid_wp "${site_dir}"; then
+            printf '%s\n' "${site_dir}"
+        fi
+    done
 }
 
 # ──────────────────────────────────────────────────────────────────────────────
