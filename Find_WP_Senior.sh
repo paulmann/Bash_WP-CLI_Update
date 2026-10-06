@@ -1,380 +1,488 @@
-#!/bin/sh
 #!/usr/bin/env bash
 # ==============================================================================
 # File:        Find_WP_Senior.sh
 # Project:     Bash WP-CLI Update
 # Repository:  https://github.com/paulmann/Bash_WP-CLI_Update
+# Version:     2.0.0
+# License:     MIT
 #
 # Description:
 #   Scans one or more webroots for WordPress installations by locating
-#   'wp-content/themes/*/functions.php', excludes exact paths, deduplicates
-#   results, and writes unique site directories to a file.
+#   'wp-config.php' next to 'wp-includes/version.php', prunes excluded
+#   directories with a single correct find expression, deduplicates results
+#   and atomically writes unique site directories to a file.
 #
 # Usage:
-#   ./Find_WP_Senior.sh [--help]
+#   ./Find_WP_Senior.sh [OPTIONS] [SEARCH_DIRS...]
 #
 # Options:
-#   --help      Show this usage information and exit.
-#
-# Requirements:
-#   • Bash 4+ (CentOS 7 or newer)
-#   • find, sort, mktemp, wc available in PATH
+#   -o, --output FILE       Output file (default: <script_dir>/wp-found.txt)
+#   -e, --exclude PATTERN   Exclude path (glob or absolute; repeatable)
+#       --max-depth N       Maximum scan depth (default: 6)
+#   -q, --quiet             No console output except errors
+#       --no-defaults       Do not add the built-in search dirs/exclusions
+#   -h, --help              Show help
+#   -V, --version           Show version
 #
 # Configuration:
-#   Modify the following readonly variables near the top of the script:
-#     WWW_DIR         — webroot directory(s) to scan (default: /var/www)
-#     EXCLUDED_PATHS  — exact directories to skip
-#     OUTPUT_FILE     — path of the output file (default: wp_found.txt)
+#   Optional config file <script_dir>/Find_WP_Senior.conf may override
+#   SEARCH_DIRS, EXCLUDE_PATTERNS, OUTPUT_FILE and MAX_DEPTH. It is a bash
+#   snippet sourced by the script - keep it trusted (chmod 600).
 #
-# Features:
-#   • Multi-root scanning (supports /var/www, /home, /srv, etc.)
-#   • Smart exclusions (system dirs, node_modules, backups, etc.)
-#   • Shows USER, GROUP, and folder date for each install
-#   • Colorized, user-friendly logging
-#   • Secure temporary handling & cleanup
-#   • Works on CentOS 7+, RHEL, Ubuntu, Debian
+# Requirements:
+#   - GNU/Linux with Bash 4.2+
+#   - find, sort, mktemp, stat, wc in PATH
 #
-# Author & Support:
-#   Mikhail Deynekin
-#   Email: mid1977@gmail.com
-#   GitHub: https://github.com/paulmann
-#
-# License:
-#   MIT License — see LICENSE file in project root.
-#
-# Version:
-#   1.00.0 (2025-10-02)
-# ------------------------------------------------------------------------------
-
-# Test for bash features and adapt
-if [ -n "$BASH_VERSION" ]; then
-    # We're running in bash, can use some extensions
-    set -euo pipefail 2>/dev/null || true
-else
-    # POSIX mode
-    set -e
-fi
+# Output guarantees:
+#   * Output file contains ONLY site paths, one per line, sorted and
+#     deduplicated.
+#   * The file is written atomically (temp file + rename); the previous
+#     content is preserved if discovery fails.
+#   * Paths containing newline characters are not supported as site roots.
+# ==============================================================================
 
 set -euo pipefail
-IFS=$'\n\t'
 
+# ------------------------------------------------------------------------------
+# Constants
+# ------------------------------------------------------------------------------
 readonly SCRIPT_NAME="${0##*/}"
-readonly DEFAULT_OUTPUT_FILE="${PWD}/wp-found.txt"
-readonly MAX_DEPTH=6
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly SCRIPT_DIR
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Configuration — Search roots and exclusions
-# ──────────────────────────────────────────────────────────────────────────────
+readonly VERSION="2.0.0"
 
-readonly -a DEFAULT_SEARCH_DIRS=(
-	/var/www
-	/usr/share/nginx/html
-	/srv
-	/usr/local/nginx/html
-	/usr/local/var/www
-)
+# ------------------------------------------------------------------------------
+# Configuration defaults (overridable via conf file and CLI)
+# ------------------------------------------------------------------------------
+DEFAULT_SEARCH_DIRS=(/var/www /usr/share/nginx/html /srv /usr/local/nginx/html /usr/local/var/www)
 
-# Common directories to exclude by default (safe for most systems)
-readonly -a DEFAULT_EXCLUDE_PATTERNS=(
+DEFAULT_EXCLUDE_PATTERNS=(
 	'*/.git'
 	'*/node_modules'
 	'*/vendor'
-	'/proc/*'
-	'/sys/*'
-	'/dev/*'
-	'/run/*'
-	'/tmp/*'
+	'*/cache'
 	'*/backup*'
 	'*/backups*'
 	'*/old*'
 	'*/test*'
 	'*/tests*'
+	'*/staging*'
 )
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Color setup (only if outputting to terminal)
-# ──────────────────────────────────────────────────────────────────────────────
+OUTPUT_FILE=""
+MAX_DEPTH=6
+QUIET=false
+NO_DEFAULTS=false
 
-if [[ -t 1 ]]; then
-	readonly RED='\033[0;31m' GREEN='\033[0;32m'
-	readonly YELLOW='\033[1;33m' BLUE='\033[0;34m' NC='\033[0m'
+# Runtime state (user-provided values merged with defaults)
+declare -a SEARCH_DIRS=()
+declare -a EXCLUDE_PATTERNS=()
+declare -a USER_SEARCH_DIRS=()
+declare -a USER_EXCLUDE_PATTERNS=()
+
+# Temporary files (created by main)
+TMP_RAW=""
+TMP_DETAILS=""
+TMP_OUT=""
+
+# ------------------------------------------------------------------------------
+# Colors (stderr terminal only)
+# ------------------------------------------------------------------------------
+if [[ -t 2 ]]; then
+	readonly RED=$'\033[0;31m' GREEN=$'\033[0;32m'
+	readonly YELLOW=$'\033[1;33m' BLUE=$'\033[0;34m' NC=$'\033[0m'
 else
 	readonly RED='' GREEN='' YELLOW='' BLUE='' NC=''
 fi
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Logging helpers
-# ──────────────────────────────────────────────────────────────────────────────
-
-log() { printf "${BLUE}INFO:${NC} %s\n" "$*" >&2; }
+# ------------------------------------------------------------------------------
+# Logging
+# ------------------------------------------------------------------------------
+log() { [[ "${QUIET}" == true ]] || printf "${BLUE}INFO:${NC} %s\n" "$*" >&2; }
 warn() { printf "${YELLOW}WARN:${NC} %s\n" "$*" >&2; }
-success() { printf "${GREEN}SUCCESS:${NC} %s\n" "$*" >&2; }
+success() { [[ "${QUIET}" == true ]] || printf "${GREEN}SUCCESS:${NC} %s\n" "$*" >&2; }
+detail() { [[ "${QUIET}" == true ]] || printf "%s\n" "$*" >&2; }
 error() { printf "${RED}ERROR:${NC} %s\n" "$*" >&2; }
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Globals
-# ──────────────────────────────────────────────────────────────────────────────
+# ------------------------------------------------------------------------------
+# Usage / version
+# ------------------------------------------------------------------------------
+usage() {
+	cat <<EOF
+Usage: ${SCRIPT_NAME} [OPTIONS] [SEARCH_DIRS...]
 
-declare OUTPUT_FILE
-declare -a SEARCH_DIRS=()
-declare -a EXCLUDE_PATTERNS=()
-declare TMP_FILE
-declare TMP_DETAILS_FILE
+WordPress Installation Discovery Tool v${VERSION}
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Build find -prune arguments from absolute exclusion paths
-# ──────────────────────────────────────────────────────────────────────────────
+Scans the given directories (or the built-in defaults) for WordPress
+installations and writes one unique site path per line to the output file.
 
-build_prune_args() {
-	local path prune_args=()
-	for path in "${EXCLUDE_PATTERNS[@]}"; do
-		if [[ "${path}" == /* ]] && [[ -d "${path}" ]]; then
-			prune_args+=(-path "${path}" -prune -o)
-		fi
-	done
-	if (( ${#prune_args[@]} > 0 )); then
-		printf '%s ' "${prune_args[@]}"
-	fi
-	printf '%s' '-print'
+OPTIONS:
+  -o, --output FILE       Output file (default: <script_dir>/wp-found.txt)
+  -e, --exclude PATTERN   Exclude path (glob or absolute; repeatable)
+      --max-depth N       Maximum depth below each search root (default: 6)
+  -q, --quiet             Suppress non-error console output
+      --no-defaults       Do not add built-in search dirs and exclusions
+  -h, --help              Show this help and exit
+  -V, --version           Show version and exit
+
+DEFAULT SEARCH DIRS:
+  ${DEFAULT_SEARCH_DIRS[*]}
+
+EXAMPLES:
+  ${SCRIPT_NAME}
+  ${SCRIPT_NAME} /var/www /srv
+  ${SCRIPT_NAME} --exclude '*/staging' --exclude '/var/www/old-site'
+  ${SCRIPT_NAME} --no-defaults --exclude '*/cache' /srv/www
+
+CONFIG FILE:
+  ${SCRIPT_DIR}/Find_WP_Senior.conf (optional bash snippet)
+EOF
+	exit 0
 }
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Validate WordPress installation
-# ──────────────────────────────────────────────────────────────────────────────
-
-is_valid_wp() {
-	local dir="$1"
-	[[ -f "${dir}/wp-config.php" ]] && [[ -f "${dir}/wp-includes/version.php" ]]
+version_info() {
+	printf '%s %s\n' "${SCRIPT_NAME}" "v${VERSION}"
+	exit 0
 }
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Get formatted file info: user, group, date
-# Uses stat with fallback for CentOS 7 (GNU stat)
-# ──────────────────────────────────────────────────────────────────────────────
+# ------------------------------------------------------------------------------
+# Small helpers
+# ------------------------------------------------------------------------------
 
-get_wp_info() {
-	local dir="$1"
-	if ! [[ -d "${dir}" ]]; then
-		printf '%s\t<invalid>\t<invalid>\t<unknown>\n' "${dir}"
+# die <message>: print error to stderr and fail hard.
+die() {
+	error "$*"
+	exit 1
+}
+
+# matches_glob <path> <pattern>: bash "case" pattern match (basic glob only).
+matches_glob() {
+	local path="$1" pattern="$2"
+	[[ -n "${pattern}" ]] || return 1
+	case "${path}" in
+	"${pattern}") return 0 ;;
+	*) return 1 ;;
+	esac
+}
+
+# canonicalize_dir <path>: strip trailing slashes unless root.
+canonicalize_dir() {
+	local d="$1"
+	if [[ "${d}" == "/" ]]; then
+		printf '%s' "/"
 		return
 	fi
-
-	# Try to get user/group and timestamp
-	local user group date_str
-	if user="$(stat -c '%U' "${dir}" 2>/dev/null)" &&
-	   group="$(stat -c '%G' "${dir}" 2>/dev/null)" &&
-	   date_str="$(stat -c '%y' "${dir}" 2>/dev/null)"; then
-		# Format date: YYYY-MM-DD HH:MM
-		date_str="${date_str%%.*}"  # remove fractional seconds
-		printf '%s\t%s\t%s\t%s\n' "${dir}" "${user}" "${group}" "${date_str}"
-	else
-		# Fallback (should not happen on Linux)
-		printf '%s\t<unknown>\t<unknown>\t<unknown>\n' "${dir}"
-	fi
+	while [[ "${d}" == */ ]]; do
+		d="${d%/}"
+	done
+	printf '%s' "${d}"
 }
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Scan a single root and collect valid WP paths
-# ──────────────────────────────────────────────────────────────────────────────
-
-scan_root() {
-	local root="$1"
-	log "Scanning: ${root}"
-
-	local prune_expr
-	prune_expr=$(build_prune_args)
-
-	find "${root}" \
-		-maxdepth "${MAX_DEPTH}" \
-		-type f \
-		-name "wp-config.php" \
-		${prune_expr} \
-		2>/dev/null | while read -r config; do
-		
-		local site_dir
-		site_dir="$(dirname "${config}")"
-
-		# Skip if matches glob exclusion
-		local exclude
-		for exclude in "${EXCLUDE_PATTERNS[@]}"; do
-			if [[ "${site_dir}" == ${exclude} ]]; then
-				continue 2
+# excluded_by_patterns <path>: print "true" when any EXCLUDE_PATTERNS entry
+# matches the path. Absolute star-less patterns compare canonical paths; glob
+# patterns are matched against the whole path and the trailing-slash form.
+excluded_by_patterns() {
+	local site="$1"
+	local ex canon_ex canon_site
+	for ex in "${EXCLUDE_PATTERNS[@]}"; do
+		[[ -n "${ex}" ]] || continue
+		if [[ "${ex}" == /* && "${ex}" != *'*'* ]]; then
+			canon_ex="$(canonicalize_dir "${ex}")"
+			canon_site="$(canonicalize_dir "${site}")"
+			if [[ "${canon_site}" == "${canon_ex}" ]]; then
+				printf 'true'
+				return 0
 			fi
-		done
-
-		if is_valid_wp "${site_dir}"; then
-			printf '%s\n' "${site_dir}"
+		elif matches_glob "${site}" "${ex}" || matches_glob "${site%/}" "${ex}"; then
+			printf 'true'
+			return 0
 		fi
 	done
+	printf 'false'
 }
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Discover all WordPress installations and enrich with metadata
-# ──────────────────────────────────────────────────────────────────────────────
+# is_valid_wp <dir>: a WordPress root must carry wp-config.php and
+# wp-includes/version.php.
+is_valid_wp() {
+	local dir="$1"
+	[[ -f "${dir}/wp-config.php" && -f "${dir}/wp-includes/version.php" ]]
+}
 
-discover_wordpress() {
-	log "Starting WordPress discovery across ${#SEARCH_DIRS[@]} root(s)"
-	log "Exclusions: ${#EXCLUDE_PATTERNS[@]} patterns"
+# make_temp <template>: create a temp file in the OUTPUT_FILE directory.
+make_temp() {
+	local tmpl="$1"
+	local out_dir
+	out_dir="$(dirname "${OUTPUT_FILE}")"
+	local f
+	if ! f="$(mktemp --tmpdir="${out_dir}" "${tmpl}.XXXXXX" 2>/dev/null)"; then
+		if ! f="$(mktemp "${out_dir}/${tmpl}.XXXXXX" 2>/dev/null)"; then
+			die "Failed to create temporary file in ${out_dir}"
+		fi
+	fi
+	printf '%s' "${f}"
+}
 
-	# Create temp file — assign immediately
-	local raw_file=""
-	raw_file="$(mktemp -t "${SCRIPT_NAME}.raw.XXXXXX")" || {
-	    error "Failed to create temp file"
-	    exit 1
-	}
+# ------------------------------------------------------------------------------
+# Cleanup
+# ------------------------------------------------------------------------------
+cleanup() {
+	local rc=$?
+	[[ -n "${TMP_RAW}" && -f "${TMP_RAW}" ]] && rm -f "${TMP_RAW}"
+	[[ -n "${TMP_DETAILS}" && -f "${TMP_DETAILS}" ]] && rm -f "${TMP_DETAILS}"
+	[[ -n "${TMP_OUT}" && -f "${TMP_OUT}" ]] && rm -f "${TMP_OUT}"
+	exit "${rc}"
+}
+trap cleanup EXIT
 
-	# Collect raw paths
-	{
-		for root in "${SEARCH_DIRS[@]}"; do
-			if [[ -d "${root}" ]]; then
-				scan_root "${root}"
+# ------------------------------------------------------------------------------
+# Optional configuration file
+# ------------------------------------------------------------------------------
+load_config_file() {
+	local conf="${SCRIPT_DIR}/Find_WP_Senior.conf"
+	[[ -f "${conf}" ]] || return 0
+	# The file may override SEARCH_DIRS, EXCLUDE_PATTERNS, OUTPUT_FILE, MAX_DEPTH.
+	# shellcheck disable=SC1091
+	source "${conf}"
+	log "Loaded config file: ${conf}"
+}
+
+# ------------------------------------------------------------------------------
+# Argument parsing
+# ------------------------------------------------------------------------------
+parse_args() {
+	local opt
+	while [[ $# -gt 0 ]]; do
+		opt="$1"
+		case "${opt}" in
+		-o | --output)
+			[[ $# -ge 2 ]] || die "Option '${opt}' requires an argument"
+			OUTPUT_FILE="$2"
+			shift 2
+			;;
+		-e | --exclude)
+			[[ $# -ge 2 ]] || die "Option '${opt}' requires an argument"
+			USER_EXCLUDE_PATTERNS+=("$2")
+			shift 2
+			;;
+		--max-depth)
+			[[ $# -ge 2 ]] || die "Option '${opt}' requires an argument"
+			if [[ ! "$2" =~ ^[0-9]+$ ]] || (($2 < 1)); then
+				die "Invalid --max-depth value: $2 (must be a positive integer)"
 			fi
-		done
-	} > "${raw_file}"
+			MAX_DEPTH="$2"
+			shift 2
+			;;
+		-q | --quiet)
+			QUIET=true
+			shift
+			;;
+		--no-defaults)
+			NO_DEFAULTS=true
+			shift
+			;;
+		-h | --help)
+			usage
+			;;
+		-V | --version)
+			version_info
+			;;
+		--)
+			shift
+			USER_SEARCH_DIRS+=("$@")
+			set --
+			;;
+		-*)
+			die "Unknown option: ${opt} (see --help)"
+			;;
+		*)
+			USER_SEARCH_DIRS+=("${opt}")
+			shift
+			;;
+		esac
+	done
 
-	# Enrich with metadata
-	if [[ -s "${raw_file}" ]]; then
-		sort -u "${raw_file}" | while IFS= read -r dir; do
-			get_wp_info "${dir}"
-		done > "${TMP_DETAILS_FILE}"
+	# Merge CLI values with defaults.
+	if [[ "${NO_DEFAULTS}" == true ]]; then
+		SEARCH_DIRS=("${USER_SEARCH_DIRS[@]}")
+		EXCLUDE_PATTERNS=("${USER_EXCLUDE_PATTERNS[@]}")
 	else
-		> "${TMP_DETAILS_FILE}"
+		SEARCH_DIRS=("${DEFAULT_SEARCH_DIRS[@]}")
+		EXCLUDE_PATTERNS=("${DEFAULT_EXCLUDE_PATTERNS[@]}")
+		if [[ ${#USER_SEARCH_DIRS[@]} -gt 0 ]]; then
+			# Explicit CLI dirs REPLACE the defaults (classic behaviour).
+			SEARCH_DIRS=("${USER_SEARCH_DIRS[@]}")
+		fi
+		if [[ ${#USER_EXCLUDE_PATTERNS[@]} -gt 0 ]]; then
+			EXCLUDE_PATTERNS+=("${USER_EXCLUDE_PATTERNS[@]}")
+		fi
 	fi
 
-	# Clean up — explicit, no trap needed
-	rm -f "${raw_file}"
+	if [[ ${#SEARCH_DIRS[@]} -eq 0 ]]; then
+		die "No search directories configured (use --no-defaults only with explicit dirs)"
+	fi
+
+	[[ -n "${OUTPUT_FILE}" ]] || OUTPUT_FILE="${SCRIPT_DIR}/wp-found.txt"
 }
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Finalize output: save paths only to file, show rich info on screen
-# ──────────────────────────────────────────────────────────────────────────────
+# ------------------------------------------------------------------------------
+# find expression builder
+#
+# Builds the -type/-path/-prune part of the find command.
+# Expression shape (balanced):
+#   ( -type d ( -path A -o -path B ) -prune -o -true ) \
+#       -type f -name wp-config.php -print0
+# Every printed path is a wp-config.php; pruned dirs never descend.
+# ------------------------------------------------------------------------------
+build_find_args() {
+	local -a args=(find)
+	local root="$1"
+	args+=("${root}" -maxdepth "${MAX_DEPTH}")
 
+	# Prune part (only dirs).
+	args+=("(" -type d "(")
+	local pat first=true
+	for pat in "${EXCLUDE_PATTERNS[@]}"; do
+		[[ -n "${pat}" ]] || continue
+		[[ "${first}" == true ]] || args+=(-o)
+		args+=(-path "${pat}")
+		first=false
+	done
+	if [[ "${first}" == false ]]; then
+		args+=(")" -prune -o -true ")")
+	else
+		# No exclusions: close what we opened.
+		args=(find "${root}" -maxdepth "${MAX_DEPTH}")
+	fi
+
+	# Selection + NUL-safe emission.
+	args+=(-type f -name wp-config.php -print0)
+	FIND_ARGS=("${args[@]}")
+}
+
+# FIND_ARGS_OUT - filled by build_find_args above.
+declare -a FIND_ARGS=()
+
+# ------------------------------------------------------------------------------
+# Scan one root; append NUL-separated wp-config.php paths to stdout
+# ------------------------------------------------------------------------------
+scan_root() {
+	local root="$1"
+	[[ -d "${root}" ]] || {
+		warn "Search root does not exist, skipping: ${root}"
+		return 0
+	}
+
+	build_find_args "${root}"
+	log "Scanning: ${root} (max depth ${MAX_DEPTH})"
+	"${FIND_ARGS[@]}" 2>/dev/null
+	return 0
+}
+
+# ------------------------------------------------------------------------------
+# Main discovery
+# ------------------------------------------------------------------------------
+discover_wordpress() {
+	local root
+	log "Starting WordPress discovery across ${#SEARCH_DIRS[@]} root(s)"
+	log "Active exclusions: ${#EXCLUDE_PATTERNS[@]} pattern(s)"
+
+	# Collect raw wp-config.php paths, NUL-separated.
+	: >"${TMP_RAW}" || die "Cannot write temporary file"
+	for root in "${SEARCH_DIRS[@]}"; do
+		scan_root "${root}" >>"${TMP_RAW}"
+	done
+
+	# Enrich with metadata (single read per path, no pipes into while).
+	if [[ -s "${TMP_RAW}" ]]; then
+		while IFS= read -r -d '' config; do
+			site_dir="$(dirname "${config}")"
+			[[ -d "${site_dir}" ]] || continue
+			[[ "$(excluded_by_patterns "${site_dir}")" == true ]] && continue
+			is_valid_wp "${site_dir}" || continue
+			get_wp_info "${site_dir}"
+		done <"${TMP_RAW}" >"${TMP_DETAILS}"
+	else
+		: >"${TMP_DETAILS}"
+	fi
+
+	if [[ -s "${TMP_DETAILS}" ]]; then
+		sort -u "${TMP_DETAILS}" -o "${TMP_DETAILS}" || die "sort failed while processing results"
+	fi
+}
+
+# ------------------------------------------------------------------------------
+# Site info (user, group, mtime) - GNU stat with graceful fallback
+# ------------------------------------------------------------------------------
+get_wp_info() {
+	local dir="$1"
+	local user group date_str
+
+	user="$(stat -c '%U' "${dir}" 2>/dev/null || true)"
+	group="$(stat -c '%G' "${dir}" 2>/dev/null || true)"
+	date_str="$(stat -c '%y' "${dir}" 2>/dev/null || true)"
+	date_str="${date_str%%.*}"
+	date_str="${date_str:0:16}"
+	printf '%s\t%s\t%s\t%s\n' \
+		"${dir}" "${user:-<unknown>}" "${group:-<unknown>}" "${date_str:-<unknown>}"
+}
+
+# ------------------------------------------------------------------------------
+# Final output: paths only (atomic write) + rich details on screen
+# ------------------------------------------------------------------------------
 finalize_output() {
-	if [[ ! -s "${TMP_DETAILS_FILE}" ]]; then
+	if [[ ! -s "${TMP_DETAILS}" ]]; then
+		# Still create/overwrite the output file (empty) for downstream tools.
+		: >"${TMP_OUT}" || die "Cannot write output file: ${OUTPUT_FILE}"
+		mv -f "${TMP_OUT}" "${OUTPUT_FILE}" || die "Cannot move output file into place: ${OUTPUT_FILE}"
 		success "No WordPress installations found."
-		touch "${OUTPUT_FILE}"
 		return 0
 	fi
 
-	# Save only paths to output file (for scripting compatibility)
-	cut -f1 "${TMP_DETAILS_FILE}" > "${OUTPUT_FILE}"
 	local count
-	count=$(wc -l < "${OUTPUT_FILE}")
+	count="$(wc -l <"${TMP_DETAILS}")"
+	cut -f1 "${TMP_DETAILS}" >"${TMP_OUT}" || die "Cannot prepare output data"
+	mv -f "${TMP_OUT}" "${OUTPUT_FILE}" || die "Cannot write output file: ${OUTPUT_FILE}"
 
 	success "Found ${count} WordPress installation(s)."
 	success "Paths saved to: ${OUTPUT_FILE}"
 
-	# Display rich info on screen
-	log "Details of found installations:"
-	printf "${GREEN}%s${NC}\t${BLUE}%s${NC}\t${BLUE}%s${NC}\t${YELLOW}%s${NC}\n" \
-		"PATH" "USER" "GROUP" "LAST MODIFIED"
+	[[ "${QUIET}" == true ]] && return 0
 
-	while IFS=$'\t' read -r path user group date; do
-		printf "%s\t%s\t%s\t%s\n" "${path}" "${user}" "${group}" "${date}"
-	done < "${TMP_DETAILS_FILE}"
+	detail ""
+	detail "Details of found installations:"
+	detail "PATH\tUSER\tGROUP\tLAST MODIFIED"
+	local line
+	while IFS= read -r line; do
+		detail "${line}"
+	done <"${TMP_DETAILS}"
 }
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Cleanup
-# ──────────────────────────────────────────────────────────────────────────────
-
-cleanup() {
-	[[ -n "${TMP_FILE:-}" && -f "${TMP_FILE}" ]] && rm -f "${TMP_FILE}"
-	[[ -n "${TMP_DETAILS_FILE:-}" && -f "${TMP_DETAILS_FILE}" ]] && rm -f "${TMP_DETAILS_FILE}"
-	log "Cleaned up temporary files."
-}
-trap cleanup EXIT
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Parse command-line arguments
-# ──────────────────────────────────────────────────────────────────────────────
-
-parse_args() {
-	while [[ $# -gt 0 ]]; do
-		case "$1" in
-			--output)
-				OUTPUT_FILE="$2"
-				shift 2
-				;;
-			--exclude)
-				EXCLUDE_PATTERNS+=("$2")
-				shift 2
-				;;
-			-h|--help)
-				cat <<EOF
-Usage: $0 [OPTIONS] [SEARCH_DIRS...]
-
-WordPress Installation Discovery Tool
-
-By default, scans:
-  ${DEFAULT_SEARCH_DIRS[*]}
-
-OPTIONS:
-  --output FILE       Set output file (default: ${DEFAULT_OUTPUT_FILE})
-  --exclude PATTERN   Exclude path (glob or absolute; repeatable)
-  -h, --help          Show this help
-
-EXAMPLES:
-  $0
-  $0 /var/www /srv
-  $0 --exclude '*/staging'
-
-EOF
-				exit 0
-				;;
-			--)
-				shift
-				SEARCH_DIRS+=("$@")
-				break
-				;;
-			-*)
-				error "Unknown option: $1"
-				exit 1
-				;;
-			*)
-				SEARCH_DIRS+=("$1")
-				shift
-				;;
-		esac
-	done
-
-	if [[ ${#SEARCH_DIRS[@]} -eq 0 ]]; then
-		SEARCH_DIRS=("${DEFAULT_SEARCH_DIRS[@]}")
-	fi
-
- local -a merged_excludes=("${DEFAULT_EXCLUDE_PATTERNS[@]}")
- if [[ ${#EXCLUDE_PATTERNS[@]} -gt 0 ]]; then
- 	merged_excludes+=("${EXCLUDE_PATTERNS[@]}")
- fi
- EXCLUDE_PATTERNS=("${merged_excludes[@]}")
-
-	[[ -z "${OUTPUT_FILE:-}" ]] && OUTPUT_FILE="${DEFAULT_OUTPUT_FILE}"
-}
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Main execution
-# ──────────────────────────────────────────────────────────────────────────────
-
+# ------------------------------------------------------------------------------
+# Main
+# ------------------------------------------------------------------------------
 main() {
-	local start_time end_time
-	start_time=$(date +%s)
-	log "WordPress discovery started..."
+	local start_time
+	start_time="$(date +%s)"
 
-	TMP_FILE="$(mktemp -t "${SCRIPT_NAME}.XXXXXX")"
-	TMP_DETAILS_FILE="$(mktemp -t "${SCRIPT_NAME}.details.XXXXXX")"
+	load_config_file
 	parse_args "$@"
+
+	TMP_RAW="$(make_temp "${SCRIPT_NAME}.raw")"
+	TMP_DETAILS="$(make_temp "${SCRIPT_NAME}.details")"
+	TMP_OUT="$(make_temp "${SCRIPT_NAME}.out")"
 
 	discover_wordpress
 	finalize_output
 
-	end_time=$(date +%s)
+	local end_time
+	end_time="$(date +%s)"
 	success "Completed in $((end_time - start_time)) seconds."
 }
 
-# ──────────────────────────────────────────────────────────────────────────────
+# ------------------------------------------------------------------------------
 # Entry point
-# ──────────────────────────────────────────────────────────────────────────────
-
+# ------------------------------------------------------------------------------
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
 	main "$@"
 fi

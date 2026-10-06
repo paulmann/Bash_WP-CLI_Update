@@ -1,0 +1,14 @@
+# Logs and runtime artifacts
+wp_cli_manager.log*
+wp_cli_errors.log*
+wp-found.txt
+Bash_WP-CLI_Update.conf
+Find_WP_Senior.conf
+.Bash_WP-CLI_Update.sh.lock/
+
+# Python test artifacts
+__pycache__/
+*.pyc
+.pytest_cache/
+.dev_agent/
+.time
