@@ -1,29 +1,69 @@
-#!/bin/sh
 #!/usr/bin/env bash
-###############################################################################
-# WordPress Maintenance Automation
-# Description: Secure, fast, and modular WP-CLI manager for multiple sites.
-# Author: Mikhail Deynekin <mid1977@gmail.com>
-# Repository: https://github.com/paulmann/Bash_WP-CLI_Update
-# License: MIT
-# Version: 4.4
-###############################################################################
-#set -euo pipefail
-#shopt -s inherit_errexit
+# ==============================================================================
+# File:        Bash_WP-CLI_Update.sh
+# Project:     Bash WP-CLI Update
+# Repository:  https://github.com/paulmann/Bash_WP-CLI_Update
+# Version:     5.0.0
+# License:     MIT
+#
+# Description:
+#   WordPress maintenance automation for multiple sites.
+#   Runs WP-CLI commands (core/plugins/themes/db/cron/astra) for every site
+#   listed in the sites file, as the system user that owns each WordPress
+#   installation. Safe, strict mode (set -euo pipefail), argv-based command
+#   execution (no shell string concatenation), atomic lock, rotating logs.
+#
+# Usage:
+#   ./Bash_WP-CLI_Update.sh MODE [OPTIONS]
+#
+# Modes:
+#   -f, --full        Full maintenance (core, plugins, themes, DB, cron)
+#   -c, --core        Update WordPress core only
+#   -p, --plugins     Update all plugins
+#   -t, --themes      Update all themes
+#   -d, --db-optimize Optimize and repair the database
+#   -x, --db-fix      Repair the database only
+#   -r, --cron        Run due cron events
+#   -s, --astra       Update Astra Pro plugin (license activation if needed)
+#
+# Options:
+#   -D, --debug             Enable debug logging
+#   -q, --quiet             Suppress non-error console output
+#   -n, --dry-run           Print what would execute without executing it
+#       --sites-file FILE   Sites file (default: <script_dir>/wp-found.txt)
+#       --wp-cli PATH       WP-CLI binary (default: wp from PATH or /usr/local/bin/wp)
+#       --astra-key KEY     Astra Pro license key
+#       --skip-plugins LIST Comma-separated plugins to skip during plugin/theme ops
+#   -h, --help              Show this help
+#   -V, --version           Show version
+#
+# Configuration:
+#   Optional config file <script_dir>/Bash_WP-CLI_Update.conf may override
+#   SITES_FILE, LOG_FILE, ERROR_LOG_FILE, WP_CLI_PATH, ASTRA_KEY,
+#   SKIP_PLUGINS and MAX_LOG_SIZE. Keep it trusted (chmod 600).
+#
+# Requirements:
+#   - Linux with Bash 4.2+
+#   - root privileges (user switching); or su fallback when runuser is absent
+#   - WP-CLI 2.0+ and standard GNU core utilities
+#
+# Test hooks (CI only):
+#   WPCLI_UPDATE_SKIP_ROOT_CHECK=1  bypass the mandatory root check
+#   WPCLI_UPDATE_FORCE_RUNUSER=1    use runuser even when not EUID 0
+#   WPCLI_UPDATE_LOCK_TIMEOUT=N     lock acquisition timeout in seconds
+# ==============================================================================
 
-#########################################
-###           CONSTANTS               ###
-#########################################
+set -euo pipefail
+if shopt -s inherit_errexit 2>/dev/null; then :; fi
+
+# ------------------------------------------------------------------------------
+# Constants and defaults
+# ------------------------------------------------------------------------------
 readonly SCRIPT_NAME="${0##*/}"
-readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-readonly SCRIPT_VERSION="4.2"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly SCRIPT_DIR
 
-# File paths
-readonly SITES_FILE="${SCRIPT_DIR}/wp-found.txt"
-readonly DISCOVER_SCRIPT="${SCRIPT_DIR}/Find_WP_Senior.sh"
-readonly LOG_FILE="${SCRIPT_DIR}/wp_cli_manager.log"
-readonly ERROR_LOG_FILE="${SCRIPT_DIR}/wp_cli_errors.log"
-readonly WP_CLI_PATH="/usr/local/bin/wp"
+readonly VERSION="5.0.0"
 
 # Operation modes
 readonly MODE_FULL="full"
@@ -35,692 +75,791 @@ readonly MODE_DB_FIX="db-fix"
 readonly MODE_CRON="cron"
 readonly MODE_ASTRA="astra"
 
-# Astra Pro license key (replace YOUR_KEY with actual license key)
-readonly ASTRA_KEY="YOUR_KEY"
+# Overridable via conf file / CLI
+SITES_FILE="${SCRIPT_DIR}/wp-found.txt"
+DISCOVER_SCRIPT="${SCRIPT_DIR}/Find_WP_Senior.sh"
+LOG_FILE="${SCRIPT_DIR}/wp_cli_manager.log"
+ERROR_LOG_FILE="${SCRIPT_DIR}/wp_cli_errors.log"
+WP_CLI_PATH=""
+ASTRA_KEY="YOUR_KEY"
+SKIP_PLUGINS="saphali-woocommerce-lite,jet-compare-wishlist,jet-data-importer"
+MAX_LOG_SIZE=5242880 # bytes (5 MiB) before rotation
 
-# ANSI colors
-readonly RED='\033[0;31m'
-readonly GREEN='\033[0;32m'
-readonly YELLOW='\033[1;33m'
-readonly BLUE='\033[0;34m'
-readonly CYAN='\033[0;36m'
-readonly RESET='\033[0m'
+NO_ASTRA_KEY="YOUR_KEY"
 
-#########################################
-###        GLOBAL VARIABLES           ###
-#########################################
-declare -A STATS=(
-	[total_sites]=0
-	[success_ops]=0
-	[error_ops]=0
-)
-
+# Runtime state
+MODE=""
 DEBUG_MODE=false
+QUIET=false
+DRY_RUN=false
 
-#########################################
-###           FUNCTIONS               ###
-#########################################
+TOTAL_SITES=0
+SUCCESS_OPS=0
+ERROR_OPS=0
+FAILED_SITES=0
 
-log() {
-	local level="$1" msg="$2"
-	local timestamp
-	timestamp="$(date '+%Y-%m-%d %H:%M:%S')"
-	local log_line="[${timestamp}] [${level}] ${msg}"
-	echo "${log_line}" >> "${LOG_FILE}"
-	case "${level}" in
-		"ERROR")   echo -e "${RED}✗ ${msg}${RESET}" >&2 ;;
-		"WARNING") echo -e "${YELLOW}⚠ ${msg}${RESET}" >&2 ;;
-		"SUCCESS") echo -e "${GREEN}✓ ${msg}${RESET}" >&2 ;;
-		"DEBUG")   echo -e "${CYAN}🐞 ${msg}${RESET}" >&2 ;;
-		*)         echo "${msg}" ;;
-	esac
+LOCK_DIR=""
+
+# ANSI colors (stderr terminal only)
+if [[ -t 2 ]]; then
+	readonly RED=$'\033[0;31m' GREEN=$'\033[0;32m'
+	readonly YELLOW=$'\033[1;33m' BLUE=$'\033[0;34m'
+	readonly CYAN=$'\033[0;36m' NC=$'\033[0m'
+else
+	readonly RED='' GREEN='' YELLOW='' BLUE='' CYAN='' NC=''
+fi
+
+# ------------------------------------------------------------------------------
+# Misc helpers
+# ------------------------------------------------------------------------------
+trim() {
+	local s="$1"
+	s="${s#"${s%%[![:space:]]*}"}"
+	s="${s%"${s##*[![:space:]]}"}"
+	printf '%s' "$s"
 }
 
-log_error_detail() {
-	local context="$1" command="$2" output="$3" exit_code="$4"
-	local timestamp
-	timestamp="$(date '+%Y-%m-%d %H:%M:%S')"
-	
-	cat >> "${ERROR_LOG_FILE}" <<EOF
-[${timestamp}] [ERROR DETAIL]
-Context: ${context}
-Command: ${command}
-Exit Code: ${exit_code}
-Output: ${output}
----
-EOF
-}
+now() { date '+%Y-%m-%d %H:%M:%S'; }
 
-log_info()    { log "INFO" "$1"; }
-log_success() { log "SUCCESS" "$1"; }
-log_error()   { log "ERROR" "$1"; }
-log_warning() { log "WARNING" "$1"; }
-log_debug()   { 
-	if [[ "${DEBUG_MODE}" == true ]]; then
-		log "DEBUG" "$1"
-	fi
-}
-
-debug_echo() {
-	if [[ "${DEBUG_MODE}" == true ]]; then
-		echo -e "${CYAN}🐞 DEBUG: $1${RESET}" >&2
-	fi
-}
-
-usage() {
-	cat <<EOF
-WordPress Maintenance Automation v${SCRIPT_VERSION}
-Usage: $0 [MODE] [OPTIONS]
-
-Modes:
-  --full, -f       : Full update (core, plugins, themes, DB optimize/repair, cron)
-  --core, -c       : Update WordPress core only
-  --plugins, -p    : Update all plugins
-  --themes, -t     : Update all themes
-  --db-optimize, -d: Optimize and repair database
-  --db-fix, -x     : Repair database only
-  --cron, -r       : Run due cron events
-  --astra, -s      : Update Astra plugin with license activation if needed
-
-Options:
-  --DEBUG, -D      : Enable debug mode with detailed logging
-
-Example:
-  $0 --plugins
-  $0 -p
-  $0 --full --DEBUG
-  $0 -f -D
-  $0 --astra
-
-Sites are read from: ${SITES_FILE}
-EOF
+die() {
+	printf "${RED}ERROR:${NC} %s\n" "$*" >&2
+	write_log "ERROR" "$*"
 	exit 1
 }
 
-trim() {
-	local str="$1"
-	str="${str#"${str%%[![:space:]]*}"}"
-	str="${str%"${str##*[![:space:]]}"}"
-	printf '%s' "${str}"
+cmd_skips_plugins() { case "$1" in plugin | theme | brainstormforce) return 0 ;; *) return 1 ;; esac }
+
+# ------------------------------------------------------------------------------
+# Logging (file always; console per level/quiet)
+# ------------------------------------------------------------------------------
+rotate_log() {
+	local f="${LOG_FILE}"
+	[[ -f "${f}" ]] || return 0
+	local size
+	size="$(stat -c '%s' "${f}" 2>/dev/null || printf '0')"
+	if [[ "${size}" -gt "${MAX_LOG_SIZE}" ]]; then
+		mv -f "${f}" "${f}.1" 2>/dev/null || true
+	fi
+}
+
+write_log() {
+	local level="$1" msg="$2"
+	rotate_log
+	printf '[%s] [%s] %s\n' "$(now)" "${level}" "${msg}" >>"${LOG_FILE}" 2>/dev/null || true
+}
+
+write_error_detail() {
+	local context="$1" command="$2" output="$3" exit_code="$4"
+	{
+		printf '[%s] [ERROR DETAIL]\n' "$(now)"
+		printf 'Context: %s\n' "${context}"
+		printf 'Command: %s\n' "${command}"
+		printf 'Exit Code: %s\n' "${exit_code}"
+		printf 'Output: %s\n' "${output}"
+		printf '%s\n' '---'
+	} >>"${ERROR_LOG_FILE}" 2>/dev/null || true
+}
+
+console_log() {
+	local level="$1" msg="$2"
+	case "${level}" in
+	ERROR) printf "${RED}ERROR: %s${NC}\n" "${msg}" >&2 ;;
+	WARNING) [[ "${QUIET}" == false ]] && printf "${YELLOW}WARNING: %s${NC}\n" "${msg}" >&2 ;;
+	SUCCESS) [[ "${QUIET}" == false ]] && printf "${GREEN}SUCCESS: %s${NC}\n" "${msg}" >&2 ;;
+	INFO) [[ "${QUIET}" == false ]] && printf '%s\n' "${msg}" ;;
+	DEBUG) [[ "${QUIET}" == false && "${DEBUG_MODE}" == true ]] && printf "${CYAN}DEBUG: %s${NC}\n" "${msg}" >&2 ;;
+	esac
+}
+
+log_info() {
+	write_log "INFO" "$1"
+	console_log "INFO" "$1"
+}
+log_success() {
+	write_log "SUCCESS" "$1"
+	console_log "SUCCESS" "$1"
+}
+log_warning() {
+	write_log "WARNING" "$1"
+	console_log "WARNING" "$1"
+}
+log_error() {
+	write_log "ERROR" "$1"
+	console_log "ERROR" "$1"
+}
+log_debug() {
+	if [[ "${DEBUG_MODE}" == true ]]; then
+		write_log "DEBUG" "$1"
+		console_log "DEBUG" "$1"
+	fi
+}
+
+# ------------------------------------------------------------------------------
+# Usage / version
+# ------------------------------------------------------------------------------
+usage() {
+	cat <<EOF
+WordPress Maintenance Automation v${VERSION}
+Usage: ${SCRIPT_NAME} MODE [OPTIONS]
+
+Modes:
+  -f, --full           Full maintenance (core, plugins, themes, DB, cron)
+  -c, --core           Update WordPress core only
+  -p, --plugins        Update all plugins
+  -t, --themes         Update all themes
+  -d, --db-optimize    Optimize and repair the database
+  -x, --db-fix         Repair the database only
+  -r, --cron           Run due cron events
+  -s, --astra          Update Astra Pro plugin (with license activation)
+
+Options:
+  -D, --debug              Enable debug logging
+  -q, --quiet              Suppress non-error console output
+  -n, --dry-run            Print what would execute without executing
+      --sites-file FILE    Sites file (default: <script_dir>/wp-found.txt)
+      --wp-cli PATH        WP-CLI binary path
+      --astra-key KEY      Astra Pro license key
+      --skip-plugins LIST  Comma-separated plugin list to skip (plugin/theme ops)
+  -h, --help               Show this help and exit
+  -V, --version            Show version and exit
+
+Examples:
+  ${SCRIPT_NAME} --plugins
+  ${SCRIPT_NAME} -f --dry-run
+  ${SCRIPT_NAME} --core --sites-file /etc/wp-sites.txt
+  ${SCRIPT_NAME} --astra --astra-key 1234-5678-9abc
+
+Sites are read from: ${SITES_FILE}
+Each line: an absolute WordPress root path; '#' starts a comment.
+EOF
+}
+
+version_info() { printf '%s %s\n' "${SCRIPT_NAME}" "v${VERSION}"; }
+
+# ------------------------------------------------------------------------------
+# Optional configuration file
+# ------------------------------------------------------------------------------
+DEFAULT_SITES_FILE="${SITES_FILE}"
+DEFAULT_LOG_FILE="${LOG_FILE}"
+DEFAULT_ERROR_LOG_FILE="${ERROR_LOG_FILE}"
+DEFAULT_WP_CLI_PATH="${WP_CLI_PATH}"
+DEFAULT_ASTRA_KEY="${ASTRA_KEY}"
+DEFAULT_SKIP_PLUGINS="${SKIP_PLUGINS}"
+DEFAULT_MAX_LOG_SIZE="${MAX_LOG_SIZE}"
+
+load_config_file() {
+	local conf="${SCRIPT_DIR}/Bash_WP-CLI_Update.conf"
+	[[ -f "${conf}" ]] || return 0
+	# shellcheck disable=SC1091
+	source "${conf}"
+	log_debug "Loaded config file: ${conf}"
+}
+
+# ------------------------------------------------------------------------------
+# Argument parsing
+# ------------------------------------------------------------------------------
+parse_args() {
+	local opt
+	while [[ $# -gt 0 ]]; do
+		opt="$1"
+		case "${opt}" in
+		--full | -f) MODE="${MODE_FULL}" ;;
+		--core | -c) MODE="${MODE_CORE}" ;;
+		--plugins | -p) MODE="${MODE_PLUGINS}" ;;
+		--themes | -t) MODE="${MODE_THEMES}" ;;
+		--db-optimize | -d) MODE="${MODE_DB_OPTIMIZE}" ;;
+		--db-fix | -x) MODE="${MODE_DB_FIX}" ;;
+		--cron | -r) MODE="${MODE_CRON}" ;;
+		--astra | -s) MODE="${MODE_ASTRA}" ;;
+		--debug | -D) DEBUG_MODE=true ;;
+		--quiet | -q) QUIET=true ;;
+		--dry-run | -n) DRY_RUN=true ;;
+		--sites-file)
+			[[ $# -ge 2 ]] || die "Option '${opt}' requires an argument"
+			SITES_FILE="$2"
+			shift
+			;;
+		--sites-file=*) SITES_FILE="${opt#*=}" ;;
+		--wp-cli)
+			[[ $# -ge 2 ]] || die "Option '${opt}' requires an argument"
+			WP_CLI_PATH="$2"
+			shift
+			;;
+		--wp-cli=*) WP_CLI_PATH="${opt#*=}" ;;
+		--astra-key)
+			[[ $# -ge 2 ]] || die "Option '${opt}' requires an argument"
+			ASTRA_KEY="$2"
+			shift
+			;;
+		--astra-key=*) ASTRA_KEY="${opt#*=}" ;;
+		--skip-plugins)
+			[[ $# -ge 2 ]] || die "Option '${opt}' requires an argument"
+			SKIP_PLUGINS="$2"
+			shift
+			;;
+		--skip-plugins=*) SKIP_PLUGINS="${opt#*=}" ;;
+		-h | --help)
+			usage
+			exit 0
+			;;
+		-V | --version)
+			version_info
+			exit 0
+			;;
+		*) die "Unknown option: ${opt} (see --help)" ;;
+		esac
+		shift
+	done
+
+	[[ -n "${MODE}" ]] || {
+		usage >&2
+		die "No mode specified. Use one of: --full --core --plugins --themes --db-optimize --db-fix --cron --astra"
+	}
+}
+
+# ------------------------------------------------------------------------------
+# Atomic lock (mkdir + pid; portable, no flock dependency)
+# ------------------------------------------------------------------------------
+acquire_lock() {
+	LOCK_DIR="${SCRIPT_DIR}/.${SCRIPT_NAME}.lock"
+	local lock_timeout="${WPCLI_UPDATE_LOCK_TIMEOUT:-30}"
+	[[ "${lock_timeout}" =~ ^[0-9]+$ ]] || lock_timeout=30
+	local deadline=$(($(date +%s) + lock_timeout))
+	while :; do
+		if mkdir "${LOCK_DIR}" 2>/dev/null; then
+			printf '%s\n' "$$" >"${LOCK_DIR}/pid"
+			log_debug "Acquired lock: ${LOCK_DIR}"
+			return 0
+		fi
+		# Stale lock handling: read pid, check liveness.
+		local pid
+		if [[ -f "${LOCK_DIR}/pid" ]] && read -r pid <"${LOCK_DIR}/pid" 2>/dev/null &&
+			[[ "${pid}" =~ ^[0-9]+$ ]] && ! kill -0 "${pid}" 2>/dev/null; then
+			log_warning "Removing stale lock (pid ${pid} is dead)"
+			rm -rf "${LOCK_DIR}" 2>/dev/null || true
+			continue
+		fi
+		if [[ "$(date +%s)" -ge "${deadline}" ]]; then
+			die "Another instance is running (lock: ${LOCK_DIR}). Exiting."
+		fi
+		sleep 1
+	done
+}
+
+release_lock() {
+	[[ -n "${LOCK_DIR}" ]] || return 0
+	if [[ -f "${LOCK_DIR}/pid" ]]; then
+		local pid
+		read -r pid <"${LOCK_DIR}/pid" 2>/dev/null || pid=""
+		[[ "${pid}" == "$$" ]] && rm -rf "${LOCK_DIR}" 2>/dev/null || true
+	fi
+	LOCK_DIR=""
+}
+
+exit_handler() {
+	local rc=$?
+	release_lock
+	exit "${rc}"
+}
+trap exit_handler EXIT
+
+# ------------------------------------------------------------------------------
+# WordPress user resolution
+#   Order: wp-config.php owner -> site dir owner -> /var/www path heuristic
+#          -> DB_USER from wp-config.php
+# ------------------------------------------------------------------------------
+user_exists() { id -u "$1" >/dev/null 2>&1; }
+
+stat_owner() { stat -c '%U' "$1" 2>/dev/null || true; }
+
+db_user_from_config() {
+	local config="$1"
+	[[ -f "${config}" ]] || return 1
+	local db_user
+	db_user="$(grep -E "define[[:space:]]*\([[:space:]]*'DB_USER'" "${config}" 2>/dev/null |
+		sed -E "s/.*'DB_USER'[[:space:]]*,[[:space:]]*'([^']+)'.*/\\1/" | tail -n 1 || true)"
+	[[ -n "${db_user}" ]] && printf '%s' "${db_user}"
 }
 
 get_wp_user() {
 	local wp_root="$1"
 	local wp_config="${wp_root}/wp-config.php"
+	local candidate
 
-	debug_echo "🚩 START get_wp_user for: ${wp_root}"
-	debug_echo "📁 Checking wp-config.php at: ${wp_config}"
-	
-	# Метод 1: Владелец файла wp-config.php
+	log_debug "Resolving WordPress user for: ${wp_root}"
+
+	# 1) Owner of wp-config.php
 	if [[ -f "${wp_config}" ]]; then
-		debug_echo "📄 wp-config.php exists, checking file owner"
-		local file_owner
-		file_owner="$(stat -c '%U' "${wp_config}" 2>&1 || echo "stat_error")"
-		debug_echo "👤 File owner of wp-config.php: '${file_owner}'"
-		
-		if [[ -n "${file_owner}" && "${file_owner}" != "root" && "${file_owner}" != "stat_error" ]]; then
-			debug_echo "✅ Using file owner: ${file_owner}"
-			if id -u "${file_owner}" >/dev/null 2>&1; then
-				debug_echo "✅ User ${file_owner} exists in system"
-				printf '%s' "${file_owner}"
+		candidate="$(stat_owner "${wp_config}")"
+		if [[ -n "${candidate}" && "${candidate}" != root ]] && user_exists "${candidate}"; then
+			log_debug "Using wp-config.php owner: ${candidate}"
+			printf '%s' "${candidate}"
+			return 0
+		fi
+	fi
+
+	# 2) Owner of the site directory
+	candidate="$(stat_owner "${wp_root}")"
+	if [[ -n "${candidate}" && "${candidate}" != root ]] && user_exists "${candidate}"; then
+		log_debug "Using directory owner: ${candidate}"
+		printf '%s' "${candidate}"
+		return 0
+	fi
+
+	# 3) /var/www/<user>/... path heuristic
+	if [[ "${wp_root}" == /var/www/* ]]; then
+		local path_parts
+		IFS='/' read -r -a path_parts <<<"${wp_root}"
+		if [[ ${#path_parts[@]} -ge 4 ]]; then
+			candidate="${path_parts[3]}"
+			if [[ -n "${candidate}" ]] && user_exists "${candidate}"; then
+				log_debug "Using user from path: ${candidate}"
+				printf '%s' "${candidate}"
 				return 0
-			else
-				debug_echo "❌ User ${file_owner} does NOT exist in system"
 			fi
-		else
-			debug_echo "❌ File owner not suitable: '${file_owner}'"
 		fi
-	else
-		debug_echo "❌ wp-config.php not found at: ${wp_config}"
 	fi
 
-	# Метод 2: Владелец директории
-	debug_echo "📁 Checking directory owner"
-	local dir_owner
-	dir_owner="$(stat -c '%U' "${wp_root}" 2>&1 || echo "stat_error")"
-	debug_echo "👤 Directory owner: '${dir_owner}'"
-
-	if [[ -n "${dir_owner}" && "${dir_owner}" != "root" && "${dir_owner}" != "stat_error" ]]; then
-		debug_echo "✅ Using directory owner: ${dir_owner}"
-		if id -u "${dir_owner}" >/dev/null 2>&1; then
-			debug_echo "✅ User ${dir_owner} exists in system"
-			printf '%s' "${dir_owner}"
-			return 0
-		else
-			debug_echo "❌ User ${dir_owner} does NOT exist in system"
-		fi
-	else
-		debug_echo "❌ Directory owner not suitable: '${dir_owner}'"
-	fi
-
-	# Метод 3: Извлечение из пути
-	debug_echo "🛣️  Trying to extract user from path"
-	IFS='/' read -r -a path_parts <<< "${wp_root}"
-	debug_echo "📊 Path parts: ${#path_parts[@]} - ${path_parts[*]}"
-	
-	if [[ ${#path_parts[@]} -ge 4 ]]; then
-		local potential_user="${path_parts[3]}"  # /var/www/USER/data/...
-		debug_echo "👤 Potential user from path: '${potential_user}'"
-		
-		if id -u "${potential_user}" >/dev/null 2>&1; then
-			debug_echo "✅ Using user from path: ${potential_user}"
-			printf '%s' "${potential_user}"
-			return 0
-		else
-			debug_echo "❌ User from path does NOT exist: ${potential_user}"
-		fi
-	else
-		debug_echo "❌ Path too short for extraction"
-	fi
-
-	# Метод 4: DB_USER из wp-config.php
+	# 4) DB_USER from wp-config.php
 	if [[ -f "${wp_config}" ]]; then
-		debug_echo "🔍 Trying DB_USER from wp-config.php"
-		local db_user
-		db_user="$(grep -E "define\s*\(\s*'DB_USER'" "${wp_config}" 2>/dev/null | \
-		           sed -E "s/.*'DB_USER'\s*,\s*'([^']+)'.*/\1/" | tail -n1)"
-		debug_echo "👤 DB_USER from wp-config: '${db_user}'"
-
-		if [[ -n "${db_user}" ]] && id -u "${db_user}" >/dev/null 2>&1; then
-			debug_echo "✅ Using DB_USER: ${db_user}"
-			printf '%s' "${db_user}"
+		candidate="$(db_user_from_config "${wp_config}")"
+		if [[ -n "${candidate}" ]] && user_exists "${candidate}"; then
+			log_debug "Using DB_USER from wp-config.php: ${candidate}"
+			printf '%s' "${candidate}"
 			return 0
-		else
-			debug_echo "❌ DB_USER not found or invalid: '${db_user}'"
 		fi
 	fi
 
-	debug_echo "💥 ALL METHODS FAILED - Cannot determine WordPress user for: ${wp_root}"
+	log_debug "All user resolution methods failed for: ${wp_root}"
 	return 1
 }
 
-run_wp_cli() {
-	local site_path="$1" user="$2" cmd=("${@:3}")
-	
-	debug_echo "🚩 START run_wp_cli"
-	debug_echo "📍 site_path: ${site_path}"
-	debug_echo "👤 user: ${user}"
-	debug_echo "⚡ command: wp ${cmd[*]}"
-	
-	# Проверяем существование пользователя
-	if ! id -u "${user}" >/dev/null 2>&1; then
-		debug_echo "💥 USER CHECK FAILED: User '${user}' does not exist"
-		log_error "User '${user}' does not exist. Cannot run WP-CLI command."
-		((STATS[error_ops]++))
-		return 1
+# ------------------------------------------------------------------------------
+# WP-CLI execution
+#   argv-safe: commands are bash arrays, never shell strings.
+#   Preferred switch: runuser -u USER -- env K=V ... wp ...
+#   Fallback:         su -s /bin/bash USER -c "$(printf %q each token)"
+# ------------------------------------------------------------------------------
+resolve_wp_cli() {
+	local wp="${WP_CLI_PATH}"
+	if [[ -z "${wp}" ]]; then
+		wp="$(command -v wp 2>/dev/null || true)"
+		[[ -n "${wp}" ]] || wp="/usr/local/bin/wp"
 	fi
-	debug_echo "✅ User '${user}' exists"
-	
-	# Проверяем существование директории
-	if [[ ! -d "${site_path}" ]]; then
-		debug_echo "💥 DIRECTORY CHECK FAILED: Directory '${site_path}' does not exist"
-		log_error "Directory '${site_path}' does not exist."
-		((STATS[error_ops]++))
-		return 1
-	fi
-	debug_echo "✅ Directory '${site_path}' exists"
-	
-	log_info "Running: wp ${cmd[*]} on ${site_path} as ${user}"
-	
-	# Подготовка команды как в рабочем скрипте wp-cli.sh
-	local wp_command="${WP_CLI_PATH} --path=\"${site_path}\" ${cmd[*]} --skip-plugins=saphali-woocommerce-lite,jet-compare-wishlist,jet-data-importer --quiet --allow-root"
-	local home_dir="$(dirname "$(dirname "${site_path}")")"
-	local domain="$(basename "${site_path}")"
-	
-	debug_echo "🏠 home_dir: ${home_dir}"
-	debug_echo "🌐 domain: ${domain}"
-	debug_echo "🔧 wp_command: ${wp_command}"
-	
-	local export_vars="export DOCUMENT_URI=${domain} && DOCUMENT_ROOT=${site_path} && HOMEDIR=${home_dir} && export HTTP_HOST=${domain}"
-	local full_command="cd ${site_path} && ${export_vars} && ${wp_command}"
-	
-	debug_echo "🔧 full_command: ${full_command}"
-	debug_echo "👤 Executing as user: ${user}"
-	
-	debug_echo "🎯 EXECUTING COMMAND: su - \"${user}\" -c \"${full_command}\""
-	
-	# Выполняем команду и перехватываем ВЕСЬ вывод
-	local output
-	local exit_code=0
-	
-	output=$(su - "${user}" -c "${full_command}" 2>&1) || exit_code=$?
-	
-	debug_echo "📤 COMMAND OUTPUT: ${output}"
-	debug_echo "🔚 EXIT CODE: ${exit_code}"
-	
-	if [[ ${exit_code} -eq 0 ]]; then
-		log_success "Success: wp ${cmd[*]}"
-		((STATS[success_ops]++))
-		debug_echo "✅ Command completed successfully"
-		return 0
+	if [[ "${wp}" == */* ]]; then
+		[[ -x "${wp}" ]] || return 1
 	else
-		log_error "Failed: wp ${cmd[*]} (exit code: ${exit_code})"
-		log_error_detail "run_wp_cli" "wp ${cmd[*]}" "${output}" "${exit_code}"
-		((STATS[error_ops]++))
-		debug_echo "💥 Command failed with exit code: ${exit_code}"
-		return 1
+		wp="$(command -v "${wp}" 2>/dev/null || true)"
+		[[ -n "${wp}" && -x "${wp}" ]] || return 1
 	fi
+	printf '%s' "${wp}"
 }
 
+run_wp_cli() {
+	local site_path="$1" user="$2"
+	shift 2
+	local -a cmd=("$@")
+	local wp
+
+	wp="$(resolve_wp_cli)" || {
+		log_error "WP-CLI not found or not executable"
+		ERROR_OPS=$((ERROR_OPS + 1))
+		return 1
+	}
+
+	[[ -d "${site_path}" ]] || {
+		log_error "Directory does not exist: ${site_path}"
+		ERROR_OPS=$((ERROR_OPS + 1))
+		return 1
+	}
+	user_exists "${user}" || {
+		log_error "User does not exist: ${user}"
+		ERROR_OPS=$((ERROR_OPS + 1))
+		return 1
+	}
+
+	# Environment for the WP-CLI process (same contract as the legacy script).
+	local domain home_dir
+	domain="$(basename "${site_path}")"
+	home_dir="$(dirname "$(dirname "${site_path}")")"
+	local -a envs=(
+		"DOCUMENT_ROOT=${site_path}"
+		"HTTP_HOST=${domain}"
+		"HOMEDIR=${home_dir}"
+	)
+
+	# Plugin-skip list only for plugin/theme/astra-related subcommands.
+	if cmd_skips_plugins "${cmd[0]:-}" && [[ -n "${SKIP_PLUGINS}" ]]; then
+		cmd+=("--skip-plugins=${SKIP_PLUGINS}")
+	fi
+
+	local -a full=(env "${envs[@]}" "${wp}" "--path=${site_path}" "${cmd[@]}" "--quiet" "--allow-root")
+
+	local command_repr
+	command_repr="$(
+		IFS=' '
+		printf '%s' "${full[*]}"
+	)"
+	log_debug "Prepared command: ${command_repr}"
+
+	if [[ "${DRY_RUN}" == true ]]; then
+		log_info "(dry-run) [${user}@${site_path}] ${command_repr}"
+		return 0
+	fi
+
+	local output exit_code=0
+	set +e
+	output="$(as_user_exec "${user}" "${full[@]}" 2>&1)"
+	exit_code=$?
+	set -e
+
+	if [[ "${exit_code}" -eq 0 ]]; then
+		log_success "OK: wp ${cmd[*]} on ${site_path} as ${user}"
+		SUCCESS_OPS=$((SUCCESS_OPS + 1))
+		return 0
+	fi
+
+	log_error "Failed: wp ${cmd[*]} on ${site_path} as ${user} (exit code: ${exit_code})"
+	write_error_detail "run_wp_cli" "${command_repr}" "${output}" "${exit_code}"
+	ERROR_OPS=$((ERROR_OPS + 1))
+	return 1
+}
+
+# run_wp_cli_soft: like run_wp_cli but performs no stats counting and logs
+# failures as debug messages only. Used for preliminary/recoverable Astra steps.
+run_wp_cli_soft() {
+	local site_path="$1" user="$2"
+	shift 2
+	local -a cmd=("$@")
+	local wp
+
+	wp="$(resolve_wp_cli)" || {
+		log_warning "WP-CLI not found or not executable"
+		return 1
+	}
+	[[ -d "${site_path}" ]] || return 1
+	user_exists "${user}" || return 1
+
+	local domain home_dir
+	domain="$(basename "${site_path}")"
+	home_dir="$(dirname "$(dirname "${site_path}")")"
+	local -a envs=(
+		"DOCUMENT_ROOT=${site_path}"
+		"HTTP_HOST=${domain}"
+		"HOMEDIR=${home_dir}"
+	)
+
+	if cmd_skips_plugins "${cmd[0]:-}" && [[ -n "${SKIP_PLUGINS}" ]]; then
+		cmd+=("--skip-plugins=${SKIP_PLUGINS}")
+	fi
+
+	local -a full=(env "${envs[@]}" "${wp}" "--path=${site_path}" "${cmd[@]}" "--quiet" "--allow-root")
+
+	if [[ "${DRY_RUN}" == true ]]; then
+		log_info "(dry-run) [${user}@${site_path}] $(
+			IFS=' '
+			printf '%s' "${full[*]}"
+		)"
+		return 0
+	fi
+
+	local output exit_code=0
+	set +e
+	output="$(as_user_exec "${user}" "${full[@]}" 2>&1)"
+	exit_code=$?
+	set -e
+
+	if [[ "${exit_code}" -eq 0 ]]; then
+		log_debug "OK (soft): wp ${cmd[*]} on ${site_path} as ${user}"
+		return 0
+	fi
+	log_debug "Failed (soft): wp ${cmd[*]} on ${site_path} as ${user} (exit code: ${exit_code})"
+	return 1
+}
+
+as_user_exec() {
+	local user="$1"
+	shift
+	local runuser_bin
+	runuser_bin="$(command -v runuser 2>/dev/null || true)"
+
+	if [[ -n "${runuser_bin}" ]] && [[ "${EUID}" -eq 0 || "${WPCLI_UPDATE_FORCE_RUNUSER:-0}" == 1 ]]; then
+		"${runuser_bin}" -u "${user}" -- "$@"
+		return $?
+	fi
+
+	# su fallback: reconstruct a single POSIX-safe command string with %q.
+	local escaped
+	escaped="$(printf '%q ' "$@")"
+	su -s /bin/bash "${user}" -c "${escaped}"
+}
+
+# ------------------------------------------------------------------------------
+# Astra Pro handling (single implementation)
+#   All Astra steps run through run_wp_cli_soft; only the decisive outcome
+#   touches the global counters. strict=true (--astra) turns failures into
+#   errors; strict=false (--full) degrades them to warnings.
+# ------------------------------------------------------------------------------
+_update_astra() {
+	local site_path="$1" user="$2" strict="$3"
+
+	if ! run_wp_cli_soft "${site_path}" "${user}" plugin status astra-addon; then
+		if [[ "${strict}" == true ]]; then
+			log_error "Astra plugin not found or not active: ${site_path}"
+			ERROR_OPS=$((ERROR_OPS + 1))
+			return 1
+		fi
+		log_warning "Astra plugin not found or not active, skipping: ${site_path}"
+		return 0
+	fi
+
+	if run_wp_cli_soft "${site_path}" "${user}" plugin update astra-addon; then
+		log_success "Astra plugin updated: ${site_path}"
+		SUCCESS_OPS=$((SUCCESS_OPS + 1))
+		return 0
+	fi
+
+	if [[ "${ASTRA_KEY}" == "${NO_ASTRA_KEY}" || -z "${ASTRA_KEY}" ]]; then
+		if [[ "${strict}" == true ]]; then
+			log_error "Astra update failed and no license key configured: ${site_path}"
+			ERROR_OPS=$((ERROR_OPS + 1))
+			return 1
+		fi
+		log_warning "Astra update failed and no license key configured: ${site_path}"
+		return 0
+	fi
+
+	log_info "Activating Astra license and retrying update for ${site_path}"
+	if ! run_wp_cli_soft "${site_path}" "${user}" brainstormforce license activate astra-addon "${ASTRA_KEY}"; then
+		if [[ "${strict}" == true ]]; then
+			log_error "Astra license activation failed: ${site_path}"
+			ERROR_OPS=$((ERROR_OPS + 1))
+			return 1
+		fi
+		log_warning "Astra license activation failed: ${site_path}"
+		return 0
+	fi
+
+	if run_wp_cli_soft "${site_path}" "${user}" plugin update astra-addon; then
+		log_success "Astra plugin updated after license activation: ${site_path}"
+		SUCCESS_OPS=$((SUCCESS_OPS + 1))
+		return 0
+	fi
+
+	if [[ "${strict}" == true ]]; then
+		log_error "Astra update failed even after license activation: ${site_path}"
+		ERROR_OPS=$((ERROR_OPS + 1))
+		return 1
+	fi
+	log_warning "Astra update failed even after license activation: ${site_path}"
+	return 0
+}
+
+# ------------------------------------------------------------------------------
+# Mode execution: runs every operation, reports the first failure.
+# ------------------------------------------------------------------------------
 execute_mode() {
 	local mode="$1" site_path="$2" wp_user="$3"
-	
-	debug_echo "🚩 START execute_mode"
-	debug_echo "📋 mode: ${mode}"
-	debug_echo "📍 site_path: ${site_path}"
-	debug_echo "👤 wp_user: ${wp_user}"
+	local -a ops=()
+	local -a full_tail=()
+	local first_failure=0
 
 	case "${mode}" in
-		"${MODE_FULL}")
-			debug_echo "🔧 Executing FULL mode operations"
-			run_wp_cli "${site_path}" "${wp_user}" core update
-			run_wp_cli "${site_path}" "${wp_user}" plugin update --all
-			
-			# Astra processing in full mode if key is set
-			if [[ "${ASTRA_KEY}" != "YOUR_KEY" ]]; then
-				debug_echo "🔧 Processing Astra in FULL mode"
-				_handle_astra_in_full_mode "${site_path}" "${wp_user}"
-			else
-				debug_echo "⏩ Skipping Astra in FULL mode - key not set"
-			fi
-			
-			run_wp_cli "${site_path}" "${wp_user}" theme update --all
-			run_wp_cli "${site_path}" "${wp_user}" core update-db
-			run_wp_cli "${site_path}" "${wp_user}" db optimize
-			run_wp_cli "${site_path}" "${wp_user}" db repair
-			run_wp_cli "${site_path}" "${wp_user}" cron event run --due-now
-			;;
-		"${MODE_CORE}")
-			debug_echo "🔧 Executing CORE mode operations"
-			run_wp_cli "${site_path}" "${wp_user}" core update
-			run_wp_cli "${site_path}" "${wp_user}" core update-db
-			;;
-		"${MODE_PLUGINS}")
-			debug_echo "🔧 Executing PLUGINS mode operations"
-			run_wp_cli "${site_path}" "${wp_user}" plugin update --all
-			;;
-		"${MODE_THEMES}")
-			debug_echo "🔧 Executing THEMES mode operations"
-			run_wp_cli "${site_path}" "${wp_user}" theme update --all
-			;;
-		"${MODE_DB_OPTIMIZE}")
-			debug_echo "🔧 Executing DB_OPTIMIZE mode operations"
-			run_wp_cli "${site_path}" "${wp_user}" db optimize
-			run_wp_cli "${site_path}" "${wp_user}" db repair
-			;;
-		"${MODE_DB_FIX}")
-			debug_echo "🔧 Executing DB_FIX mode operations"
-			run_wp_cli "${site_path}" "${wp_user}" db repair
-			;;
-		"${MODE_CRON}")
-			debug_echo "🔧 Executing CRON mode operations"
-			run_wp_cli "${site_path}" "${wp_user}" cron event run --due-now
-			;;
-		"${MODE_ASTRA}")
-			debug_echo "🔧 Executing ASTRA mode operations"
-			_handle_astra_operations "${site_path}" "${wp_user}"
-			;;
-		*)
-			log_error "Unknown mode: ${mode}"
-			return 1
-			;;
+	"${MODE_FULL}")
+		ops=("core update" "plugin update --all" "theme update --all"
+			"core update-db" "db optimize" "db repair" "cron event run --due-now")
+		full_tail=(astra)
+		;;
+	"${MODE_CORE}")
+		ops=("core update" "core update-db")
+		;;
+	"${MODE_PLUGINS}")
+		ops=("plugin update --all")
+		;;
+	"${MODE_THEMES}")
+		ops=("theme update --all")
+		;;
+	"${MODE_DB_OPTIMIZE}")
+		ops=("db optimize" "db repair")
+		;;
+	"${MODE_DB_FIX}")
+		ops=("db repair")
+		;;
+	"${MODE_CRON}")
+		ops=("cron event run --due-now")
+		;;
+	"${MODE_ASTRA}")
+		ops=()
+		;;
+	*)
+		log_error "Unknown mode: ${mode}"
+		return 1
+		;;
 	esac
-	
-	debug_echo "✅ COMPLETED execute_mode for ${mode}"
-}
 
-_handle_astra_in_full_mode() {
-	local site_path="$1" wp_user="$2"
-	
-	debug_echo "🚩 START _handle_astra_in_full_mode"
-	
-	# Check if Astra plugin is installed and active
-	log_info "Checking Astra plugin status for: ${site_path}"
-	
-	if ! run_wp_cli "${site_path}" "${wp_user}" plugin status astra-addon >/dev/null 2>&1; then
-		log_warning "Astra plugin not found or not active for: ${site_path}"
-		debug_echo "❌ Astra plugin check failed"
-		return 0  # Continue execution in full mode even if Astra not found
-	fi
-	
-	log_success "Astra plugin found and active"
-	debug_echo "✅ Astra plugin is installed and active"
-	
-	# Check if update is available
-	log_info "Checking if Astra plugin update is available"
-	debug_echo "🔍 Checking for available updates with dry-run"
-	
-	local dry_run_output
-	dry_run_output=$(su - "${wp_user}" -c "cd ${site_path} && ${WP_CLI_PATH} --path=\"${site_path}\" plugin update astra-addon --dry-run --skip-plugins=saphali-woocommerce-lite,jet-compare-wishlist,jet-data-importer --quiet --allow-root 2>&1")
-	
-	debug_echo "📊 Dry-run output: ${dry_run_output}"
-	
-	# If dry-run shows update is available, try to update
-	if echo "${dry_run_output}" | grep -q "Available"; then
-		log_info "Astra update available, attempting update"
-		debug_echo "🔄 Running Astra plugin update"
-		
-		if run_wp_cli "${site_path}" "${wp_user}" plugin update astra-addon; then
-			log_success "Astra plugin updated successfully in full mode"
-			debug_echo "✅ Astra plugin updated successfully"
-		else
-			log_warning "Astra plugin update failed, activating license and retrying"
-			debug_echo "🔑 Astra license activation needed"
-			
-			# Activate license and retry update
-			if run_wp_cli "${site_path}" "${wp_user}" brainstormforce license activate astra-addon "${ASTRA_KEY}"; then
-				log_success "Astra license activated successfully"
-				debug_echo "✅ License activation successful"
-				
-				# Retry update after license activation
-				if run_wp_cli "${site_path}" "${wp_user}" plugin update astra-addon; then
-					log_success "Astra plugin updated successfully after license activation"
-					debug_echo "✅ Astra plugin updated after license activation"
-				else
-					log_error "Astra plugin update failed even after license activation"
-					debug_echo "❌ Update failed after license activation"
-				fi
-			else
-				log_error "Failed to activate Astra license"
-				debug_echo "❌ License activation failed"
-			fi
+	local op
+	local -a args=()
+	for op in "${ops[@]}"; do
+		read -r -a args <<<"${op}"
+		log_debug "Executing '${op}' for ${site_path}"
+		if ! run_wp_cli "${site_path}" "${wp_user}" "${args[@]}"; then
+			first_failure=1
 		fi
-	else
-		log_info "No Astra update available"
-		debug_echo "ℹ️ No Astra update available"
-	fi
-	
-	debug_echo "✅ COMPLETED _handle_astra_in_full_mode"
-}
+	done
 
-_handle_astra_operations() {
-	local site_path="$1" wp_user="$2"
-	
-	debug_echo "🚩 START _handle_astra_operations"
-	
-	# Check if Astra license key is set
-	if [[ "${ASTRA_KEY}" == "YOUR_KEY" ]]; then
-		log_error "Astra license key is not configured. Please set ASTRA_KEY in the script."
-		echo -e "${RED}❌ ERROR: Astra license key is not configured.${RESET}"
-		echo -e "${YELLOW}Please edit the script and set ASTRA_KEY to your actual license key.${RESET}"
-		return 1
-	fi
-	
-	# Check if Astra plugin is installed and active
-	log_info "Checking Astra plugin status for: ${site_path}"
-	
-	if ! run_wp_cli "${site_path}" "${wp_user}" plugin status astra-addon >/dev/null 2>&1; then
-		log_warning "Astra plugin not found or not active for: ${site_path}"
-		debug_echo "❌ Astra plugin check failed"
-		return 1
-	fi
-	
-	log_success "Astra plugin found and active"
-	debug_echo "✅ Astra plugin is installed and active"
-	
-	# Try to update Astra plugin
-	log_info "Attempting to update Astra plugin"
-	debug_echo "🔄 Running initial Astra plugin update"
-	
-	if run_wp_cli "${site_path}" "${wp_user}" plugin update astra-addon; then
-		log_success "Astra plugin updated successfully"
-		debug_echo "✅ Astra plugin updated on first attempt"
-		return 0
-	fi
-	
-	# If update failed, check if update is available with dry-run
-	log_warning "Astra plugin update failed, checking if update is available"
-	debug_echo "🔍 Checking for available updates with dry-run"
-	
-	local dry_run_output
-	dry_run_output=$(su - "${wp_user}" -c "cd ${site_path} && ${WP_CLI_PATH} --path=\"${site_path}\" plugin update astra-addon --dry-run --skip-plugins=saphali-woocommerce-lite,jet-compare-wishlist,jet-data-importer --quiet --allow-root 2>&1")
-	
-	debug_echo "📊 Dry-run output: ${dry_run_output}"
-	
-	# If dry-run shows update is available but previous update failed, likely license issue
-	if echo "${dry_run_output}" | grep -q "Available"; then
-		log_info "Astra update available but failed, activating license and retrying"
-		debug_echo "🔑 Astra license activation needed"
-		
-		# Activate license
-		log_info "Activating Astra license"
-		debug_echo "🔑 Activating license with key: ${ASTRA_KEY}"
-		
-		if run_wp_cli "${site_path}" "${wp_user}" brainstormforce license activate astra-addon "${ASTRA_KEY}"; then
-			log_success "Astra license activated successfully"
-			debug_echo "✅ License activation successful"
-			
-			# Retry update after license activation
-			log_info "Retrying Astra plugin update after license activation"
-			debug_echo "🔄 Retrying plugin update"
-			
-			if run_wp_cli "${site_path}" "${wp_user}" plugin update astra-addon; then
-				log_success "Astra plugin updated successfully after license activation"
-				debug_echo "✅ Astra plugin updated after license activation"
-				return 0
-			else
-				log_error "Astra plugin update failed even after license activation"
-				debug_echo "❌ Update failed after license activation"
-				return 1
-			fi
-		else
-			log_error "Failed to activate Astra license"
-			debug_echo "❌ License activation failed"
+	# Astra handling: strict in --astra mode, tolerant in --full.
+	if [[ "${mode}" == "${MODE_ASTRA}" ]]; then
+		if [[ "${ASTRA_KEY}" == "${NO_ASTRA_KEY}" || -z "${ASTRA_KEY}" ]]; then
+			log_error "Astra license key not configured (use --astra-key)."
 			return 1
 		fi
-	else
-		log_info "No Astra update available or dry-run check failed"
-		debug_echo "ℹ️ No update available or dry-run issue"
-		return 0
+		if ! _update_astra "${site_path}" "${wp_user}" true; then
+			first_failure=1
+		fi
 	fi
-	
-	debug_echo "✅ COMPLETED _handle_astra_operations"
+
+	if [[ ${#full_tail[@]} -gt 0 ]]; then
+		_update_astra "${site_path}" "${wp_user}" false || true
+		# Tolerant: never propagates as a hard failure for the site.
+	fi
+
+	[[ "${first_failure}" -eq 0 ]]
 }
 
+# ------------------------------------------------------------------------------
+# Sites file handling
+# ------------------------------------------------------------------------------
 ensure_sites_file() {
-	debug_echo "🚩 START ensure_sites_file"
-	
 	if [[ -f "${SITES_FILE}" ]]; then
-		log_info "Sites file found: ${SITES_FILE}"
-		debug_echo "✅ Sites file exists"
+		log_debug "Sites file found: ${SITES_FILE}"
 		return 0
 	fi
 
-	log_warning "Sites file NOT found: ${SITES_FILE}"
-	log_info "Checking for discovery script: Find_WP_Senior.sh"
+	log_warning "Sites file not found: ${SITES_FILE}"
 
 	if [[ -f "${DISCOVER_SCRIPT}" && -x "${DISCOVER_SCRIPT}" ]]; then
-		log_info "Running discovery script: ${DISCOVER_SCRIPT}"
-		debug_echo "🔍 Executing discovery script: ${DISCOVER_SCRIPT}"
-		if "${DISCOVER_SCRIPT}"; then
-			log_success "Discovery script completed."
+		if [[ "${DRY_RUN}" == true ]]; then
+			log_info "(dry-run) Would run discovery: ${DISCOVER_SCRIPT} -o ${SITES_FILE}"
 		else
-			log_warning "Discovery script exited with non-zero status."
+			log_info "Running discovery: ${DISCOVER_SCRIPT} -o ${SITES_FILE}"
+			"${DISCOVER_SCRIPT}" -o "${SITES_FILE}" || log_warning "Discovery script reported failures."
 		fi
 	else
-		log_warning "Discovery script not found or not executable: ${DISCOVER_SCRIPT}"
+		log_warning "Discovery script unavailable: ${DISCOVER_SCRIPT}"
 	fi
 
-	# Re-check after discovery
-	if [[ -f "${SITES_FILE}" ]]; then
-		log_success "Sites file created by discovery script: ${SITES_FILE}"
-		return 0
+	[[ -f "${SITES_FILE}" ]] && return 0
+
+	if [[ ! -t 0 ]]; then
+		die "No sites file and no TTY to ask for a site path. Create ${SITES_FILE} first."
 	fi
 
-	# Fallback: manual input
-	log_warning "No sites file found. Please provide the absolute path to a WordPress installation."
+	local user_path
 	read -r -p "Enter full path to WordPress root (e.g. /var/www/site.com): " user_path
-
-	if [[ -z "${user_path}" ]]; then
-		log_error "No path provided. Exiting."
-		exit 1
-	fi
-
 	user_path="$(trim "${user_path}")"
-	debug_echo "📝 User provided path: ${user_path}"
-
-	if [[ ! -d "${user_path}" ]]; then
-		log_error "Directory does not exist: ${user_path}"
-		exit 1
+	[[ -n "${user_path}" ]] || die "No path provided."
+	[[ -d "${user_path}" ]] || die "Directory does not exist: ${user_path}"
+	if [[ ! -f "${user_path}/wp-config.php" && ! -f "${user_path}/wp-settings.php" ]]; then
+		die "Not a valid WordPress installation: ${user_path}"
 	fi
-
-	if [[ ! -f "${user_path}/wp-config.php" ]] && [[ ! -f "${user_path}/wp-settings.php" ]]; then
-		log_error "Not a valid WordPress installation: ${user_path}"
-		exit 1
-	fi
-
-	# Save to wp-found.txt (overwrite)
-	printf '%s\n' "${user_path}" > "${SITES_FILE}"
-	log_success "Path saved to ${SITES_FILE}. Continuing..."
-	debug_echo "✅ Completed ensure_sites_file"
+	printf '%s\n' "${user_path}" >"${SITES_FILE}"
+	log_success "Path saved to ${SITES_FILE}"
 }
 
-#########################################
-###           MAIN LOGIC              ###
-#########################################
+# ------------------------------------------------------------------------------
+# Main
+# ------------------------------------------------------------------------------
+main() {
+	local start_time
+	start_time="$(date +%s)"
 
-debug_echo "🚀 SCRIPT STARTING: ${SCRIPT_NAME}"
+	load_config_file
+	parse_args "$@"
 
-# Initialize error log
-debug_echo "📝 Initializing error log: ${ERROR_LOG_FILE}"
-echo "=== WordPress CLI Error Log - Started at: $(date) ===" > "${ERROR_LOG_FILE}"
+	# Stabilise the runtime configuration.
+	SITES_FILE="${SITES_FILE:-${DEFAULT_SITES_FILE}}"
+	LOG_FILE="${LOG_FILE:-${DEFAULT_LOG_FILE}}"
+	ERROR_LOG_FILE="${ERROR_LOG_FILE:-${DEFAULT_ERROR_LOG_FILE}}"
+	WP_CLI_PATH="${WP_CLI_PATH:-${DEFAULT_WP_CLI_PATH}}"
+	ASTRA_KEY="${ASTRA_KEY:-${DEFAULT_ASTRA_KEY}}"
+	SKIP_PLUGINS="${SKIP_PLUGINS:-${DEFAULT_SKIP_PLUGINS}}"
+	MAX_LOG_SIZE="${MAX_LOG_SIZE:-${DEFAULT_MAX_LOG_SIZE}}"
 
-# Parse arguments
-debug_echo "🔧 Parsing command line arguments: $*"
+	log_debug "Starting ${SCRIPT_NAME} v${VERSION} (mode=${MODE})"
 
-DEBUG_MODE=false
-MODE=""
+	# Root check (test hook bypass for CI).
+	if [[ "${EUID}" -ne 0 && "${WPCLI_UPDATE_SKIP_ROOT_CHECK:-0}" != 1 ]]; then
+		die "This script must be run as root (required for user switching)."
+	fi
 
-while [[ $# -gt 0 ]]; do
-	case "$1" in
-		--DEBUG|-D)
-			DEBUG_MODE=true
-			debug_echo "🔍 DEBUG mode enabled"
-			shift
-			;;
-		--full|-f)
-			MODE="$MODE_FULL"
-			debug_echo "🎯 Mode set to: FULL"
-			shift
-			;;
-		--core|-c)
-			MODE="$MODE_CORE"
-			debug_echo "🎯 Mode set to: CORE"
-			shift
-			;;
-		--plugins|-p)
-			MODE="$MODE_PLUGINS"
-			debug_echo "🎯 Mode set to: PLUGINS"
-			shift
-			;;
-		--themes|-t)
-			MODE="$MODE_THEMES"
-			debug_echo "🎯 Mode set to: THEMES"
-			shift
-			;;
-		--db-optimize|-d)
-			MODE="$MODE_DB_OPTIMIZE"
-			debug_echo "🎯 Mode set to: DB_OPTIMIZE"
-			shift
-			;;
-		--db-fix|-x)
-			MODE="$MODE_DB_FIX"
-			debug_echo "🎯 Mode set to: DB_FIX"
-			shift
-			;;
-		--cron|-r)
-			MODE="$MODE_CRON"
-			debug_echo "🎯 Mode set to: CRON"
-			shift
-			;;
-		--astra|-s)
-			MODE="$MODE_ASTRA"
-			debug_echo "🎯 Mode set to: ASTRA"
-			shift
-			;;
-		*)
-			log_error "Invalid argument: $1"
-			usage
-			;;
-	esac
-done
+	# WP-CLI reachability.
+	local wp_path
+	wp_path="$(resolve_wp_cli)" || die "WP-CLI not found or not executable (use --wp-cli PATH)."
+	log_debug "Using WP-CLI: ${wp_path}"
 
-if [[ -z "${MODE}" ]]; then
-	log_error "No mode specified."
-	usage
+	acquire_lock
+
+	echo "=== WordPress CLI Error Log - Started at: $(date) ===" >>"${ERROR_LOG_FILE}"
+
+	ensure_sites_file
+
+	log_info "Starting WordPress maintenance in '${MODE}' mode"
+	log_info "Reading sites from ${SITES_FILE}"
+
+	local -A seen=()
+	local line wp_user site_ok
+
+	while IFS= read -r line || [[ -n "${line:-}" ]]; do
+		line="$(trim "${line}")"
+		[[ -z "${line}" || "${line}" == \#* ]] && continue
+
+		if [[ ${seen["${line}"]+_} ]]; then
+			log_debug "Skipping duplicate site: ${line}"
+			continue
+		fi
+		seen["${line}"]=1
+
+		if [[ ! -d "${line}" ]]; then
+			log_warning "Skipping (not a directory): ${line}"
+			continue
+		fi
+
+		TOTAL_SITES=$((TOTAL_SITES + 1))
+		log_info "Processing site: ${line}"
+
+		site_ok=1
+		wp_user="$(get_wp_user "${line}")" || {
+			log_error "Skipping site, user resolution failed: ${line}"
+			FAILED_SITES=$((FAILED_SITES + 1))
+			continue
+		}
+
+		execute_mode "${MODE}" "${line}" "${wp_user}" || site_ok=0
+		[[ "${site_ok}" -eq 0 ]] && FAILED_SITES=$((FAILED_SITES + 1))
+	done <"${SITES_FILE}"
+
+	local end_time elapsed
+	end_time="$(date +%s)"
+	elapsed=$((end_time - start_time))
+
+	log_info "Completed ${MODE} in ${elapsed}s"
+
+	if [[ "${QUIET}" == false ]]; then
+		printf '\n%s\n' "${GREEN}=== SUMMARY ===${NC}"
+		printf 'Sites processed: %s\n' "${TOTAL_SITES}"
+		printf 'Successful ops:  %s\n' "${SUCCESS_OPS}"
+		printf 'Failed ops:      %s\n' "${ERROR_OPS}"
+		printf 'Failed sites:    %s\n' "${FAILED_SITES}"
+		printf 'Log file:        %s\n' "${LOG_FILE}"
+		printf 'Error log:       %s\n' "${ERROR_LOG_FILE}"
+	fi
+
+	if [[ "${ERROR_OPS}" -gt 0 || "${FAILED_SITES}" -gt 0 ]]; then
+		exit 1
+	fi
+	exit 0
+}
+
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+	main "$@"
 fi
-
-readonly DEBUG_MODE
-readonly MODE
-
-debug_echo "🎯 Final mode: ${MODE}"
-debug_echo "🔍 Final DEBUG_MODE: ${DEBUG_MODE}"
-
-# Validate WP-CLI
-debug_echo "🔧 Validating WP-CLI installation at: ${WP_CLI_PATH}"
-if ! command -v "${WP_CLI_PATH}" >/dev/null 2>&1; then
-	log_error "WP-CLI not found at ${WP_CLI_PATH}. Please install it."
-	exit 1
-fi
-debug_echo "✅ WP-CLI validation passed"
-
-# Root check
-debug_echo "🔧 Checking if running as root"
-if [[ $EUID -ne 0 ]]; then
-	log_error "This script must be run as root (to switch users via sudo)."
-	exit 1
-fi
-debug_echo "✅ Root check passed"
-
-# Ensure wp-found.txt exists
-debug_echo "🔧 Ensuring sites file exists"
-ensure_sites_file
-
-log_info "Starting WordPress maintenance in '${MODE}' mode"
-log_info "Reading sites from ${SITES_FILE}"
-
-debug_echo "🔄 Starting main processing loop"
-while IFS= read -r site_path || [[ -n "${site_path}" ]]; do
-	site_path="$(trim "${site_path}")"
-	[[ -z "${site_path}" || "${site_path}" =~ ^# ]] && {
-		debug_echo "⏩ Skipping empty or commented line"
-		continue
-	}
-	
-	debug_echo "📍 Processing site path: '${site_path}'"
-	
-	[[ -d "${site_path}" ]] || { 
-		log_warning "Skipping (not a dir): ${site_path}"
-		debug_echo "⏩ Path is not a directory, skipping"
-		continue
-	}
-
-	log_info "Processing site: ${site_path}"
-	((STATS[total_sites]++))
-	debug_echo "📊 Total sites counter: ${STATS[total_sites]}"
-
-	debug_echo "🔍 Getting WordPress user for: ${site_path}"
-	wp_user="$(get_wp_user "${site_path}")" || {
-		log_error "Skipping site due to user resolution failure: ${site_path}"
-		debug_echo "⏩ User resolution failed, skipping site"
-		continue
-	}
-	debug_echo "✅ Resolved WordPress user: '${wp_user}'"
-
-	debug_echo "🔧 Executing mode '${MODE}' for site: ${site_path}"
-	execute_mode "${MODE}" "${site_path}" "${wp_user}"
-	debug_echo "✅ Completed processing for site: ${site_path}"
-	
-done < "${SITES_FILE}"
-
-debug_echo "✅ Main processing loop completed"
-
-log_success "Maintenance completed."
-echo -e "\n${GREEN}=== SUMMARY ===${RESET}"
-echo "Sites processed: ${STATS[total_sites]}"
-echo "Successful ops:  ${STATS[success_ops]}"
-echo "Errors:          ${STATS[error_ops]}"
-echo "Log file:        ${LOG_FILE}"
-echo "Error log:       ${ERROR_LOG_FILE}"
-
-debug_echo "🎉 Script completed successfully"
