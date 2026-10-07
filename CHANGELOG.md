@@ -97,6 +97,28 @@ are the diagnostics kept in `tests/`.
     that `inherit_errexit` needs bash 4.4. The requirement is now stated as bash
     4.2 and checked explicitly.
 
+### Added: a secret guard
+
+`tools/scan-secrets.sh` answers one question: is a credential literal present in
+this repository? It exists because answering it by hand produced a false alarm —
+a search pattern with an escaped quantifier matched a placeholder word, and a
+`YOUR_ACTUAL_LICENSE_KEY_HERE` stand-in was reported to the owner as a live key.
+Forty minutes of the review went into a hunt for a secret that was never there.
+
+- The guard is a **warning tool**, not a gate: `--strict` is what makes it exit 1.
+- Findings are printed **masked** (length and a fingerprint), never as values.
+- Classification runs in a fixed order: comment, setting name, shell expansion,
+  placeholder, path, and only then a real-candidate. Only the last is a finding.
+- Known-benign lines are listed in `tools/secret-allowlist.txt` with a reason and
+  are reported as `allowed`, so a reader can tell a judged line from an unread one.
+- `--history` walks every reachable commit, which is the only way to see a value
+  that was committed and later removed.
+- `tests/test_secretguard.sh` plants a credential-shaped literal in a sandbox
+  repository and requires the guard to catch it. A guard that has never caught
+  anything is not evidence; that test found four real defects in the guard while
+  it was being written (case sensitivity, missing line numbers, the discarded
+  path, and its own pattern definitions being read as findings).
+
 ### Added to `Bash_WP-CLI_Update.sh`
 
 - Modes: `--check` (validate environment, sites, WP-CLI, core version, plugin

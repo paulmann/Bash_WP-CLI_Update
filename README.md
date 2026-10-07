@@ -213,6 +213,33 @@ No root, no WordPress and no WP-CLI are needed. The suites build a synthetic tre
 
 `shellcheck` is not required. If you have it, `shellcheck -x *.sh tests/*.sh` is a useful extra check; the scripts carry `# shellcheck` directives where the intent is deliberate.
 
+### 6.1 Secret guard
+
+```bash
+bash tools/scan-secrets.sh              # the tree, as it stands
+bash tools/scan-secrets.sh --history    # plus every reachable commit
+bash tools/scan-secrets.sh --strict     # exit 1 when a value looks real
+```
+
+A guard against the failure that produced a false alarm during this rewrite: a hand-written search matched a placeholder and reported it as a live licence key.
+
+It prints classification, not opinion:
+
+| class | meaning |
+|---|---|
+| `commented` | the line is a comment |
+| `setting` | a setting such as a plugin slug or a command name |
+| `expansion` | the value is a shell expansion, not a literal |
+| `placeholder` | a documented stand-in |
+| `path` | a path or a command containing spaces |
+| `real-candidate` | long, alphanumeric, not a known stand-in — **the only finding** |
+
+Values are never printed: a finding shows the file, the line, the value length and a fingerprint. Lines already judged by a human are listed in `tools/secret-allowlist.txt` with a reason, and are reported as `allowed`.
+
+**What it does not prove.** Absence of findings is evidence, not proof. The guard recognises the documented name-plus-value shapes, case-insensitively. A credential assembled from fragments, split across lines, or stored outside the repository would not be matched. Treat it as a fast, repeatable first check, not as a guarantee.
+
+`tests/test_secretguard.sh` verifies the guard by planting a credential-shaped literal in a sandbox repository, so a silent guard cannot pass unnoticed. `tests/run_tests.sh` runs the guard in `--strict` mode before the behavioural suites.
+
 ## 7. How it works
 
 ### 7.1 User detection
@@ -266,6 +293,9 @@ These are the rules the code follows; a change that breaks one of them is a regr
 8. **Stdout carries the result, stderr carries the narration.** Otherwise the output cannot be piped.
 9. **An explicit target that is wrong is an error.** Only entries read from a list are skipped with a warning.
 10. **Every claim about behaviour is covered by a test** that fails when the behaviour regresses.
+11. **A secret guard runs before the behavioural suites.** A hand-written search
+    once reported a placeholder as a live key; the guard turns that judgement
+    into a repeatable check with its own tests, so it cannot silently pass.
 
 ## 10. License and author
 
