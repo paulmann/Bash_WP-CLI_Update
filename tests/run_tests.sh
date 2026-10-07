@@ -49,6 +49,17 @@ check_syntax
 check_line_endings
 printf '\n'
 
+# The secret guard runs on the real tree and must find nothing. It is the same
+# check that caught a false alarm being reported as a live key, so it runs before
+# the behavioural suites: a mismatch here invalidates everything after it.
+printf '### secret guard (tools/scan-secrets.sh)\n'
+if bash "$repo/tools/scan-secrets.sh" --strict --quiet; then
+    printf '  guard ok    no credential-shaped value in the tree\n\n'
+else
+    printf '  GUARD FAILED  see the findings above\n\n'
+    rc=1
+fi
+
 for t in "$here"/test_*.sh; do
     [ -f "$t" ] || continue
     printf '### %s\n' "$(basename "$t")"
