@@ -1,0 +1,4 @@
+# Ignore folders whose names start with a dot (tooling / editor metadata):
+# .dev_agent/, .idea/, .vscode/, .cache/ ...
+# Dot FILES (e.g. this very .gitignore) are NOT affected.
+.*/
