@@ -1,0 +1,17 @@
+# Runtime artefacts (only the copies kept in the repository root)
+/wp_cli_manager.log
+/wp_cli_manager.log.[0-9]*
+/wp_cli_errors.log
+/wp_cli_errors.log.[0-9]*
+/wp-cli-update.lock
+/wp-cli-update.lock.d/
+
+# Site inventory produced by Find_WP_Senior.sh
+/wp-found.txt
+
+# Local configuration (may contain the Astra license key)
+/wp-cli-update.conf
+
+# DevAgent workspace
+/.dev_agent/
+/.ragraf/

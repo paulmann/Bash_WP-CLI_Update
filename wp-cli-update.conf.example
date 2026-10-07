@@ -1,0 +1,65 @@
+# Bash_WP-CLI_Update.sh configuration example
+#
+# Copy to wp-cli-update.conf (next to the script) or pass another location with
+# --config FILE. The script sources this file, so keep it writable by root only
+# and never commit a copy that contains ASTRA_KEY:
+#
+#   cp wp-cli-update.conf.example wp-cli-update.conf
+#   chmod 600 wp-cli-update.conf
+#
+# Precedence: built-in defaults  <  this file  <  environment  <  CLI options.
+
+##############################
+# WP-CLI and site inventory
+##############################
+
+# WP-CLI binary. Empty means: look it up in PATH, then try /usr/local/bin/wp.
+# WP_CLI_PATH="/usr/local/bin/wp"
+
+# Site list produced by Find_WP_Senior.sh (one absolute path per line).
+# SITES_FILE="/opt/wp-cli-update/wp-found.txt"
+
+# Run Find_WP_Senior.sh automatically when the site list is missing.
+# Set to 0 on production servers to keep runs predictable (and cheap).
+# AUTO_DISCOVER=1
+
+# Plugins skipped during every WP-CLI call (comma separated).
+# SKIP_PLUGINS="saphali-woocommerce-lite,jet-compare-wishlist,jet-data-importer"
+
+##############################
+# Astra
+##############################
+
+# Plugin slug of Astra Pro.
+# ASTRA_PLUGIN="astra-addon"
+
+# License key used by "mode astra" and by the Astra step of "mode full".
+# It is redacted from every log line and console message.
+# ASTRA_KEY="YOUR_LICENSE_KEY"
+
+##############################
+# Logging
+##############################
+
+# Directory for wp_cli_manager.log, wp_cli_errors.log and the run lock.
+# Default: the script directory. Use a logrotate-managed location instead.
+# LOG_DIR="/var/log/wp-cli-update"
+
+# Rotate a log file once it exceeds this size; keep LOG_KEEP numbered copies.
+# LOG_MAX_BYTES=5242880
+# LOG_KEEP=5
+
+# How many lines of a failing command are echoed to the console (the full
+# output always goes to wp_cli_errors.log).
+# ERROR_OUTPUT_LINES=20
+
+##############################
+# Behaviour
+##############################
+
+# auto | always | never
+# COLOR="auto"
+
+# 1: refuse to start while another run holds the lock (default).
+# 0: no locking at all (the --no-lock option does the same).
+# LOCK_ENABLED=1

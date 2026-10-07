@@ -1,311 +1,253 @@
 # WordPress Maintenance Automation
 
-A secure, fast, and modular WP-CLI management system for maintaining multiple WordPress sites efficiently. This toolkit provides automated updates, database optimization, and maintenance operations across all your WordPress installations.
+A secure, fast and modular WP-CLI maintenance toolkit for fleets of WordPress
+installations: automatic discovery of the sites, then core/plugin/theme/database
+updates executed as the owning system user.
 
-![Bash](https://img.shields.io/badge/Bash-4.0%2B-blue.svg)
+![Bash](https://img.shields.io/badge/Bash-4.2%2B-blue.svg)
 ![WP-CLI](https://img.shields.io/badge/WP--CLI-2.0%2B-green.svg)
 ![WordPress](https://img.shields.io/badge/WordPress-3.7%2B-0073aa?logo=wordpress&logoColor=white)
 ![License](https://img.shields.io/badge/License-MIT-yellow.svg)
 ![Platform](https://img.shields.io/badge/Platform-Linux-lightgrey.svg)
 
-## 📋 Table of Contents
+| Script | Version | Role |
+|---|---|---|
+| `Find_WP_Senior.sh` | 2.0.0 | Discover WordPress installations and write the site list |
+| `Bash_WP-CLI_Update.sh` | 6.0.0 | Run maintenance modes over the sites from that list |
+
+## Table of contents
 
 1. [Features](#1-features)
 2. [Prerequisites](#2-prerequisites)
 3. [Installation](#3-installation)
 4. [Configuration](#4-configuration)
 5. [Usage](#5-usage)
-   - 5.1 [Basic Syntax](#51-basic-syntax)
-   - 5.2 [Operation Modes](#52-operation-modes)
-   - 5.3 [Options](#53-options)
-   - 5.4 [Examples](#54-examples)
-6. [How It Works](#6-how-it-works)
-   - 6.1 [User Detection](#61-user-detection)
-   - 6.2 [Safe Execution](#62-safe-execution)
-   - 6.3 [Logging System](#63-logging-system)
-7. [Troubleshooting](#7-troubleshooting)
-   - 7.1 [Common Issues](#71-common-issues)
-   - 7.2 [Debug Mode](#72-debug-mode)
-8. [Contributing](#8-contributing)
-9. [License](#9-license)
-10. [Acknowledgments](#10-acknowledgments)
-11. [Author & Support](#11-author--support)
+6. [Output contract and exit codes](#6-output-contract-and-exit-codes)
+7. [Automation (cron)](#7-automation-cron)
+8. [Troubleshooting](#8-troubleshooting)
+9. [Upgrading from 5.x](#9-upgrading-from-5x)
+10. [License and author](#10-license-and-author)
 
 ## 1. Features
 
-- **Multi-site Management**: Automate maintenance across multiple WordPress installations
-- **Flexible Operation Modes**: Choose specific maintenance tasks or run comprehensive updates
-- **Smart User Detection**: Automatically determines correct system users for WP-CLI operations
-- **Comprehensive Logging**: Detailed execution logs with color-coded output
-- **Automatic Discovery**: Find WordPress installations automatically with the included discovery script
-- **Safe Operations**: Built-in safety checks and error handling
-- **Database Optimization**: Automatic database repair and optimization
-- **Cron Management**: Run WordPress cron events efficiently
-- **Astra Pro Support**: Specialized handling for Astra Pro plugin with license management
-- **Detailed Error Logging**: Comprehensive error tracking in `wp_cli_errors.log`
+- **Multi-site maintenance** in one run, sequentially, per site.
+- **Discovery first**: `Find_WP_Senior.sh` locates `wp-config.php` files, validates
+  the installations, honours a `.no_wp_cli` opt-out marker and writes
+  `wp-found.txt` next to the scripts.
+- **Correct user switching**: the owner of `wp-config.php`/installation is
+  detected (with path and `DB_USER` fallbacks) and the WP-CLI process runs as
+  that user via `runuser`/`su` - arguments are passed positionally, never
+  through an assembled shell string.
+- **Fault tolerant**: a failing WP-CLI call is logged and counted, the remaining
+  sites and operations still run; the exit code tells the difference between
+  "all good", "some operations failed" and "nothing was processed".
+- **Predictable output**: data on stdout, logs and progress on stderr, so
+  `--json` output pipes cleanly into other tools.
+- **Operational safety**: run lock (no parallel runs), log rotation, redaction
+  of the Astra license key in every log/console message, mandatory confirmation
+  (or `--force`) before a plugin deletion, `--dry-run` preview.
+- **Single configuration file** (`wp-cli-update.conf`) with a documented
+  example; CLI options override the file.
+- **No jq required** for the plugin table and plugin management: WP-CLI CSV
+  output is parsed by an embedded RFC4180-aware awk function.
 
 ## 2. Prerequisites
 
-- **Operating System**: Linux (tested on CentOS, Ubuntu, Debian)
-- **Shell**: Bash 4.0 or higher
-- **Permissions**: Root access (for user switching)
-- **Dependencies**: 
-  - WP-CLI installed at `/usr/local/bin/wp`
-  - WordPress 3.7 or higher
-  - Standard GNU core utilities
+- Linux (tested on CentOS, RHEL, Ubuntu, Debian).
+- **Bash 4.2 or newer** for both scripts (a version check fails fast otherwise).
+- Root for real runs: user switching and `wp --allow-root` require it.
+  `--dry-run` works without root and does not touch anything.
+- [WP-CLI](https://wp-cli.org/#installing), found in `PATH` or at
+  `/usr/local/bin/wp` (override with `--wp-cli` or `WP_CLI_PATH`).
+- GNU coreutils (`stat`, `find`, `sort`, `mktemp`); `getent` and either
+  `runuser` or `su` for user switching.
 
 ## 3. Installation
 
-### 3.1 Download the Scripts
-
-Clone the repository or download the scripts directly:
-
 ```bash
+cd /opt
 git clone https://github.com/paulmann/Bash_WP-CLI_Update.git
 cd Bash_WP-CLI_Update
+chmod +x Bash_WP-CLI_Update.sh Find_WP_Senior.sh
+
+cp wp-cli-update.conf.example wp-cli-update.conf
+chmod 600 wp-cli-update.conf      # may hold the Astra license key
 ```
-
-### 3.2 Set Execution Permissions
-
-**Important**: Make both scripts executable:
-
-```bash
-chmod +x Bash_WP-CLI_Update.sh
-chmod +x Find_WP_Senior.sh
-```
-
-### 3.3 Verify Script Interpreters
-
-Check that the shebang lines at the top of each script point to correct shell paths:
-
-- **Bash_WP-CLI_Update.sh**: Should have `#!/usr/bin/env bash`
-- **Find_WP_Senior.sh**: Should have `#!/bin/bash`
-
-Update if necessary for your system configuration.
-
-### 3.4 Verify WP-CLI Installation
-
-Ensure WP-CLI is installed at the expected location:
-
-```bash
-which wp
-# Should return: /usr/local/bin/wp
-```
-
-If not installed, follow [WP-CLI installation instructions](https://wp-cli.org/#installing).
 
 ## 4. Configuration
 
-### 4.1 Automatic Site Discovery
-
-Run the discovery script to automatically find WordPress installations:
+### 4.1 Site list
 
 ```bash
-./Find_WP_Senior.sh
+./Find_WP_Senior.sh                        # writes ./wp-found.txt
+./Find_WP_Senior.sh /var/www /srv          # explicit search roots
+./Find_WP_Senior.sh --exclude '/var/www/archive' --max-depth 4
+./Find_WP_Senior.sh --json                 # machine readable preview
 ```
 
-This will create a `wp-found.txt` file with paths to all discovered WordPress installations.
+Exclusion patterns are anchored on the directory name (`test*` no longer
+matches `/home/testuser/site`); absolute patterns prune whole subtrees. A
+`.no_wp_cli` file inside a WordPress root removes that site from the list.
+`--no-default-excludes` starts from an empty exclusion list.
 
-### 4.2 Manual Site Configuration
+The updater reads `wp-found.txt` from the script directory (override with
+`--sites-file`). If the file is missing, `Find_WP_Senior.sh` runs once unless
+`AUTO_DISCOVER=0` is set - recommended for production servers to keep every run
+predictable.
 
-If you prefer manual configuration, create or edit `wp-found.txt`:
+### 4.2 Configuration file
 
-```bash
-nano wp-found.txt
-```
+`wp-cli-update.conf` (see `wp-cli-update.conf.example`) accepts:
 
-Add one WordPress root directory per line:
-```
-/var/www/site1.com
-/var/www/site2.com
-/var/www/site3.com
-```
+| Key | Meaning | Default |
+|---|---|---|
+| `WP_CLI_PATH` | WP-CLI binary | PATH lookup, then `/usr/local/bin/wp` |
+| `SITES_FILE` | Site list | `<script dir>/wp-found.txt` |
+| `AUTO_DISCOVER` | Run the finder when the list is missing | `1` |
+| `SKIP_PLUGINS` | Comma-separated plugins skipped in every call | 3 legacy plugins |
+| `ASTRA_PLUGIN` | Astra Pro slug | `astra-addon` |
+| `ASTRA_KEY` | Astra Pro license key (never logged) | empty |
+| `LOG_DIR` | Log and lock directory | script directory |
+| `LOG_MAX_BYTES`, `LOG_KEEP` | Rotation threshold and number of copies | 5 MiB, 5 |
+| `ERROR_OUTPUT_LINES` | Failing output echoed to the console | 20 |
+| `COLOR` | `auto`/`always`/`never` | `auto` |
+| `LOCK_ENABLED` | Refuse parallel runs | `1` |
 
-### 4.3 Astra Pro License Configuration
-
-For Astra Pro plugin support, configure your license key in the main script:
-
-```bash
-# Edit the script and set your Astra Pro license key
-nano Bash_WP-CLI_Update.sh
-
-# Locate and update the ASTRA_KEY constant:
-readonly ASTRA_KEY="YOUR_ACTUAL_LICENSE_KEY_HERE"
-```
+Precedence: built-in defaults < config file < environment variables <
+command-line options.
 
 ## 5. Usage
 
-### 5.1 Basic Syntax
+### 5.1 Basic syntax
 
 ```bash
-./Bash_WP-CLI_Update.sh [MODE] [OPTIONS]
+./Bash_WP-CLI_Update.sh MODE [OPTIONS]
 ```
 
-### 5.2 Operation Modes
+### 5.2 Modes
 
-| Mode | Short | Description |
-|------|-------|-------------|
-| `--full` | `-f` | Complete maintenance (core, plugins, themes, DB optimize/repair, cron) |
-| `--core` | `-c` | Update WordPress core only |
-| `--plugins` | `-p` | Update all plugins |
-| `--themes` | `-t` | Update all themes |
-| `--db-optimize` | `-d` | Optimize and repair database |
-| `--db-fix` | `-x` | Repair database only |
-| `--cron` | `-r` | Run due cron events |
-| `--astra` | `-s` | Update Astra Pro plugin with license activation |
+| Mode | Short | Operations |
+|---|---|---|
+| `--full` | `-f` | core update, plugin update --all, Astra, theme update --all, core update-db, db optimize, db repair, due cron events |
+| `--core` | `-c` | core update, core update-db |
+| `--plugins` | `-p` | plugin update --all |
+| `--themes` | `-t` | theme update --all |
+| `--db-optimize` | `-d` | db optimize, db repair |
+| `--db-fix` | `-x` | db repair |
+| `--cron` | `-r` | cron event run --due-now |
+| `--astra` | `-s` | update astra-addon, activating the license when required |
+| `--list-plugins` | `-l` | plugin table, or JSON with `--json` |
+| `--plugin-manage` | `-m` | activate/deactivate/delete one plugin (`--action`, `--name`) |
+
+Combining two modes is rejected; unknown options exit with code 1.
 
 ### 5.3 Options
 
-| Option | Short | Description |
-|--------|-------|-------------|
-| `--DEBUG` | `-D` | Enable detailed debug logging |
+| Option | Short | Meaning |
+|---|---|---|
+| `--debug` | `-D` | Verbose diagnostics on stderr |
+| `--site PATH` | `-S` | Process one installation |
+| `--user USER` | `-U` | Force the system user (skips detection) |
+| `--wp-cli PATH` | | WP-CLI binary |
+| `--sites-file FILE` | | Alternative site list |
+| `--config FILE` | | Alternative config file |
+| `--action ACTION` | `-A` | `activate`/`deactivate`/`delete` (with `-m`) |
+| `--name NAME` | `-N` | Plugin name/slug (filter for `-l`, target for `-m`) |
+| `--force` | `-F` | Skip the interactive delete confirmation |
+| `--json` | `-J` | JSON output for `-l` and for the final summary |
+| `--dry-run` | `-n` | Print the planned WP-CLI commands, change nothing |
+| `--quiet` | `-q` | Suppress informational console output |
+| `--no-color` | | Disable colors |
+| `--no-lock` | | Do not take the run lock |
+| `--version` | `-V` | Print the version and exit |
+| `--help` | `-h` | Print help and exit (exit code 0) |
 
 ### 5.4 Examples
 
-Update all plugins across all sites:
 ```bash
-./Bash_WP-CLI_Update.sh --plugins
-# or using short option
+# Preview a full maintenance run without touching anything
+./Bash_WP-CLI_Update.sh --full --dry-run --debug
+
+# Update plugins on every site from wp-found.txt
 ./Bash_WP-CLI_Update.sh -p
+
+# One site, forced user, JSON summary for a monitoring system
+./Bash_WP-CLI_Update.sh -c -S /var/www/example.com -U example -J
+
+# Inventory and targeted management
+./Bash_WP-CLI_Update.sh -l -N woocommerce
+./Bash_WP-CLI_Update.sh -l --json -N woocommerce
+./Bash_WP-CLI_Update.sh -m -A deactivate -N jetpack -S /var/www/example.com
+./Bash_WP-CLI_Update.sh -m -A delete -N old-plugin -S /var/www/example.com --force
 ```
 
-Run complete maintenance with debug output:
-```bash
-./Bash_WP-CLI_Update.sh --full --DEBUG
-# or using short options
-./Bash_WP-CLI_Update.sh -f -D
+## 6. Output contract and exit codes
+
+- **stdout** - data only: plugin table, `--json` documents, final summary.
+- **stderr** - logs (`INFO`/`OK`/`WARN`/`ERR`), progress, failing command output.
+- **`wp_cli_manager.log`** - full run log, rotated at `LOG_MAX_BYTES`.
+- **`wp_cli_errors.log`** - every failure with command, exit code and output;
+  secret values are replaced with `<redacted>`.
+
+Exit codes: `0` everything succeeded, `1` usage/config/environment error,
+`2` run finished with at least one failed operation, `3` nothing processed.
+
+The finder uses: `0` success (list may be empty), `1` usage/environment error,
+`2` output file not writable, `4` nothing found with `--fail-empty`.
+
+## 7. Automation (cron)
+
+```cron
+# Nightly full maintenance at 03:30, no interactive prompts
+30 3 * * * root AUTO_DISCOVER=0 /opt/Bash_WP-CLI_Update/Bash_WP-CLI_Update.sh --full >> /var/log/wp-cli-update/cron.log 2>&1
 ```
 
-Optimize databases only:
-```bash
-./Bash_WP-CLI_Update.sh --db-optimize
-```
+Points that matter for unattended runs:
 
-Run WordPress cron events:
-```bash
-./Bash_WP-CLI_Update.sh --cron
-```
+- `AUTO_DISCOVER=0` so a missing site list fails fast instead of scanning disks.
+- Deletion without a terminal is refused unless `--force` is given.
+- The run lock prevents overlapping cron jobs; `--no-lock` opts out.
+- Use `LOG_DIR` with real logrotate rules if you prefer logrotate over the
+  built-in size-based rotation.
 
-Update Astra Pro plugin with license management:
-```bash
-./Bash_WP-CLI_Update.sh --astra
-```
+## 8. Troubleshooting
 
-## 6. How It Works
+**Script stops with "requires Bash 4.2 or newer"** - upgrade the shell or run
+`bash /path/script` with a newer interpreter.
 
-### 6.1 User Detection
-The script automatically determines the correct system user for each WordPress installation by checking:
+**`cannot determine the system user`** - pass `--user USER`; detection looks at
+the owner of `wp-config.php`, the installation directory, common
+`/home/<user>/...` layouts and `DB_USER`.
 
-1. File owner of `wp-config.php`
-2. Directory owner of WordPress root
-3. Path structure patterns
-4. DB_USER from wp-config.php (fallback)
+**WP-CLI not found** - install it or pass `--wp-cli /path/to/wp`.
 
-### 6.2 Safe Execution
-- Runs WP-CLI commands as the correct system user
-- Includes proper environment variables
-- Skips problematic plugins during updates
-- Provides comprehensive error handling
+**Refused to delete without a terminal** - run interactively or add `--force`
+(the slug still has to match a single plugin).
 
-### 6.3 Logging System
+**Astra update fails** - set `ASTRA_KEY` in the config file; the key is redacted
+from all logs. Without a key the update may be refused by the licence check.
 
-#### Main Log (`wp_cli_manager.log`)
-Structured logging with timestamps and color-coded console output:
-- `INFO` - General operation information
-- `SUCCESS` - Completed operations  
-- `WARNING` - Non-critical issues
-- `ERROR` - Operation failures
-- `DEBUG` - Detailed debugging information
+**Full detail of a failure** - `tail -50 wp_cli_errors.log`, or rerun with
+`--debug` to see the exact command and environment.
 
-#### Error Log (`wp_cli_errors.log`)
-Detailed error logging for troubleshooting:
-- Complete command context
-- Full command output
-- Exit codes and error details
-- Timestamped error events
+## 9. Upgrading from 5.x
 
-## 7. Troubleshooting
+- The Astra license key moved out of the script: set `ASTRA_KEY` in
+  `wp-cli-update.conf` (chmod 600). The old hard-coded key should be treated as
+  leaked and rotated.
+- `--help` now exits with 0; failures are no longer fatal mid-run.
+- New options (`--dry-run`, `--user`, `--wp-cli`, `--sites-file`, `--config`,
+  `--version`, `--quiet`, `--no-color`, `--no-lock`, `-J` summary) and the
+  config file are additive: existing command lines keep working.
+- Log files stay in the script directory by default and are rotated; configure
+  `LOG_DIR` to move them.
 
-### 7.1 Common Issues
+## 10. License and author
 
-**Script stops after "Processing site"**:
-- Check that WP-CLI is installed at `/usr/local/bin/wp`
-- Verify the WordPress user exists and has proper permissions
-- Run with `--DEBUG` flag for detailed output
+MIT - see [LICENSE](LICENSE).
 
-**Permission denied errors**:
-- Ensure scripts are executable: `chmod +x *.sh`
-- Run as root user for proper user switching
+**Mikhail Deynekin** - [deynekin.com](https://deynekin.com) ·
+[mid1977@gmail.com](mailto:mid1977@gmail.com) · [@paulmann](https://github.com/paulmann)
 
-**WP-CLI not found**:
-- Install WP-CLI globally or update the path in the script
-- Verify installation with `wp --info`
-
-**Astra Pro license errors**:
-- Ensure `ASTRA_KEY` is set to your actual license key in the script
-- Verify Astra Pro plugin is installed and active
-- Check error log for detailed license activation issues
-
-### 7.2 Debug Mode
-
-For detailed troubleshooting, use debug mode:
-
-```bash
-./Bash_WP-CLI_Update.sh --cron --DEBUG
-```
-
-This provides:
-- Step-by-step execution details
-- Command output and exit codes
-- User detection process information
-- Environment variable settings
-
-### 7.3 Error Investigation
-
-Check the detailed error log for in-depth analysis:
-
-```bash
-tail -f wp_cli_errors.log
-```
-
-## 8. Contributing
-
-We welcome contributions! Please feel free to submit pull requests, report bugs, or suggest new features.
-
-### Development Guidelines
-
-1. Follow existing code style and structure
-2. Add appropriate error handling
-3. Include debug information for new features
-4. Update documentation for changes
-5. Test changes thoroughly before submitting
-
-## 9. License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-## 10. Acknowledgments
-
-- **WP-CLI Team** for the excellent command-line interface
-- **WordPress Community** for continuous improvement and updates
-- **Astra Team** for the wonderful theme and plugin ecosystem
-- **Contributors** who help maintain and improve this tool
-
-## 11. Author & Support
-
-**Mikhail Deynekin**
-
-- 🌐 **Website**: [deynekin.com](https://deynekin.com)
-- 📧 **Email**: [mid1977@gmail.com](mailto:mid1977@gmail.com)
-- 🐙 **GitHub**: [@paulmann](https://github.com/paulmann)
-
-### Getting Help
-
-- 📖 **Documentation**: Read this README thoroughly
-- 🐛 **Bug Reports**: [Open an issue](https://github.com/paulmann/Bash_WP-CLI_Update/issues/new)
-- 💡 **Feature Requests**: [Request features](https://github.com/paulmann/Bash_WP-CLI_Update/issues/new)
-- 💬 **Questions**: [Check Discussions](https://github.com/paulmann/Bash_WP-CLI_Update/discussions)
-
----
-
-**Note**: Always test maintenance scripts in a staging environment before deploying to production.
+> Always test maintenance scripts in a staging environment before using them on
+> production sites.

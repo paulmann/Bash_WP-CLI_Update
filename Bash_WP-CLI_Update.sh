@@ -1,1569 +1,1424 @@
 #!/usr/bin/env bash
 ###############################################################################
 # WordPress Maintenance Automation
-# Description: Secure, fast, and modular WP-CLI manager for multiple sites.
-# Author: Mikhail Deynekin <mid1977@gmail.com>
+# File:      Bash_WP-CLI_Update.sh
+# Version:   6.0.0
+# License:   MIT (see LICENSE)
 # Repository: https://github.com/paulmann/Bash_WP-CLI_Update
-# License: MIT
-# Version: 5.0
+#
+# Purpose:
+#   Run WP-CLI maintenance operations (core/plugins/themes/database/cron) over
+#   many WordPress installations as their owning system users, with structured
+#   logging, a lock against parallel runs and one final summary.
+#
+# Usage:
+#   ./Bash_WP-CLI_Update.sh MODE [OPTIONS]
+#
+# Modes:
+#   -f, --full          core + plugins + Astra + themes + core update-db +
+#                       db optimize + db repair + due cron events
+#   -c, --core          core update, core update-db
+#   -p, --plugins       plugin update --all
+#   -t, --themes        theme update --all
+#   -d, --db-optimize   db optimize, db repair
+#   -x, --db-fix        db repair
+#   -r, --cron          cron event run --due-now
+#   -s, --astra         update astra-addon, activating the license when needed
+#   -l, --list-plugins  list plugins (table, or JSON with --json)
+#   -m, --plugin-manage manage one plugin: --action activate|deactivate|delete
+#
+# Options:
+#   -D, --debug            verbose diagnostics on stderr
+#   -S, --site PATH        process only this installation
+#   -U, --user USER        force the system user (default: auto-detected)
+#       --wp-cli PATH      WP-CLI binary (default: PATH lookup, then
+#                          /usr/local/bin/wp)
+#       --sites-file FILE  site list (default: <script dir>/wp-found.txt)
+#       --config FILE      config file (default: <script dir>/wp-cli-update.conf)
+#   -A, --action ACTION    plugin action for --plugin-manage
+#   -N, --name NAME        plugin name/slug (filter or target)
+#   -F, --force            skip the interactive confirmation for delete
+#   -J, --json             JSON output for --list-plugins and the summary
+#   -n, --dry-run          print the WP-CLI commands, change nothing
+#   -q, --quiet            suppress informational console output
+#       --no-color         disable colored console output
+#       --no-lock          do not take the run lock
+#   -V, --version          print the version and exit
+#   -h, --help             print this help and exit
+#
+# Exit status:
+#   0  every planned operation succeeded
+#   1  usage, configuration or environment error (nothing was executed)
+#   2  the run finished but at least one operation failed
+#   3  no site could be processed
+#
+# Output contract:
+#   stdout  data only: plugin tables, --json documents, the final summary
+#   stderr  logs, progress, warnings, errors
+#
+# Configuration file (default <script dir>/wp-cli-update.conf):
+#   Shell variable assignments sourced before the defaults are finalised.
+#   Recognised keys: WP_CLI_PATH, SITES_FILE, SKIP_PLUGINS, ASTRA_PLUGIN,
+#   ASTRA_KEY, LOG_DIR, LOG_MAX_BYTES, LOG_KEEP, ERROR_OUTPUT_LINES, COLOR,
+#   LOCK_ENABLED, AUTO_DISCOVER. Environment variables of the same names
+#   override the file,
+#   command-line options override both.
+#   The file may hold the Astra license key: keep it root-readable only
+#   (chmod 600) and out of version control.
+#
+# Requirements: Bash 4.2+, GNU coreutils, root, WP-CLI, su or runuser.
 ###############################################################################
-set -euo pipefail
+
+set -o errexit
+set -o nounset
+set -o pipefail
 shopt -s inherit_errexit 2>/dev/null || true
 
-#########################################
-###           CONSTANTS               ###
-#########################################
-readonly SCRIPT_NAME="${0##*/}"
-readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-readonly SCRIPT_VERSION="5.0"
+###############################################################################
+# Identity
+###############################################################################
 
-# Global variable to preserve last WP-CLI error
-LAST_WP_CLI_ERROR=""
-export LAST_WP_CLI_ERROR
-HEADER_SHOWN=false
+# $0 may carry Windows-style separators when launched from Git Bash / MSYS.
+_self_ref="${0//\\//}"
+readonly SCRIPT_NAME="${_self_ref##*/}"
+unset _self_ref
+readonly SCRIPT_VERSION="6.0.0"
 
-# File paths
-readonly SITES_FILE="${SCRIPT_DIR}/wp-found.txt"
+if (( BASH_VERSINFO[0] < 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 2) )); then
+	printf 'ERROR: %s requires Bash 4.2 or newer (found %s)\n' \
+		"${SCRIPT_NAME}" "${BASH_VERSION:-unknown}" >&2
+	exit 1
+fi
+
+resolve_script_dir() {
+	local src="${BASH_SOURCE[0]}" dir
+	while [[ -L "${src}" ]]; do
+		dir="$(cd -P -- "$(dirname -- "${src}")" >/dev/null 2>&1 && pwd)" || dir='.'
+		src="$(readlink -- "${src}")" || { src="${dir}"; break; }
+		[[ "${src}" == /* ]] || src="${dir}/${src}"
+	done
+	dir="$(cd -P -- "$(dirname -- "${src}")" >/dev/null 2>&1 && pwd)" || dir='.'
+	printf '%s' "${dir}"
+}
+readonly SCRIPT_DIR="$(resolve_script_dir)"
+
+###############################################################################
+# Defaults (overridable by config file, environment and command line)
+###############################################################################
+
+: "${WP_CLI_PATH:=}"
+: "${SITES_FILE:=${SCRIPT_DIR}/wp-found.txt}"
+: "${SKIP_PLUGINS:=saphali-woocommerce-lite,jet-compare-wishlist,jet-data-importer}"
+: "${ASTRA_PLUGIN:=astra-addon}"
+: "${ASTRA_KEY:=}"
+: "${LOG_DIR:=${SCRIPT_DIR}}"
+: "${LOG_MAX_BYTES:=5242880}"
+: "${LOG_KEEP:=5}"
+: "${ERROR_OUTPUT_LINES:=20}"
+: "${COLOR:=auto}"
+: "${LOCK_ENABLED:=1}"
+: "${AUTO_DISCOVER:=1}"          # run Find_WP_Senior.sh when the site list is missing
+
+readonly CONF_FILE_DEFAULT="${SCRIPT_DIR}/wp-cli-update.conf"
 readonly DISCOVER_SCRIPT="${SCRIPT_DIR}/Find_WP_Senior.sh"
-readonly LOG_FILE="${SCRIPT_DIR}/wp_cli_manager.log"
-readonly ERROR_LOG_FILE="${SCRIPT_DIR}/wp_cli_errors.log"
-readonly WP_CLI_PATH="/usr/local/bin/wp"
+readonly WP_CLI_FALLBACK='/usr/local/bin/wp'
 
-# Operation modes
-readonly MODE_FULL="full"
-readonly MODE_CORE="core"
-readonly MODE_PLUGINS="plugins"
-readonly MODE_THEMES="themes"
-readonly MODE_DB_OPTIMIZE="db-optimize"
-readonly MODE_DB_FIX="db-fix"
-readonly MODE_CRON="cron"
-readonly MODE_ASTRA="astra"
-readonly MODE_LIST_PLUGINS="list-plugins"
-readonly MODE_PLUGIN_MANAGE="plugin-manage"
+readonly MODE_FULL='full'
+readonly MODE_CORE='core'
+readonly MODE_PLUGINS='plugins'
+readonly MODE_THEMES='themes'
+readonly MODE_DB_OPTIMIZE='db-optimize'
+readonly MODE_DB_FIX='db-fix'
+readonly MODE_CRON='cron'
+readonly MODE_ASTRA='astra'
+readonly MODE_LIST_PLUGINS='list-plugins'
+readonly MODE_PLUGIN_MANAGE='plugin-manage'
 
-# Astra license key (replace with your actual key)
-readonly ASTRA_KEY="${ASTRA_KEY:-YOUR_KEY}"   # never commit the key; export ASTRA_KEY instead
+readonly ACTION_ACTIVATE='activate'
+readonly ACTION_DEACTIVATE='deactivate'
+readonly ACTION_DELETE='delete'
 
-# ANSI colors
-readonly RED='\033[0;31m'
-readonly GREEN='\033[0;32m'
-readonly YELLOW='\033[1;33m'
-readonly BLUE='\033[0;34m'
-readonly CYAN='\033[0;36m'
-readonly MAGENTA='\033[0;35m'
-readonly BOLD='\033[1m'
-readonly DIM='\033[2m'
-readonly RESET='\033[0m'
-readonly WHITE='\033[0;37m'
+readonly EXIT_OK=0
+readonly EXIT_USAGE=1
+readonly EXIT_ERRORS=2
+readonly EXIT_NOTHING=3
 
-# Plugin actions
-readonly ACTION_ACTIVATE="activate"
-readonly ACTION_DEACTIVATE="deactivate"
-readonly ACTION_DELETE="delete"
+###############################################################################
+# Runtime state
+###############################################################################
 
-# Terminal UI settings
-readonly TABLE_WIDTH=90
-readonly PROGRESS_CHAR="█"
-
-#########################################
-###        GLOBAL VARIABLES           ###
-#########################################
-declare -A STATS=(
-	[total_sites]=0
-	[success_ops]=0
-	[error_ops]=0
-)
-
+MODE=''
 DEBUG_MODE=false
-TARGET_SITE=""
-PLUGIN_NAME=""
-PLUGIN_ACTION=""
-FORCE_MODE=false
+QUIET_MODE=false
 JSON_OUTPUT=false
+DRY_RUN=false
+FORCE_MODE=false
+COLOR_MODE='auto'
+TARGET_SITE=''
+TARGET_USER=''
+PLUGIN_NAME=''
+PLUGIN_ACTION=''
+CONF_FILE="${CONF_FILE_DEFAULT}"
 
-#########################################
-###           FUNCTIONS               ###
-#########################################
+STATS_SITES=0
+STATS_OK=0
+STATS_FAILED=0
 
-log() {
-	local level="$1" msg="$2"
-	local timestamp
-	timestamp="$(date '+%Y-%m-%d %H:%M:%S')"
-	local log_line="[${timestamp}] [${level}] ${msg}"
-	echo "${log_line}" >> "${LOG_FILE}"
-	case "${level}" in
-		"ERROR")   echo -e "${RED}✗ ${msg}${RESET}" >&2 ;;
-		"WARNING") echo -e "${YELLOW}⚠ ${msg}${RESET}" >&2 ;;
-		"SUCCESS") echo -e "${GREEN}✓ ${msg}${RESET}" >&2 ;;
-		"DEBUG")   echo -e "${CYAN}🐞 ${msg}${RESET}" >&2 ;;
-		"INFO")    echo -e "${BLUE}ℹ ${msg}${RESET}" >&2 ;;
-		*)         echo "${msg}" ;;
+# Filled by wp_exec
+WP_OUTPUT=''
+WP_RC=0
+WP_SKIPPED=false
+PLUGIN_LIST_ERROR=''
+
+# Filled by init_logging / take_lock
+LOG_FILE=''
+ERROR_LOG_FILE=''
+LOCK_FILE=''
+LOCK_TOKEN=''
+LOG_READY=false
+
+SITES=()
+declare -A SEEN_SITES=()
+
+# Colors, assigned by setup_colors
+C_RESET='' C_RED='' C_GREEN='' C_YELLOW='' C_BLUE='' C_CYAN='' C_DIM='' C_BOLD=''
+
+###############################################################################
+# Small helpers
+###############################################################################
+
+trim() {
+	local s="$1"
+	s="${s//$'\r'/}"
+	s="${s#"${s%%[![:space:]]*}"}"
+	s="${s%"${s##*[![:space:]]}"}"
+	printf '%s' "${s}"
+}
+
+json_escape() {
+	local s="$1"
+	s="${s//\\/\\\\}"
+	s="${s//\"/\\\"}"
+	s="${s//$'\t'/\\t}"
+	s="${s//$'\r'/\\r}"
+	s="${s//$'\n'/\\n}"
+	printf '%s' "${s}"
+}
+
+# Replace known secrets so they never reach a log line or the console.
+redact() {
+	local text="$1"
+	if [[ -n "${ASTRA_KEY}" ]]; then
+		text="${text//"${ASTRA_KEY}"/<redacted>}"
+	fi
+	printf '%s' "${text}"
+}
+
+###############################################################################
+# Colors and logging
+###############################################################################
+
+setup_colors() {
+	case "${COLOR_MODE}" in
+		never) return 0 ;;
+		always) : ;;
+		*)
+			[[ -t 2 ]] || return 0
+			[[ "${TERM:-dumb}" != 'dumb' ]] || return 0
+			[[ -z "${NO_COLOR:-}" ]] || return 0
+			;;
 	esac
+	C_RESET=$'\033[0m'
+	C_RED=$'\033[31m' C_GREEN=$'\033[32m' C_YELLOW=$'\033[33m'
+	C_BLUE=$'\033[34m' C_CYAN=$'\033[36m' C_DIM=$'\033[2m' C_BOLD=$'\033[1m'
 }
 
-log_error_detail() {
-	local context="$1" command="$2" output="$3" exit_code="$4"
-	local timestamp
-	timestamp="$(date '+%Y-%m-%d %H:%M:%S')"
-	
-	cat >> "${ERROR_LOG_FILE}" <<EOF
-[${timestamp}] [ERROR DETAIL]
-Context: ${context}
-Command: ${command}
-Exit Code: ${exit_code}
-Output: ${output}
----
-EOF
+rotate_log() { # file
+	local file="$1" size=0 i
+	[[ -f "${file}" ]] || return 0
+	size=$(wc -c < "${file}" 2>/dev/null | tr -d '[:space:]') || size=0
+	size="${size:-0}"
+	(( size > LOG_MAX_BYTES )) || return 0
+	for ((i = LOG_KEEP - 1; i >= 1; i--)); do
+		if [[ -f "${file}.${i}" ]]; then
+			mv -f -- "${file}.${i}" "${file}.$((i + 1))" 2>/dev/null || true
+		fi
+	done
+	mv -f -- "${file}" "${file}.1" 2>/dev/null || true
+	return 0
 }
 
-log_info()    { log "INFO" "$1"; }
-log_success() { log "SUCCESS" "$1"; }
-log_error()   { log "ERROR" "$1"; }
-log_warning() { log "WARNING" "$1"; }
-log_debug() { 
-	if [[ "${DEBUG_MODE}" == true ]]; then
-		log "DEBUG" "$1"
+init_logging() {
+	local fallback="${TMPDIR:-/tmp}"
+	fallback="${fallback//\\//}"
+	if ! mkdir -p -- "${LOG_DIR}" 2>/dev/null || [[ ! -w "${LOG_DIR}" ]]; then
+		printf 'WARN: log directory %s is unusable, falling back to %s\n' \
+			"${LOG_DIR}" "${fallback}" >&2
+		LOG_DIR="${fallback}"
 	fi
+	LOG_FILE="${LOG_DIR}/wp_cli_manager.log"
+	ERROR_LOG_FILE="${LOG_DIR}/wp_cli_errors.log"
+	LOCK_FILE="${LOG_DIR}/wp-cli-update.lock"
+
+	rotate_log "${LOG_FILE}"
+	rotate_log "${ERROR_LOG_FILE}"
+	: >> "${LOG_FILE}" 2>/dev/null || true
+	: >> "${ERROR_LOG_FILE}" 2>/dev/null || true
+	LOG_READY=true
 }
 
-debug_echo() {
+_log_write() { # level, message
+	local level="$1" msg="$2" line
+	[[ "${LOG_READY}" == true ]] || return 0
+	printf -v line '[%(%Y-%m-%d %H:%M:%S)T] [%s] %s\n' -1 "${level}" "$(redact "${msg}")"
+	printf '%s' "${line}" >> "${LOG_FILE}" 2>/dev/null || true
+	return 0
+}
+
+log_debug() {
 	if [[ "${DEBUG_MODE}" == true ]]; then
-		echo -e "${CYAN}🐞 DEBUG: $1${RESET}" >&2
+		[[ "${QUIET_MODE}" == true ]] || printf '%sDEBUG:%s %s\n' "${C_DIM}" "${C_RESET}" "$(redact "$*")" >&2
+		_log_write DEBUG "$*"
 	fi
+	return 0
 }
 
-# ---------------------------------------------------------------------
-# Modern progress indicator for terminal UI (FIXED v3)
-# ---------------------------------------------------------------------
-show_progress() {
-    local current="$1"
-    local total="$2"
-    local message="${3:-Processing}"
-    
-    if [[ -z "${total}" || "${total}" -eq 0 ]] 2>/dev/null; then
-        total=1
-    fi
-    if [[ -z "${current}" || "${current}" -eq 0 ]] 2>/dev/null; then
-        current=1
-    fi
-    
-    local percent=$(( current * 100 / total ))
-    local filled=$(( percent * 40 / 100 ))
-    local empty=$(( 40 - filled ))
-    
-    printf "\r\033[K${DIM}[${GREEN}"
-    printf '%*s' "${filled}" '' | tr ' ' "${PROGRESS_CHAR}"
-    printf "${RESET}"
-    printf '%*s' "${empty}" '' | tr ' ' '░'
-    printf "${DIM}]${RESET} ${message}\n" >&2
+log_info() {
+	[[ "${QUIET_MODE}" == true ]] || printf '%sINFO:%s %s\n' "${C_BLUE}" "${C_RESET}" "$(redact "$*")" >&2
+	_log_write INFO "$*"
+	return 0
 }
 
-# ---------------------------------------------------------------------
-# Show final newline after progress bar (call before summary)
-# ---------------------------------------------------------------------
-finalize_progress() {
-    echo "" >&2
+log_success() {
+	[[ "${QUIET_MODE}" == true ]] || printf '%s OK :%s %s\n' "${C_GREEN}" "${C_RESET}" "$(redact "$*")" >&2
+	_log_write SUCCESS "$*"
+	return 0
 }
+
+log_warning() {
+	printf '%sWARN:%s %s\n' "${C_YELLOW}" "${C_RESET}" "$(redact "$*")" >&2
+	_log_write WARNING "$*"
+	return 0
+}
+
+log_error() {
+	printf '%sERR :%s %s\n' "${C_RED}" "${C_RESET}" "$(redact "$*")" >&2
+	_log_write ERROR "$*"
+	STATS_FAILED=$((STATS_FAILED + 1))
+	return 0
+}
+
+log_error_detail() { # context, command, output, exit code
+	local context="$1" cmd="$2" output="$3" rc="$4" ts
+	[[ "${LOG_READY}" == true ]] || return 0
+	printf -v ts '%(%Y-%m-%d %H:%M:%S)T' -1
+	{
+		printf '[%s] [ERROR DETAIL]\n' "${ts}"
+		printf 'Context: %s\n' "$(redact "${context}")"
+		printf 'Command: %s\n' "$(redact "${cmd}")"
+		printf 'Exit code: %s\n' "${rc}"
+		printf 'Output:\n%s\n' "$(redact "${output}")"
+		printf -- '---\n'
+	} >> "${ERROR_LOG_FILE}" 2>/dev/null || true
+	return 0
+}
+
+# Print the captured failing output on the console, capped and indented.
+print_error_output() {
+	local output="$1" total=0 shown=0 line
+	[[ -n "${output}" ]] || return 0
+	total=$(printf '%s\n' "${output}" | wc -l | tr -d '[:space:]') || total=0
+	total="${total:-0}"
+	printf '%s--- command output -------------------------------------------%s\n' "${C_RED}" "${C_RESET}" >&2
+	while IFS= read -r line; do
+		(( shown < ERROR_OUTPUT_LINES )) || break
+		printf '%s| %s%s\n' "${C_RED}" "${line}" "${C_RESET}" >&2
+		shown=$((shown + 1))
+	done <<< "${output}"
+	if (( total > ERROR_OUTPUT_LINES )); then
+		printf '%s| ... %d more line(s); full output in %s%s\n' \
+			"${C_RED}" "$((total - ERROR_OUTPUT_LINES))" "${ERROR_LOG_FILE}" "${C_RESET}" >&2
+	fi
+	printf '%s--------------------------------------------------------------%s\n' "${C_RED}" "${C_RESET}" >&2
+	return 0
+}
+
+progress() { # counter, message
+	[[ "${QUIET_MODE}" == true || "${JSON_OUTPUT}" == true ]] && return 0
+	[[ -t 2 ]] || return 0
+	printf '\r%s[%s]%s %s' "${C_DIM}" "$1" "${C_RESET}" "$2" >&2
+	return 0
+}
+
+progress_done() {
+	[[ "${QUIET_MODE}" == true || "${JSON_OUTPUT}" == true ]] && return 0
+	[[ -t 2 ]] || return 0
+	printf '\r\033[K' >&2
+	return 0
+}
+
+###############################################################################
+# Lock against parallel runs
+###############################################################################
+
+take_lock() {
+	[[ "${LOCK_ENABLED}" == 1 ]] || return 0
+	if command -v flock >/dev/null 2>&1; then
+		exec 9>"${LOCK_FILE}" || { log_error "cannot open the lock file ${LOCK_FILE}"; return 1; }
+		if ! flock -n 9; then
+			log_error "another run holds the lock ${LOCK_FILE}; use --no-lock to override"
+			return 1
+		fi
+		LOCK_TOKEN='flock'
+		return 0
+	fi
+	# Portable fallback: an atomically created directory.
+	if mkdir -- "${LOCK_FILE}.d" 2>/dev/null; then
+		LOCK_TOKEN='mkdir'
+		printf '%s\n' "$$" > "${LOCK_FILE}.d/pid" 2>/dev/null || true
+		return 0
+	fi
+	log_error "another run holds the lock ${LOCK_FILE}.d; use --no-lock to override"
+	return 1
+}
+
+release_lock() {
+	case "${LOCK_TOKEN:-}" in
+		mkdir) rm -rf -- "${LOCK_FILE}.d" 2>/dev/null || true ;;
+	esac
+	LOCK_TOKEN=''
+	return 0
+}
+
+###############################################################################
+# Usage
+###############################################################################
 
 usage() {
 	cat <<EOF
 WordPress Maintenance Automation v${SCRIPT_VERSION}
-Usage: ${SCRIPT_NAME} [MODE] [OPTIONS]
+Usage: ${SCRIPT_NAME} MODE [OPTIONS]
 
 Modes:
-  --full, -f           : Full update (core, plugins, themes, DB optimize/repair, cron)
-  --core, -c           : Update WordPress core only
-  --plugins, -p        : Update all plugins
-  --themes, -t         : Update all themes
-  --db-optimize, -d    : Optimize and repair database
-  --db-fix, -x         : Repair database only
-  --cron, -r           : Run due cron events
-  --astra, -s          : Update Astra plugin with license activation if needed
-  --list-plugins, -l   : List all plugins for site(s) with modern table view
-  --plugin-manage, -m  : Manage plugin (activate/deactivate/delete)
+  -f, --full           Full update: core, plugins, Astra, themes, core update-db,
+                       database optimize/repair, due cron events
+  -c, --core           Update WordPress core only
+  -p, --plugins        Update all plugins
+  -t, --themes         Update all themes
+  -d, --db-optimize    Optimize and repair the database
+  -x, --db-fix         Repair the database only
+  -r, --cron           Run due cron events
+  -s, --astra          Update Astra with license activation when required
+  -l, --list-plugins   List plugins (table, or JSON with --json)
+  -m, --plugin-manage  Manage one plugin (see --action and --name)
 
 Options:
-  --DEBUG, -D                  : Enable debug mode with detailed logging
-  --site, -S <path>            : Target a specific site path (optional, overrides wp-found.txt)
-  --action, -A <action>        : Plugin action: activate|deactivate|delete (for --plugin-manage)
-  --name, -N <plugin_name>     : Plugin slug or partial name for matching
-  --force, -F                  : Skip confirmation for destructive actions (delete)
-  --json, -J                   : Output in JSON format (for --list-plugins)
-  --help, -h                   : Show this help message
+  -D, --debug            Verbose diagnostics on stderr
+  -S, --site PATH        Process one installation only
+  -U, --user USER        Force the system user instead of auto-detection
+      --wp-cli PATH      WP-CLI binary (default: PATH lookup, then /usr/local/bin/wp)
+      --sites-file FILE  Site list (default: ${SITES_FILE})
+      --config FILE      Config file (default: ${CONF_FILE_DEFAULT})
+  -A, --action ACTION    Plugin action: activate|deactivate|delete
+  -N, --name NAME        Plugin name, slug or a distinguishing fragment
+  -F, --force            Skip the interactive delete confirmation
+  -J, --json             JSON output for --list-plugins and the summary
+  -n, --dry-run          Show the WP-CLI commands without executing them
+  -q, --quiet            Suppress informational console output
+      --no-color         Disable colored console output
+      --no-lock          Do not take the run lock
+  -V, --version          Print the version and exit
+  -h, --help             Print this help and exit
+
+Notes:
+  Root is required for real runs; --dry-run only previews the commands.
+  A missing site list triggers Find_WP_Senior.sh unless AUTO_DISCOVER=0.
+  Logs: ${LOG_DIR}/wp_cli_manager.log and wp_cli_errors.log (rotated).
 
 Examples:
-  ${SCRIPT_NAME} --plugins
-  ${SCRIPT_NAME} -p
-  ${SCRIPT_NAME} --full --DEBUG
-  ${SCRIPT_NAME} --list-plugins --site /var/www/example.com
-  ${SCRIPT_NAME} --list-plugins -N "woocommerce" --json
-  ${SCRIPT_NAME} --plugin-manage --action deactivate --name "jetpack" --site /var/www/example.com
-  ${SCRIPT_NAME} -m -A delete -N "old-plugin" -S /var/www/example.com --force
-
-Sites are read from: ${SITES_FILE}
+  ${SCRIPT_NAME} --full --debug
+  ${SCRIPT_NAME} -p -S /var/www/example.com
+  ${SCRIPT_NAME} --list-plugins -N woocommerce --json
+  ${SCRIPT_NAME} -m -A deactivate -N jetpack -S /var/www/example.com
+  ${SCRIPT_NAME} -m -A delete -N old-plugin -S /var/www/example.com --force
 EOF
-	exit 1
 }
 
-trim() {
-	local str="$1"
-	str="${str#"${str%%[![:space:]]*}"}"
-	str="${str%"${str##*[![:space:]]}"}"
-	printf '%s' "${str}"
+usage_error() {
+	printf '%sERR :%s %s\n' "${C_RED}" "${C_RESET}" "$*" >&2
+	printf 'Run %s --help for the full description.\n' "${SCRIPT_NAME}" >&2
+	exit "${EXIT_USAGE}"
 }
 
-# ---------------------------------------------------------------------
-# Helper: Clean potential PHP warnings/notices from command output and
-#         ensure we have valid JSON. If output becomes empty, return "[]".
-# ---------------------------------------------------------------------
-clean_json_output() {
-	local raw_output="$1"
-	local cleaned
+###############################################################################
+# Configuration
+###############################################################################
 
-	# If output doesn't start with '[', try to strip everything up to the first '['
-	if [[ "${raw_output}" != "["* ]]; then
-		debug_echo "⚠️ Output does not start with '[', stripping leading lines..."
-		cleaned=$(echo "${raw_output}" | sed -n '/^\[/,$p')
-	else
-		cleaned="${raw_output}"
+load_config_file() {
+	local file="$1"
+	[[ -n "${file}" ]] || return 0
+	if [[ ! -f "${file}" ]]; then
+		if [[ "${file}" != "${CONF_FILE_DEFAULT}" ]]; then
+			log_error "config file not found: ${file}"
+			exit "${EXIT_USAGE}"
+		fi
+		log_debug "no config file at ${file}, using defaults"
+		return 0
 	fi
-
-	# If after stripping we have empty output, assume empty plugin list
-	if [[ -z "${cleaned}" ]]; then
-		debug_echo "ℹ️ Output became empty after stripping. Assuming no plugins (empty array)."
-		cleaned="[]"
-	fi
-
-	# Final validation: must start with '['
-	if [[ "${cleaned:0:1}" != "[" ]]; then
-		log_error "Cannot find valid JSON array in output. Raw output: ${raw_output}"
-		return 1
-	fi
-
-	printf '%s' "${cleaned}"
+	# The config file is trusted local configuration (like /etc/sysconfig/*),
+	# therefore it is sourced and may set any of the documented variables.
+	# shellcheck source=/dev/null
+	source "${file}"
+	log_debug "config file loaded: ${file}"
 	return 0
 }
 
-# ---------------------------------------------------------------------
-# Get WordPress system user for a given site path
-# Uses multiple methods: owner of wp-config.php, directory owner,
-# path-based guessing, DB_USER from wp-config.php
-# ---------------------------------------------------------------------
-get_wp_user() {
-	local wp_root="$1"
-	local wp_config="${wp_root}/wp-config.php"
+apply_environment() {
+	# Values exported by the caller or set in the config file win over the
+	# defaults assigned with := at the top of the script.
+	WP_CLI_PATH="${WP_CLI_PATH:-}"
+	SITES_FILE="${SITES_FILE:-${SCRIPT_DIR}/wp-found.txt}"
+	ASTRA_PLUGIN="${ASTRA_PLUGIN:-astra-addon}"
+	LOG_MAX_BYTES="${LOG_MAX_BYTES:-5242880}"
+	LOG_KEEP="${LOG_KEEP:-5}"
+	ERROR_OUTPUT_LINES="${ERROR_OUTPUT_LINES:-20}"
+	COLOR_MODE="${COLOR_MODE:-${COLOR:-auto}}"
+	case "${LOCK_ENABLED}" in
+		1|true|yes) LOCK_ENABLED=1 ;;
+		*)          LOCK_ENABLED=0 ;;
+	esac
+	case "${AUTO_DISCOVER}" in
+		1|true|yes) AUTO_DISCOVER=1 ;;
+		*)          AUTO_DISCOVER=0 ;;
+	esac
+	return 0
+}
 
-	debug_echo "🚩 START get_wp_user for: ${wp_root}"
-	debug_echo "📁 Checking wp-config.php at: ${wp_config}"
-	
-	# Method 1: owner of wp-config.php
-	if [[ -f "${wp_config}" ]]; then
-		debug_echo "📄 wp-config.php exists, checking file owner"
-		local file_owner
-		file_owner="$(stat -c '%U' "${wp_config}" 2>&1 || echo "stat_error")"
-		debug_echo "👤 File owner of wp-config.php: '${file_owner}'"
-		
-		if [[ -n "${file_owner}" && "${file_owner}" != "root" && "${file_owner}" != "stat_error" ]]; then
-			debug_echo "✅ Using file owner: ${file_owner}"
-			if id -u "${file_owner}" >/dev/null 2>&1; then
-				debug_echo "✅ User ${file_owner} exists in system"
-				printf '%s' "${file_owner}"
-				return 0
-			else
-				debug_echo "❌ User ${file_owner} does NOT exist in system"
+resolve_wp_cli() {
+	if [[ -n "${WP_CLI_PATH}" ]]; then
+		if [[ ! -x "${WP_CLI_PATH}" ]]; then
+			log_error "WP-CLI is not executable: ${WP_CLI_PATH}"
+			exit "${EXIT_USAGE}"
+		fi
+		return 0
+	fi
+	if command -v wp >/dev/null 2>&1; then
+		WP_CLI_PATH="$(command -v wp)"
+		return 0
+	fi
+	if [[ -x "${WP_CLI_FALLBACK}" ]]; then
+		WP_CLI_PATH="${WP_CLI_FALLBACK}"
+		return 0
+	fi
+	if [[ "${DRY_RUN}" == true ]]; then
+		WP_CLI_PATH='wp'
+		log_warning 'WP-CLI not found; --dry-run continues with the placeholder "wp"'
+		return 0
+	fi
+	log_error "WP-CLI not found (checked PATH and ${WP_CLI_FALLBACK}); install it or pass --wp-cli"
+	exit "${EXIT_USAGE}"
+}
+
+###############################################################################
+# Argument parsing
+###############################################################################
+
+need_value() { # option, value
+	if [[ $# -lt 2 || -z "${2:-}" || "${2:-}" == --* ]]; then
+		usage_error "option $1 requires a value"
+	fi
+	return 0
+}
+
+# Locate --config before the parser runs, so the config file is sourced
+# before the defaults are finalised.
+extract_conf_file() {
+	local prev='' arg
+	for arg in "$@"; do
+		if [[ "${prev}" == '--config' ]]; then
+			CONF_FILE="${arg}"
+		fi
+		case "${arg}" in
+			--config=*) CONF_FILE="${arg#*=}" ;;
+		esac
+		prev="${arg}"
+	done
+	return 0
+}
+
+set_mode() {
+	if [[ -n "${MODE}" && "${MODE}" != "$1" ]]; then
+		usage_error "conflicting modes: '${MODE}' and '$1'"
+	fi
+	MODE="$1"
+}
+
+parse_args() {
+	while [[ $# -gt 0 ]]; do
+		case "$1" in
+			-D|--debug)          DEBUG_MODE=true; shift ;;
+			-f|--full)           set_mode "${MODE_FULL}"; shift ;;
+			-c|--core)           set_mode "${MODE_CORE}"; shift ;;
+			-p|--plugins)        set_mode "${MODE_PLUGINS}"; shift ;;
+			-t|--themes)         set_mode "${MODE_THEMES}"; shift ;;
+			-d|--db-optimize)    set_mode "${MODE_DB_OPTIMIZE}"; shift ;;
+			-x|--db-fix)         set_mode "${MODE_DB_FIX}"; shift ;;
+			-r|--cron)           set_mode "${MODE_CRON}"; shift ;;
+			-s|--astra)          set_mode "${MODE_ASTRA}"; shift ;;
+			-l|--list-plugins)   set_mode "${MODE_LIST_PLUGINS}"; shift ;;
+			-m|--plugin-manage)  set_mode "${MODE_PLUGIN_MANAGE}"; shift ;;
+			-S|--site)
+				need_value "$1" "${2:-}"; TARGET_SITE="$2"; shift 2 ;;
+			--site=*)
+				TARGET_SITE="${1#*=}"; [[ -n "${TARGET_SITE}" ]] || usage_error '--site requires a value'; shift ;;
+			-U|--user)
+				need_value "$1" "${2:-}"; TARGET_USER="$2"; shift 2 ;;
+			--user=*)
+				TARGET_USER="${1#*=}"; shift ;;
+			--wp-cli)
+				need_value "$1" "${2:-}"; WP_CLI_PATH="$2"; shift 2 ;;
+			--wp-cli=*)
+				WP_CLI_PATH="${1#*=}"; shift ;;
+			--sites-file)
+				need_value "$1" "${2:-}"; SITES_FILE="$2"; shift 2 ;;
+			--sites-file=*)
+				SITES_FILE="${1#*=}"; shift ;;
+			--config)
+				need_value "$1" "${2:-}"; CONF_FILE="$2"; shift 2 ;;
+			--config=*)
+				CONF_FILE="${1#*=}"; shift ;;
+			-A|--action)
+				need_value "$1" "${2:-}"; PLUGIN_ACTION="$2"; shift 2 ;;
+			--action=*)
+				PLUGIN_ACTION="${1#*=}"; shift ;;
+			-N|--name)
+				need_value "$1" "${2:-}"; PLUGIN_NAME="$2"; shift 2 ;;
+			--name=*)
+				PLUGIN_NAME="${1#*=}"; shift ;;
+			-F|--force)          FORCE_MODE=true; shift ;;
+			-J|--json)           JSON_OUTPUT=true; QUIET_MODE=true; shift ;;
+			-n|--dry-run)        DRY_RUN=true; shift ;;
+			-q|--quiet)          QUIET_MODE=true; shift ;;
+			--no-color)          COLOR_MODE=never; shift ;;
+			--color)             COLOR_MODE=always; shift ;;
+			--no-lock)           LOCK_ENABLED=0; shift ;;
+			-V|--version)        printf '%s %s\n' "${SCRIPT_NAME}" "${SCRIPT_VERSION}"; exit "${EXIT_OK}" ;;
+			-h|--help)           usage; exit "${EXIT_OK}" ;;
+			--)
+				shift
+				if [[ $# -gt 0 ]]; then
+					usage_error "unexpected positional argument: $1"
+				fi
+				;;
+			*)
+				usage_error "unknown argument: $1"
+				;;
+		esac
+	done
+	return 0
+}
+
+validate_options() {
+	[[ -n "${MODE}" ]] || usage_error 'no mode specified'
+
+	if [[ -n "${PLUGIN_ACTION}" && "${MODE}" != "${MODE_PLUGIN_MANAGE}" ]]; then
+		usage_error "--action is only valid with --plugin-manage (mode: ${MODE})"
+	fi
+	if [[ -n "${PLUGIN_NAME}" && "${MODE}" != "${MODE_PLUGIN_MANAGE}" && "${MODE}" != "${MODE_LIST_PLUGINS}" ]]; then
+		usage_error "--name is only valid with --list-plugins or --plugin-manage (mode: ${MODE})"
+	fi
+
+	case "${MODE}" in
+		"${MODE_PLUGIN_MANAGE}")
+			[[ -n "${PLUGIN_ACTION}" ]] || usage_error '--plugin-manage requires --action'
+			[[ -n "${PLUGIN_NAME}" ]] || usage_error '--plugin-manage requires --name'
+			case "${PLUGIN_ACTION}" in
+				"${ACTION_ACTIVATE}"|"${ACTION_DEACTIVATE}"|"${ACTION_DELETE}") ;;
+				*) usage_error "invalid --action '${PLUGIN_ACTION}' (activate|deactivate|delete)" ;;
+			esac
+			;;
+		"${MODE_ASTRA}")
+			if [[ -z "${ASTRA_KEY}" ]]; then
+				usage_error "mode 'astra' requires ASTRA_KEY (config file or environment)"
 			fi
-		else
-			debug_echo "❌ File owner not suitable: '${file_owner}'"
-		fi
-	else
-		debug_echo "❌ wp-config.php not found at: ${wp_config}"
+			;;
+	esac
+
+	if [[ -n "${TARGET_SITE}" && ! -d "${TARGET_SITE}" ]]; then
+		usage_error "--site directory does not exist: ${TARGET_SITE}"
 	fi
-
-	# Method 2: directory owner
-	debug_echo "📁 Checking directory owner"
-	local dir_owner
-	dir_owner="$(stat -c '%U' "${wp_root}" 2>&1 || echo "stat_error")"
-	debug_echo "👤 Directory owner: '${dir_owner}'"
-
-	if [[ -n "${dir_owner}" && "${dir_owner}" != "root" && "${dir_owner}" != "stat_error" ]]; then
-		debug_echo "✅ Using directory owner: ${dir_owner}"
-		if id -u "${dir_owner}" >/dev/null 2>&1; then
-			debug_echo "✅ User ${dir_owner} exists in system"
-			printf '%s' "${dir_owner}"
-			return 0
-		else
-			debug_echo "❌ User ${dir_owner} does NOT exist in system"
-		fi
-	else
-		debug_echo "❌ Directory owner not suitable: '${dir_owner}'"
+	if [[ ! "${LOG_MAX_BYTES}" =~ ^[0-9]+$ ]]; then
+		usage_error 'LOG_MAX_BYTES must be a number'
 	fi
-
-	# Method 3: extract user from path (e.g., /var/www/USER/data/...)
-	debug_echo "🛣️  Trying to extract user from path"
-	IFS='/' read -r -a path_parts <<< "${wp_root}"
-	debug_echo "📊 Path parts: ${#path_parts[@]} - ${path_parts[*]}"
-	
-	if [[ ${#path_parts[@]} -ge 4 ]]; then
-		local potential_user="${path_parts[3]}"
-		debug_echo "👤 Potential user from path: '${potential_user}'"
-		
-		if id -u "${potential_user}" >/dev/null 2>&1; then
-			debug_echo "✅ Using user from path: ${potential_user}"
-			printf '%s' "${potential_user}"
-			return 0
-		else
-			debug_echo "❌ User from path does NOT exist: ${potential_user}"
-		fi
-	else
-		debug_echo "❌ Path too short for extraction"
+	if [[ ! "${LOG_KEEP}" =~ ^[0-9]+$ ]] || (( LOG_KEEP < 1 )); then
+		usage_error 'LOG_KEEP must be a positive integer'
 	fi
+	if [[ ! "${ERROR_OUTPUT_LINES}" =~ ^[0-9]+$ ]]; then
+		usage_error 'ERROR_OUTPUT_LINES must be a number'
+	fi
+	return 0
+}
 
-	# Method 4: DB_USER from wp-config.php
+###############################################################################
+# User resolution
+###############################################################################
+
+get_wp_user() { # site -> prints the user name
+	local wp_root="$1" wp_config="${1}/wp-config.php"
+	local candidate first rel
+
+	# 1. Owner of wp-config.php
 	if [[ -f "${wp_config}" ]]; then
-		debug_echo "🔍 Trying DB_USER from wp-config.php"
-		local db_user
-		db_user="$(grep -E "define\s*\(\s*'DB_USER'" "${wp_config}" 2>/dev/null | \
-		           sed -E "s/.*'DB_USER'\s*,\s*'([^']+)'.*/\1/" | tail -n1)"
-		debug_echo "👤 DB_USER from wp-config: '${db_user}'"
+		candidate="$(stat -c '%U' -- "${wp_config}" 2>/dev/null || true)"
+		log_debug "owner of wp-config.php: '${candidate:-none}'"
+		if [[ -n "${candidate}" && "${candidate}" != 'root' && "${candidate}" != 'UNKNOWN' ]] \
+		   && id -u -- "${candidate}" >/dev/null 2>&1; then
+			printf '%s' "${candidate}"
+			return 0
+		fi
+	fi
 
-		if [[ -n "${db_user}" ]] && id -u "${db_user}" >/dev/null 2>&1; then
-			debug_echo "✅ Using DB_USER: ${db_user}"
+	# 2. Owner of the installation directory
+	candidate="$(stat -c '%U' -- "${wp_root}" 2>/dev/null || true)"
+	log_debug "owner of the site directory: '${candidate:-none}'"
+	if [[ -n "${candidate}" && "${candidate}" != 'root' && "${candidate}" != 'UNKNOWN' ]] \
+	   && id -u -- "${candidate}" >/dev/null 2>&1; then
+		printf '%s' "${candidate}"
+		return 0
+	fi
+
+	# 3. Layouts such as /home/<user>/... or /var/www/<user>/...
+	rel="${wp_root#/}"
+	first="${rel%%/*}"
+	if [[ "${first}" == 'home' ]]; then
+		rel="${rel#home/}"
+		first="${rel%%/*}"
+	fi
+	if [[ -n "${first}" && "${first}" != 'www' ]] && id -u -- "${first}" >/dev/null 2>&1; then
+		log_debug "user inferred from the path: ${first}"
+		printf '%s' "${first}"
+		return 0
+	fi
+
+	# 4. DB_USER from wp-config.php
+	if [[ -f "${wp_config}" ]]; then
+		local db_user
+		db_user=$(sed -nE "s/^[[:space:]]*define[[:space:]]*\([[:space:]]*'DB_USER'[[:space:]]*,[[:space:]]*'([^']+)'.*/\\1/p" \
+			"${wp_config}" 2>/dev/null | tail -n1)
+		log_debug "DB_USER from wp-config.php: '${db_user:-none}'"
+		if [[ -n "${db_user}" ]] && id -u -- "${db_user}" >/dev/null 2>&1; then
 			printf '%s' "${db_user}"
 			return 0
-		else
-			debug_echo "❌ DB_USER not found or invalid: '${db_user}'"
 		fi
 	fi
 
-	debug_echo "💥 ALL METHODS FAILED - Cannot determine WordPress user for: ${wp_root}"
+	log_debug "all user detection methods failed for ${wp_root}"
 	return 1
 }
 
-# ---------------------------------------------------------------------
-# Run any WP-CLI command with proper environment and user switching
-# Enhanced with detailed error output display
-# ---------------------------------------------------------------------
-run_wp_cli() {
-    local site_path="$1" user="$2"
-    shift 2
-    local -a cmd=("$@")
-    debug_echo "🚩 START run_wp_cli"
-    debug_echo "📍 site_path: ${site_path}"
-    debug_echo "👤 user: ${user}"
-    debug_echo "⚡ command: wp ${cmd[*]}"
-    
-    # Check if user exists
-    if ! id -u "${user}" >/dev/null 2>&1; then
-        debug_echo "💥 USER CHECK FAILED: User '${user}' does not exist"
-        log_error "User '${user}' does not exist. Cannot run WP-CLI command."
-        ((STATS[error_ops]++)) || true
-        return 1
-    fi
-    debug_echo "✅ User '${user}' exists"
-    
-    # Check if directory exists
-    if [[ ! -d "${site_path}" ]]; then
-        debug_echo "💥 DIRECTORY CHECK FAILED: Directory '${site_path}' does not exist"
-        log_error "Directory '${site_path}' does not exist."
-        ((STATS[error_ops]++)) || true
-        return 1
-    fi
-    debug_echo "✅ Directory '${site_path}' exists"
-    
-    log_info "Running: wp ${cmd[*]} on ${site_path} as ${user}"
-    
-    # Build command with proper quoting
-    local wp_command="${WP_CLI_PATH} --path=\"${site_path}\" ${cmd[*]} --skip-plugins=saphali-woocommerce-lite,jet-compare-wishlist,jet-data-importer --quiet --allow-root"
-    local home_dir
-    home_dir="$(dirname "$(dirname "${site_path}")")"
-    local domain
-    domain="$(basename "${site_path}")"
-    debug_echo "🏠 home_dir: ${home_dir}"
-    debug_echo "🌐 domain: ${domain}"
-    debug_echo "🔧 wp_command: ${wp_command}"
-    
-    # Export necessary environment variables
-    local export_vars="export DOCUMENT_URI=\"${domain}\" && export DOCUMENT_ROOT=\"${site_path}\" && export HOMEDIR=\"${home_dir}\" && export HTTP_HOST=\"${domain}\""
-    local full_command="cd \"${site_path}\" && ${export_vars} && ${wp_command}"
-    debug_echo "🔧 full_command: ${full_command}"
-    debug_echo "👤 Executing as user: ${user}"
-    debug_echo "🎯 EXECUTING COMMAND: su - \"${user}\" -c \"${full_command}\""
-    
-    local output
-    local exit_code=0
-    
-    # Capture both stdout and stderr
-    output=$(su - "${user}" -c "${full_command}" 2>&1) || exit_code=$?
-    
-    debug_echo "📤 COMMAND OUTPUT (length: ${#output} bytes):"
-    if [[ -n "${output}" ]]; then
-        echo "${output}" | while IFS= read -r line; do
-            debug_echo "   ${line}"
-        done
-    fi
-    debug_echo "🔚 EXIT CODE: ${exit_code}"
-    
-    if [[ ${exit_code} -eq 0 ]]; then
-        log_success "Success: wp ${cmd[*]}"
-        ((STATS[success_ops]++)) || true
-        debug_echo "✅ Command completed successfully"
-        # Output successful command result if not empty
-        if [[ -n "${output}" ]]; then
-            echo "${output}"
-        fi
-        return 0
-    else
-        log_error "Failed: wp ${cmd[*]} (exit code: ${exit_code})"
-        log_error_detail "run_wp_cli" "wp ${cmd[*]}" "${output}" "${exit_code}"
-        ((STATS[error_ops]++)) || true
-        debug_echo "💥 Command failed with exit code: ${exit_code}"
-        
-        # Display actual error to user (not just in debug)
-        if [[ -n "${output}" ]]; then
-            echo "" >&2
-            echo -e "${RED}┌─ WP-CLI Error Detail ──────────────────────────────────────${RESET}" >&2
-            echo -e "${RED}│ Site: ${site_path}${RESET}" >&2
-            echo -e "${RED}│ Command: wp ${cmd[*]}${RESET}" >&2
-            echo -e "${RED}│ Exit Code: ${exit_code}${RESET}" >&2
-            echo -e "${RED}├─────────────────────────────────────────────────────────────${RESET}" >&2
-            
-            # Show first 20 lines of error output
-            local line_count=0
-            echo "${output}" | while IFS= read -r line; do
-                if [[ ${line_count} -lt 20 ]]; then
-                    echo -e "${RED}│ ${line}${RESET}" >&2
-                    ((line_count++)) || true
-                fi
-            done
-            
-            # If output is longer than 20 lines, indicate truncation
-            local total_lines
-            total_lines=$(echo "${output}" | wc -l)
-            if [[ ${total_lines} -gt 20 ]]; then
-                echo -e "${RED}│ [... ${total_lines} total lines, see log for full output]${RESET}" >&2
-            fi
-            
-            echo -e "${RED}├─────────────────────────────────────────────────────────────${RESET}" >&2
-            echo -e "${RED}│ Full error log: ${ERROR_LOG_FILE}${RESET}" >&2
-            echo -e "${RED}└─────────────────────────────────────────────────────────────${RESET}" >&2
-            echo "" >&2
-        else
-            echo -e "${RED}⚠ No error output captured (command failed silently)${RESET}" >&2
-        fi
-        
-        return 1
-    fi
-}
-
-# ---------------------------------------------------------------------
-# Get list of installed plugins as cleaned JSON array.
-# Enhanced with error preservation for calling functions
-# ---------------------------------------------------------------------
-get_plugins_json() {
-    local site_path="$1" wp_user="$2"
-    local home_dir domain export_vars base_cmd full_cmd plugin_list exit_code
-    debug_echo "🚩 ENTER get_plugins_json for ${site_path}"
-    home_dir="$(dirname "$(dirname "${site_path}")")"
-    domain="$(basename "${site_path}")"
-    export_vars="export DOCUMENT_URI=\"${domain}\" && export DOCUMENT_ROOT=\"${site_path}\" && export HOMEDIR=\"${home_dir}\" && export HTTP_HOST=\"${domain}\""
-    base_cmd="${WP_CLI_PATH} --path=\"${site_path}\" plugin list --format=json --skip-plugins=saphali-woocommerce-lite,jet-compare-wishlist,jet-data-importer --quiet --allow-root"
-    
-    # First attempt: suppress stderr
-    full_cmd="cd \"${site_path}\" && ${export_vars} && ${base_cmd} 2>/dev/null"
-    debug_echo "📡 Running WP-CLI plugin list command (stderr suppressed)..."
-    debug_echo "🔧 full_command: ${full_cmd}"
-    plugin_list=$(su - "${wp_user}" -c "${full_cmd}" 2>&1)
-    exit_code=$?
-    debug_echo "📊 WP-CLI exit_code: ${exit_code}"
-    
-    if [[ ${exit_code} -eq 0 && -n "${plugin_list}" ]]; then
-        if cleaned_json="$(clean_json_output "${plugin_list}" 2>/dev/null)"; then
-            printf '%s' "${cleaned_json}"
-            return 0
-        fi
-    fi
-    
-    # Second attempt without stderr suppression for error capture
-    if [[ "${DEBUG_MODE}" == true ]]; then
-        log_warning "First attempt failed. Retrying without stderr suppression for diagnostics..."
-        full_cmd="cd \"${site_path}\" && ${export_vars} && ${base_cmd}"
-        debug_echo "🔧 full_command: ${full_cmd}"
-        plugin_list=$(su - "${wp_user}" -c "${full_cmd}" 2>&1)
-        exit_code=$?
-        debug_echo "📊 WP-CLI exit_code (second attempt): ${exit_code}"
-        debug_echo "❌ Raw output from command (length: ${#plugin_list} bytes):"
-        if [[ -n "${plugin_list}" ]]; then
-            echo "${plugin_list}" | while IFS= read -r line; do
-                debug_echo "   ${line}"
-            done
-        fi
-        debug_echo "🔍 Used environment: DOCUMENT_URI='${domain}', DOCUMENT_ROOT='${site_path}', HOMEDIR='${home_dir}', HTTP_HOST='${domain}'"
-        debug_echo "🔍 User: ${wp_user}"
-    fi
-    
-    # 💡 Save error for calling functions
-    LAST_WP_CLI_ERROR="${plugin_list}"
-    export LAST_WP_CLI_ERROR
-    
-    log_error "Failed to retrieve plugin list for ${site_path} (exit ${exit_code})"
-    
-    # 💡 Display error to user
-    if [[ -n "${LAST_WP_CLI_ERROR}" ]]; then
-        echo "" >&2
-        echo -e "${RED}┌─ Plugin List Error ────────────────────────────────────────${RESET}" >&2
-        echo -e "${RED}│ Site: ${site_path}${RESET}" >&2
-        echo -e "${RED}├─────────────────────────────────────────────────────────────${RESET}" >&2
-        echo "${LAST_WP_CLI_ERROR}" | head -15 | while IFS= read -r line; do
-            echo -e "${RED}│ ${line}${RESET}" >&2
-        done
-        echo -e "${RED}└─────────────────────────────────────────────────────────────${RESET}" >&2
-        echo "" >&2
-    fi
-    
-    return 1
-}
-
-# ---------------------------------------------------------------------
-# List plugins for a site with modern terminal UI (or JSON)
-# ---------------------------------------------------------------------
-list_plugins_for_site() {
-	local site_path="$1"
-	local wp_user="$2"
-	local plugin_filter="${3:-}"
-	local json_mode="${4:-false}"
-	
-	debug_echo "🚩 ENTER list_plugins_for_site"
-	debug_echo "   site_path: [${site_path}]"
-	debug_echo "   wp_user: [${wp_user}]"
-	debug_echo "   plugin_filter: [${plugin_filter}]"
-	debug_echo "   json_mode: [${json_mode}]"
-	
-	# Input validation
-	if [[ -z "${site_path}" ]]; then
-		log_error "site_path is empty!"
-		return 1
-	fi
-	if [[ -z "${wp_user}" ]]; then
-		log_error "wp_user is empty!"
-		return 1
-	fi
-	if [[ ! -d "${site_path}" ]]; then
-		log_error "Directory does not exist: ${site_path}"
-		return 1
-	fi
-	
-# Get plugin list (first attempt with stderr suppressed)
-local plugins_json
-plugins_json="$(get_plugins_json "${site_path}" "${wp_user}" true)" || {
-    # If suppressed fails, try without suppression for better error message
-    log_warning "Failed to get plugin list with stderr suppressed, retrying without suppression..."
-    plugins_json="$(get_plugins_json "${site_path}" "${wp_user}" false)" || {
-        if [[ -n "${LAST_WP_CLI_ERROR:-}" ]]; then
-            log_error "Cannot retrieve plugin list - WP-CLI failed with error above"
-        else
-            log_error "Cannot retrieve plugin list even without suppression."
-        fi
-        return 1
-    }
-}	
-	# Apply filter if provided
-	if [[ -n "${plugin_filter}" ]]; then
-		debug_echo "🔍 Applying plugin filter: ${plugin_filter}"
-		if command -v jq &>/dev/null; then
-			plugins_json=$(echo "${plugins_json}" | jq -c "[.[] | select(.name | test(\"${plugin_filter}\"; \"i\"))]" 2>/dev/null) || plugins_json="[]"
-		else
-			# fallback: crude grep (less reliable)
-			plugins_json=$(echo "${plugins_json}" | grep -i "${plugin_filter}" || true)
-			plugins_json="[${plugins_json}]"
-		fi
-		debug_echo "📊 After filter: length ${#plugins_json}"
-	fi
-	
-	# JSON mode output
-	if [[ "${json_mode}" == "true" ]]; then
-		debug_echo "📄 JSON output mode"
-		if command -v jq &>/dev/null; then
-			echo "${plugins_json}" | jq '.' 2>/dev/null || echo "[]"
-		else
-			echo "ERROR: jq required for JSON" >&2
+resolve_site_user() { # site -> prints the user name
+	local site="$1" user
+	if [[ -n "${TARGET_USER}" ]]; then
+		if ! id -u -- "${TARGET_USER}" >/dev/null 2>&1; then
+			log_error "user '${TARGET_USER}' does not exist"
 			return 1
 		fi
+		printf '%s' "${TARGET_USER}"
 		return 0
 	fi
-	
-	# Table output
-	debug_echo "📊 Rendering table..."
-	echo ""
-	echo -e "${BOLD}${CYAN}📦 Plugins for: ${BOLD}${WHITE}${site_path}${RESET}"
-	echo -e "${DIM}$(printf '─%.0s' $(seq 1 ${TABLE_WIDTH}))${RESET}"
-	printf "${BOLD}%-40s %-12s %-10s %-8s %-15s${RESET}\n" "Plugin Name" "Status" "Version" "Update" "Slug"
-	echo -e "${DIM}$(printf '─%.0s' $(seq 1 ${TABLE_WIDTH}))${RESET}"
-	
-	local count=0
-	
-	if command -v jq &>/dev/null; then
-		while IFS= read -r line; do
-			[[ -z "${line}" ]] && continue
-			((count++)) || true
-			
-			local name status version update_avail slug
-			name=$(echo "${line}" | jq -r '.name // "N/A"' 2>/dev/null)
-			status=$(echo "${line}" | jq -r '.status // "unknown"' 2>/dev/null)
-			version=$(echo "${line}" | jq -r '.version // "N/A"' 2>/dev/null)
-			update_avail=$(echo "${line}" | jq -r '.update // "none"' 2>/dev/null)
-			slug=$(echo "${line}" | jq -r '.slug // "N/A"' 2>/dev/null)
-			
-			debug_echo "   [#${count}] ${name} | ${status} | ${version}"
-			
-			local status_color="${GREEN}" status_symbol="●"
-			case "${status}" in
-				"active")   status_color="${GREEN}"; status_symbol="✓" ;;
-				"inactive") status_color="${YELLOW}"; status_symbol="○" ;;
-				*)          status_color="${RED}";   status_symbol="✗" ;;
-			esac
-			
-			local update_ind="${GREEN}✓" update_txt="none"
-			[[ "${update_avail}" == "available" ]] && { update_ind="${RED}✗"; update_txt="update"; }
-			
-			local disp_name="${name:0:39}"
-			[[ ${#name} -gt 39 ]] && disp_name="${name:0:36}..."
-			
-			printf "%-40s ${status_color}${status_symbol} %-8s${RESET} %-10s ${update_ind} %-6s ${DIM}%s${RESET}\n" \
-				"${disp_name}" "${status}" "${version}" "${update_txt}" "${slug:0:14}"
-		done < <(echo "${plugins_json}" | jq -c '.[]' 2>/dev/null)
-	else
-		# Fallback without jq: use wp-cli table output
-		log_warning "jq not found, using fallback table format"
-		local table_out
-		table_out=$(su - "${wp_user}" -c "cd '${site_path}' && ${WP_CLI_PATH} --path='${site_path}' plugin list --allow-root 2>&1") || true
-		echo "${table_out}"
-		count=$(echo "${table_out}" | grep -c "^|" || echo 0)
-		count=$((count > 2 ? count - 2 : 0))
+	if user="$(get_wp_user "${site}")"; then
+		printf '%s' "${user}"
+		return 0
 	fi
-	
-	echo -e "${DIM}$(printf '─%.0s' $(seq 1 ${TABLE_WIDTH}))${RESET}"
-	echo -e "${DIM}Total: ${count} plugin(s)${RESET}"
-	debug_echo "✅ Exit: count=${count}"
+	return 1
+}
+
+###############################################################################
+# WP-CLI execution
+###############################################################################
+
+# Run a program as the site user with the site directory as working directory.
+# All values are passed positionally: no shell command is assembled from data.
+run_as_user() { # workdir, user, program, args...
+	local workdir="$1" user="$2"
+	shift 2
+	local runner='cd -- "$1" && shift && exec "$@"'
+
+	if [[ "${user}" == "$(id -un)" ]]; then
+		sh -c "${runner}" sh "${workdir}" "$@"
+		return $?
+	fi
+	if command -v runuser >/dev/null 2>&1; then
+		runuser -u "${user}" -- sh -c "${runner}" sh "${workdir}" "$@"
+		return $?
+	fi
+	# su passes everything after the user name to the shell as positional
+	# parameters, so the command never needs quoting.
+	su -s /bin/sh -c "${runner}" "${user}" sh "${workdir}" "$@"
+	return $?
+}
+
+# Execute WP-CLI and store stdout+stderr in WP_OUTPUT, the status in WP_RC.
+# Returns 0 for the caller: the status is reported through the variables.
+wp_exec() { # site, user, args...
+	local site="$1" user="$2"
+	shift 2
+	local parent2 domain home
+	parent2="$(dirname -- "$(dirname -- "${site}")")"
+	domain="$(basename -- "${site}")"
+
+	# WP-CLI keeps its configuration in HOME, so pass the target user's home
+	# directory instead of root's.
+	home=''
+	if command -v getent >/dev/null 2>&1; then
+		home="$(getent passwd "${user}" 2>/dev/null | cut -d: -f6 || true)"
+	fi
+	if [[ -z "${home}" || ! -d "${home}" ]]; then
+		home="${parent2}"
+	fi
+
+	local -a argv=( env
+		"DOCUMENT_URI=${domain}"
+		"DOCUMENT_ROOT=${site}"
+		"HOMEDIR=${parent2}"
+		"HTTP_HOST=${domain}"
+		"HOME=${home}"
+		"USER=${user}"
+		"LOGNAME=${user}"
+		"PATH=${PATH}"
+		"${WP_CLI_PATH}" "--path=${site}" '--allow-root' )
+
+	if [[ -n "${SKIP_PLUGINS}" ]]; then
+		argv+=( "--skip-plugins=${SKIP_PLUGINS}" )
+	fi
+	argv+=( "$@" )
+
+	WP_OUTPUT=''
+	WP_RC=0
+	WP_SKIPPED=false
+
+	if [[ "${DRY_RUN}" == true ]]; then
+		printf 'DRY-RUN: su %s -> %s\n' "${user}" "$(redact "$(printf '%q ' "${argv[@]}")")" >&2
+		WP_SKIPPED=true
+		return 0
+	fi
+
+	WP_OUTPUT="$(run_as_user "${site}" "${user}" "${argv[@]}" 2>&1)" || WP_RC=$?
 	return 0
 }
 
-# ---------------------------------------------------------------------
-# Manage plugin (activate/deactivate/delete) with safety checks
-# ---------------------------------------------------------------------
-manage_plugin_for_site() {
-	local site_path="$1" wp_user="$2" plugin_name="$3" action="$4" force="${5:-false}"
-	
-	debug_echo "🚩 START manage_plugin_for_site: ${action} '${plugin_name}' on ${site_path}"
-	
-	# Validate action
-	case "${action}" in
-		"${ACTION_ACTIVATE}"|"${ACTION_DEACTIVATE}"|"${ACTION_DELETE}") ;;
-		*)
-			log_error "Invalid action: ${action}. Must be: activate|deactivate|delete"
-			return 1
-			;;
-	esac
-	
-# Get plugin list (with stderr suppressed)
-local plugins_json
-plugins_json="$(get_plugins_json "${site_path}" "${wp_user}" true)" || {
-    if [[ -n "${LAST_WP_CLI_ERROR:-}" ]]; then
-        log_error "Cannot manage plugin - WP-CLI failed with error above"
-    else
-        log_error "Failed to retrieve plugin list for ${site_path}"
-    fi
-    return 1
-}	
-	# Find matching plugin(s) by partial name (case-insensitive)
-	local matching_plugins=""
-	if command -v jq &>/dev/null; then
-		matching_plugins=$(echo "${plugins_json}" | jq -r ".[] | select(.name | test(\"${plugin_name}\"; \"i\")) | .name" 2>/dev/null) || true
-	else
-		# fallback grep
-		matching_plugins=$(echo "${plugins_json}" | grep -oi "\"name\"[[:space:]]*:[[:space:]]*\"[^\"]*${plugin_name}[^\"]*\"" | \
-			sed -E 's/.*"name"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/' | sort -u) || true
+# Execute one maintenance command: log the outcome and feed the failure counter.
+run_wp_cli() { # site, user, args...
+	local site="$1" user="$2"
+	shift 2
+	wp_exec "${site}" "${user}" "$@"
+
+	if [[ "${WP_SKIPPED}" == true ]]; then
+		return 0
 	fi
-	
-	if [[ -z "${matching_plugins}" ]]; then
-		log_error "No plugin found matching '${plugin_name}' on ${site_path}"
-		log_info "Available plugins (use --list-plugins to see all):"
-		if command -v jq &>/dev/null; then
-			echo "${plugins_json}" | jq -r '.[].name' | head -10 | while read -r p; do
-				echo "  $p"
-			done
+	if (( WP_RC == 0 )); then
+		STATS_OK=$((STATS_OK + 1))
+		log_debug "ok: wp $* (site ${site})"
+		if [[ -n "${WP_OUTPUT}" && "${JSON_OUTPUT}" != true && "${QUIET_MODE}" != true ]]; then
+			printf '%s\n' "${WP_OUTPUT}"
+		fi
+		return 0
+	fi
+
+	log_error "wp $* failed (site ${site}, exit ${WP_RC})"
+	log_error_detail 'run_wp_cli' "wp --path=${site} $*" "${WP_OUTPUT}" "${WP_RC}"
+	print_error_output "${WP_OUTPUT}"
+	return 1
+}
+
+###############################################################################
+# Plugin helpers (no jq required)
+###############################################################################
+
+# wp-cli emits RFC4180 CSV; this parser keeps quoted commas and titles intact
+# and prints TAB-separated rows: slug, status, version, update, title.
+readonly AWK_CSV_ROWS='
+function split_csv(line, f,    i, c, inq, n) {
+	delete f
+	n = 1; f[1] = ""; inq = 0
+	for (i = 1; i <= length(line); i++) {
+		c = substr(line, i, 1)
+		if (inq) {
+			if (c == "\"") {
+				if (substr(line, i + 1, 1) == "\"") { f[n] = f[n] "\""; i++ } else { inq = 0 }
+			} else { f[n] = f[n] c }
+		} else {
+			if (c == "\"") { inq = 1 }
+			else if (c == ",") { n++; f[n] = "" }
+			else { f[n] = f[n] c }
+		}
+	}
+	return n
+}
+NR == 1 { next }
+{
+	split_csv($0, F)
+	name = F[1]; title = F[2]; status = F[3]; version = F[4]; update = F[5]
+	if (filter != "" && index(tolower(name), tolower(filter)) == 0 \
+		&& index(tolower(title), tolower(filter)) == 0) { next }
+	printf "%s\t%s\t%s\t%s\t%s\n", name, status, version, update, title
+}'
+
+# Print plugin rows for a site; on failure PLUGIN_LIST_ERROR holds the output.
+list_plugins_rows() { # site, user, filter
+	local site="$1" user="$2" filter="${3:-}"
+	PLUGIN_LIST_ERROR=''
+	wp_exec "${site}" "${user}" plugin list --format=csv --fields=name,title,status,version,update
+	if (( WP_RC != 0 )); then
+		PLUGIN_LIST_ERROR="${WP_OUTPUT}"
+		return 1
+	fi
+	[[ -n "${WP_OUTPUT}" ]] || return 0
+	printf '%s\n' "${WP_OUTPUT}" | awk -v filter="${filter}" "${AWK_CSV_ROWS}"
+	return 0
+}
+
+# Print the wp-cli JSON array (filtered with jq when available and requested).
+list_plugins_json() { # site, user, filter
+	local site="$1" user="$2" filter="${3:-}"
+	PLUGIN_LIST_ERROR=''
+	wp_exec "${site}" "${user}" plugin list --format=json --fields=name,title,status,version,update
+	if (( WP_RC != 0 )); then
+		PLUGIN_LIST_ERROR="${WP_OUTPUT}"
+		return 1
+	fi
+	local json="${WP_OUTPUT:-[]}"
+	[[ "${json:0:1}" == '[' ]] || json='[]'
+	if [[ -n "${filter}" ]]; then
+		if command -v jq >/dev/null 2>&1; then
+			json="$(printf '%s' "${json}" | jq -c --arg f "${filter}" \
+				'[ .[] | select((.name | ascii_downcase | contains($f | ascii_downcase)) or ((.title // "") | ascii_downcase | contains($f | ascii_downcase))) ]' 2>/dev/null)" || json='[]'
 		else
-			echo "${plugins_json}" | head -5 | tr ',' '\n' | grep -o '"name":"[^"]*"' | head -10 || true
+			log_error '--json with --name needs jq; install jq or drop --name'
+			return 1
 		fi
+	fi
+	printf '%s' "${json}"
+	return 0
+}
+
+show_plugin_table() { # site, user, filter
+	local site="$1" user="$2" filter="${3:-}"
+	local rows count=0 name status version update title color symbol upd upd_color sep
+
+	if ! rows="$(list_plugins_rows "${site}" "${user}" "${filter}")"; then
+		log_error "cannot list plugins for ${site}"
+		print_error_output "${PLUGIN_LIST_ERROR}"
 		return 1
 	fi
-	
-	# Handle multiple matches
-	local plugin_count
-	plugin_count=$(echo "${matching_plugins}" | grep -c . || echo 0)
-	
-	if [[ ${plugin_count} -gt 1 ]]; then
-		log_warning "Multiple plugins match '${plugin_name}':"
-		echo "${matching_plugins}" | while read -r p; do
-			echo -e "  ${CYAN}•${RESET} ${p}"
-		done
-		echo ""
-		log_info "Please specify a more exact plugin name or use the full slug"
+
+	sep="$(printf '%.0s-' {1..110})"
+	printf '\n%sPlugins on %s%s\n' "${C_BOLD}${C_CYAN}" "${site}" "${C_RESET}"
+	printf '%-42s %-12s %-12s %-9s %s\n' 'PLUGIN' 'STATUS' 'VERSION' 'UPDATE' 'TITLE'
+	printf '%s%s%s\n' "${C_DIM}" "${sep}" "${C_RESET}"
+
+	while IFS=$'\t' read -r name status version update title; do
+		[[ -n "${name}" ]] || continue
+		count=$((count + 1))
+		color="${C_YELLOW}"; symbol='o'
+		case "${status}" in
+			active)   color="${C_GREEN}";  symbol='+' ;;
+			inactive) color="${C_YELLOW}"; symbol='-' ;;
+			dropin)   color="${C_CYAN}";   symbol='~' ;;
+			*)        color="${C_RED}";    symbol='!' ;;
+		esac
+		upd='-'; upd_color="${C_GREEN}"
+		if [[ "${update}" == 'available' ]]; then
+			upd='UPDATE'; upd_color="${C_RED}"
+		fi
+		printf '%-42s %s%-12s%s %-12s %s%-9s%s %s\n' \
+			"${name:0:42}" "${color}" "${symbol} ${status}" "${C_RESET}" \
+			"${version:0:12}" "${upd_color}" "${upd}" "${C_RESET}" "${title:0:40}"
+	done <<< "${rows}"
+
+	printf '%s%s%s\n' "${C_DIM}" "${sep}" "${C_RESET}"
+	printf 'Total: %d plugin(s)\n' "${count}"
+	return 0
+}
+
+###############################################################################
+# Plugin management
+###############################################################################
+
+# Resolve a user-supplied value to exactly one plugin slug.
+match_plugin_slug() { # site, user, needle -> prints the slug
+	local site="$1" user="$2" needle="${3:-}"
+	local rows matches count
+
+	if ! rows="$(list_plugins_rows "${site}" "${user}" '')"; then
+		log_error "cannot retrieve the plugin list for ${site}"
+		print_error_output "${PLUGIN_LIST_ERROR}"
 		return 1
 	fi
-	
-	local exact_plugin_name
-	exact_plugin_name="${matching_plugins}"
-	debug_echo "✅ Found exact plugin: ${exact_plugin_name}"
-	
-	# Get current status for smart handling
-	local current_status="unknown"
-	if command -v jq &>/dev/null; then
-		current_status=$(echo "${plugins_json}" | jq -r ".[] | select(.name == \"${exact_plugin_name}\") | .status" 2>/dev/null) || true
+
+	# Priority: exact slug, exact title, then substring matches.
+	matches="$(printf '%s\n' "${rows}" | awk -F'\t' -v needle="${needle}" '
+		BEGIN { n = tolower(needle) }
+		{
+			slug = tolower($1); title = tolower($5)
+			if (slug == n || title == n) { exact[++e] = $1; next }
+			if (index(slug, n) > 0 || index(title, n) > 0) { loose[++l] = $1 }
+		}
+		END {
+			if (e > 0)      { for (i = 1; i <= e; i++) print exact[i] }
+			else if (l > 0) { for (i = 1; i <= l; i++) print loose[i] }
+		}')"
+
+	if [[ -z "${rows}" && "${DRY_RUN}" == true ]]; then
+		# Nothing is executed in dry-run, so no list can be matched against;
+		# preview the planned commands with the requested name as the slug.
+		log_debug "dry-run: using '${needle}' as the plugin slug"
+		printf '%s' "${needle}"
+		return 0
 	fi
-	debug_echo "📊 Current plugin status: ${current_status}"
-	
-	# Confirmation for destructive actions (unless --force)
-	if [[ "${action}" == "${ACTION_DELETE}" && "${force}" != "true" ]]; then
-		echo ""
-		echo -e "${BOLD}${RED}⚠️  DESTRUCTIVE ACTION WARNING${RESET}"
-		echo -e "${DIM}─────────────────────────────────────────${RESET}"
-		echo -e "Site:     ${BOLD}${site_path}${RESET}"
-		echo -e "Plugin:   ${BOLD}${exact_plugin_name}${RESET}"
-		echo -e "Action:   ${BOLD}DELETE${RESET} (permanent removal)"
-		echo -e "${DIM}─────────────────────────────────────────${RESET}"
-		echo -e "${YELLOW}This will permanently delete all plugin files and data.${RESET}"
-		echo -e "${YELLOW}This action CANNOT be undone.${RESET}"
-		echo ""
-		read -r -p "Type 'DELETE' to confirm or any other key to cancel: " confirm
-		if [[ "${confirm}" != "DELETE" ]]; then
-			log_info "Plugin deletion cancelled by user"
-			return 0
-		fi
-		echo -e "${GREEN}✓ Confirmed${RESET}"
+
+	if [[ -z "${matches}" ]]; then
+		log_error "no plugin matches '${needle}' on ${site}"
+		log_info 'the first available slugs:'
+		printf '%s\n' "${rows}" | awk -F'\t' 'NR <= 10 { printf "  %s\n", $1 }' >&2
+		return 1
 	fi
-	
-	# Execute the action
-	local wp_cmd=()
-	local action_text=""
-	
-	case "${action}" in
+
+	count=$(printf '%s\n' "${matches}" | grep -c . || true)
+	count="${count:-0}"
+	if (( count > 1 )); then
+		log_error "'${needle}' matches ${count} plugins on ${site}; use the exact slug:"
+		printf '%s\n' "${matches}" | sed 's/^/  /' >&2
+		return 1
+	fi
+
+	printf '%s' "${matches}"
+	return 0
+}
+
+confirm_delete() { # site, slug, status
+	local site="$1" slug="$2" status="$3" answer
+
+	if [[ "${FORCE_MODE}" == true ]]; then
+		return 0
+	fi
+	if [[ ! -t 0 ]]; then
+		log_error 'refusing to delete without a terminal; pass --force to confirm non-interactively'
+		return 1
+	fi
+
+	printf '\n%s DESTRUCTIVE ACTION %s\n' "${C_BOLD}${C_RED}" "${C_RESET}" >&2
+	printf '  site   : %s\n' "${site}" >&2
+	printf '  plugin : %s (status: %s)\n' "${slug}" "${status}" >&2
+	printf '  the plugin files and its data will be removed permanently\n' >&2
+	printf 'Type the plugin slug "%s" to confirm: ' "${slug}" >&2
+	read -r answer || answer=''
+	if [[ "${answer}" != "${slug}" ]]; then
+		log_info 'deletion cancelled'
+		return 1
+	fi
+	return 0
+}
+
+manage_plugin() { # site, user
+	local site="$1" user="$2" slug status rows is_active=false
+
+	if ! slug="$(match_plugin_slug "${site}" "${user}" "${PLUGIN_NAME}")"; then
+		return 1
+	fi
+
+	rows="$(list_plugins_rows "${site}" "${user}" "${slug}")" || true
+	status="$(printf '%s\n' "${rows}" | awk -F'\t' -v s="${slug}" '$1 == s { print $2; exit }')"
+	if [[ "${status}" =~ ^[Aa][Cc][Tt][Ii][Vv][Ee]$ ]]; then
+		is_active=true
+	fi
+	log_debug "resolved '${slug}' (status: ${status:-unknown}) on ${site}"
+
+	case "${PLUGIN_ACTION}" in
 		"${ACTION_ACTIVATE}")
-			if [[ "${current_status}" == "active" ]]; then
-				log_info "Plugin '${exact_plugin_name}' is already active"
+			if [[ "${is_active}" == true ]]; then
+				log_info "plugin '${slug}' is already active on ${site}"
 				return 0
 			fi
-			wp_cmd=(plugin activate "${exact_plugin_name}")
-			action_text="Activating"
+			run_wp_cli "${site}" "${user}" plugin activate "${slug}" || return 1
 			;;
 		"${ACTION_DEACTIVATE}")
-			if [[ "${current_status}" == "inactive" ]]; then
-				log_info "Plugin '${exact_plugin_name}' is already inactive"
+			if [[ "${is_active}" == false ]]; then
+				log_info "plugin '${slug}' is already inactive on ${site}"
 				return 0
 			fi
-			wp_cmd=(plugin deactivate "${exact_plugin_name}")
-			action_text="Deactivating"
+			run_wp_cli "${site}" "${user}" plugin deactivate "${slug}" || return 1
 			;;
 		"${ACTION_DELETE}")
-			# Auto-deactivate if active before deletion
-			if [[ "${current_status}" == "active" ]]; then
-				log_info "Deactivating plugin before deletion: ${exact_plugin_name}"
-				run_wp_cli "${site_path}" "${wp_user}" plugin deactivate "${exact_plugin_name}" || true
+			confirm_delete "${site}" "${slug}" "${status:-unknown}" || return 1
+			if [[ "${is_active}" == true ]]; then
+				log_info "deactivating '${slug}' before deletion"
+				run_wp_cli "${site}" "${user}" plugin deactivate "${slug}" || true
 			fi
-			wp_cmd=(plugin delete "${exact_plugin_name}")
-			action_text="Deleting"
+			run_wp_cli "${site}" "${user}" plugin delete "${slug}" || return 1
 			;;
 	esac
-	
-	log_info "${action_text} plugin: ${exact_plugin_name}"
-	
-	if run_wp_cli "${site_path}" "${wp_user}" "${wp_cmd[@]}"; then
-		log_success "Plugin '${exact_plugin_name}' ${action}d successfully on ${site_path}"
-		debug_echo "✅ Plugin management completed"
-		return 0
-	else
-		log_error "Failed to ${action} plugin '${exact_plugin_name}' on ${site_path}"
-		return 1
-	fi
-}
 
-# ---------------------------------------------------------------------
-# Astra specific handlers (unchanged, but comments translated)
-# ---------------------------------------------------------------------
-_handle_astra_in_full_mode() {
-	local site_path="$1" wp_user="$2"
-	
-	debug_echo "🚩 START _handle_astra_in_full_mode"
-	
-	log_info "Checking Astra plugin status for: ${site_path}"
-	
-	if ! run_wp_cli "${site_path}" "${wp_user}" plugin status astra-addon >/dev/null 2>&1; then
-		log_warning "Astra plugin not found or not active for: ${site_path}"
-		debug_echo "❌ Astra plugin check failed"
-		return 0
-	fi
-	
-	log_success "Astra plugin found and active"
-	debug_echo "✅ Astra plugin is installed and active"
-	
-	log_info "Checking if Astra plugin update is available"
-	debug_echo "🔍 Checking for available updates with dry-run"
-	
-	local dry_run_output
-	dry_run_output=$(su - "${wp_user}" -c "cd \"${site_path}\" && ${WP_CLI_PATH} --path=\"${site_path}\" plugin update astra-addon --dry-run --skip-plugins=saphali-woocommerce-lite,jet-compare-wishlist,jet-data-importer --quiet --allow-root 2>&1") || true
-	
-	if echo "${dry_run_output}" | grep -q "Available"; then
-		log_info "Astra update available, attempting update"
-		debug_echo "🔄 Running Astra plugin update"
-		
-		if run_wp_cli "${site_path}" "${wp_user}" plugin update astra-addon; then
-			log_success "Astra plugin updated successfully in full mode"
-			debug_echo "✅ Astra plugin updated successfully"
-		else
-			log_warning "Astra plugin update failed, activating license and retrying"
-			debug_echo "🔑 Astra license activation needed"
-			
-			if run_wp_cli "${site_path}" "${wp_user}" brainstormforce license activate astra-addon "${ASTRA_KEY}"; then
-				log_success "Astra license activated successfully"
-				debug_echo "✅ License activation successful"
-				
-				if run_wp_cli "${site_path}" "${wp_user}" plugin update astra-addon; then
-					log_success "Astra plugin updated successfully after license activation"
-					debug_echo "✅ Astra plugin updated after license activation"
-				else
-					log_error "Astra plugin update failed even after license activation"
-					debug_echo "❌ Update failed after license activation"
-				fi
-			else
-				log_error "Failed to activate Astra license"
-				debug_echo "❌ License activation failed"
-			fi
-		fi
-	else
-		log_info "No Astra update available"
-		debug_echo "ℹ️ No Astra update available"
-	fi
-	
-	debug_echo "✅ COMPLETED _handle_astra_in_full_mode"
-}
-
-_handle_astra_operations() {
-	local site_path="$1" wp_user="$2"
-	
-	debug_echo "🚩 START _handle_astra_operations"
-	
-	if [[ "${ASTRA_KEY}" == "YOUR_KEY" ]]; then
-		log_error "Astra license key is not configured. Please set ASTRA_KEY in the script."
-		echo -e "${RED}❌ ERROR: Astra license key is not configured.${RESET}"
-		echo -e "${YELLOW}Please edit the script and set ASTRA_KEY to your actual license key.${RESET}"
-		return 1
-	fi
-	
-	log_info "Checking Astra plugin status for: ${site_path}"
-	
-	if ! run_wp_cli "${site_path}" "${wp_user}" plugin status astra-addon >/dev/null 2>&1; then
-		log_warning "Astra plugin not found or not active for: ${site_path}"
-		debug_echo "❌ Astra plugin check failed"
-		return 1
-	fi
-	
-	log_success "Astra plugin found and active"
-	debug_echo "✅ Astra plugin is installed and active"
-	
-	log_info "Attempting to update Astra plugin"
-	debug_echo "🔄 Running initial Astra plugin update"
-	
-	if run_wp_cli "${site_path}" "${wp_user}" plugin update astra-addon; then
-		log_success "Astra plugin updated successfully"
-		debug_echo "✅ Astra plugin updated on first attempt"
-		return 0
-	fi
-	
-	log_warning "Astra plugin update failed, checking if update is available"
-	debug_echo "🔍 Checking for available updates with dry-run"
-	
-	local dry_run_output
-	dry_run_output=$(su - "${wp_user}" -c "cd \"${site_path}\" && ${WP_CLI_PATH} --path=\"${site_path}\" plugin update astra-addon --dry-run --skip-plugins=saphali-woocommerce-lite,jet-compare-wishlist,jet-data-importer --quiet --allow-root 2>&1") || true
-	
-	if echo "${dry_run_output}" | grep -q "Available"; then
-		log_info "Astra update available but failed, activating license and retrying"
-		debug_echo "🔑 Astra license activation needed"
-		
-		log_info "Activating Astra license"
-		debug_echo "🔑 Activating license with key: ${ASTRA_KEY}"
-		
-		if run_wp_cli "${site_path}" "${wp_user}" brainstormforce license activate astra-addon "${ASTRA_KEY}"; then
-			log_success "Astra license activated successfully"
-			debug_echo "✅ License activation successful"
-			
-			log_info "Retrying Astra plugin update after license activation"
-			debug_echo "🔄 Retrying plugin update"
-			
-			if run_wp_cli "${site_path}" "${wp_user}" plugin update astra-addon; then
-				log_success "Astra plugin updated successfully after license activation"
-				debug_echo "✅ Astra plugin updated after license activation"
-				return 0
-			else
-				log_error "Astra plugin update failed even after license activation"
-				debug_echo "❌ Update failed after license activation"
-				return 1
-			fi
-		else
-			log_error "Failed to activate Astra license"
-			debug_echo "❌ License activation failed"
-			return 1
-		fi
-	else
-		log_info "No Astra update available or dry-run check failed"
-		debug_echo "ℹ️ No update available or dry-run issue"
-		return 0
-	fi
-	
-	debug_echo "✅ COMPLETED _handle_astra_operations"
-}
-
-# ---------------------------------------------------------------------
-# Ensure sites file exists; if not, try discovery script or ask user.
-# ---------------------------------------------------------------------
-ensure_sites_file() {
-	debug_echo "🚩 START ensure_sites_file"
-	
-	if [[ -f "${SITES_FILE}" ]]; then
-		log_info "Sites file found: ${SITES_FILE}"
-		debug_echo "✅ Sites file exists"
-		return 0
-	fi
-
-	log_warning "Sites file NOT found: ${SITES_FILE}"
-	log_info "Checking for discovery script: Find_WP_Senior.sh"
-
-	if [[ -f "${DISCOVER_SCRIPT}" && -x "${DISCOVER_SCRIPT}" ]]; then
-		log_info "Running discovery script: ${DISCOVER_SCRIPT}"
-		debug_echo "🔍 Executing discovery script: ${DISCOVER_SCRIPT}"
-		if "${DISCOVER_SCRIPT}"; then
-			log_success "Discovery script completed."
-		else
-			log_warning "Discovery script exited with non-zero status."
-		fi
-	else
-		log_warning "Discovery script not found or not executable: ${DISCOVER_SCRIPT}"
-	fi
-
-	# Re-check after discovery
-	if [[ -f "${SITES_FILE}" ]]; then
-		log_success "Sites file created by discovery script: ${SITES_FILE}"
-		return 0
-	fi
-
-	# Fallback: manual input
-	log_warning "No sites file found. Please provide the absolute path to a WordPress installation."
-	read -r -p "Enter full path to WordPress root (e.g. /var/www/site.com): " user_path
-
-	if [[ -z "${user_path}" ]]; then
-		log_error "No path provided. Exiting."
-		exit 1
-	fi
-
-	user_path="$(trim "${user_path}")"
-	debug_echo "📝 User provided path: ${user_path}"
-
-	if [[ ! -d "${user_path}" ]]; then
-		log_error "Directory does not exist: ${user_path}"
-		exit 1
-	fi
-
-	if [[ ! -f "${user_path}/wp-config.php" ]] && [[ ! -f "${user_path}/wp-settings.php" ]]; then
-		log_error "Not a valid WordPress installation: ${user_path}"
-		exit 1
-	fi
-
-	printf '%s\n' "${user_path}" > "${SITES_FILE}"
-	log_success "Path saved to ${SITES_FILE}. Continuing..."
-	debug_echo "✅ Completed ensure_sites_file"
-}
-
-# ---------------------------------------------------------------------
-# Process a single site based on current mode and options
-# ---------------------------------------------------------------------
-process_site() {
-	local site_path="$1"
-	
-	debug_echo "📍 Processing site path: '${site_path}'"
-	
-	[[ -d "${site_path}" ]] || { 
-		log_warning "Skipping (not a dir): ${site_path}"
-		debug_echo "⏩ Path is not a directory, skipping"
-		return 0
-	}
-
-	log_info "Processing site: ${site_path}"
-	((STATS[total_sites]++)) || true
-	debug_echo "📊 Total sites counter: ${STATS[total_sites]}"
-
-	debug_echo "🔍 Getting WordPress user for: ${site_path}"
-	local wp_user
-	wp_user="$(get_wp_user "${site_path}")" || {
-		log_error "Skipping site due to user resolution failure: ${site_path}"
-		debug_echo "⏩ User resolution failed, skipping site"
-		return 0
-	}
-	debug_echo "✅ Resolved WordPress user: '${wp_user}'"
-
-	debug_echo "🔧 Executing mode '${MODE}' for site: ${site_path}"
-	execute_mode "${MODE}" "${site_path}" "${wp_user}"
-	debug_echo "✅ Completed processing for site: ${site_path}"
-	
+	log_success "${PLUGIN_ACTION} '${slug}' on ${site}"
 	return 0
 }
 
-# ---------------------------------------------------------------------
-# Execute the appropriate operations for the given mode
-# ---------------------------------------------------------------------
-execute_mode() {
-	local mode="$1" site_path="$2" wp_user="$3"
-	
-	debug_echo "🚩 START execute_mode"
-	debug_echo "📋 mode: ${mode}"
-	debug_echo "📍 site_path: ${site_path}"
-	debug_echo "👤 wp_user: ${wp_user}"
+###############################################################################
+# Astra handling
+###############################################################################
+
+astra_field() { # site, user, field -> prints the value
+	wp_exec "$1" "$2" plugin list --name="${ASTRA_PLUGIN}" --field="$3"
+	(( WP_RC == 0 )) || return 1
+	local value
+	value="$(trim "${WP_OUTPUT}")"
+	if [[ -z "${value}" && "${WP_SKIPPED}" == true ]]; then
+		# Dry-run: assume a healthy state so the planned license/update steps
+		# are visible in the preview.
+		case "$3" in
+			status) value='active' ;;
+			update) value='available' ;;
+		esac
+	fi
+	printf '%s' "${value}"
+	return 0
+}
+
+# Update the Astra plugin, activating the license when an update is pending.
+# "quiet" only changes how a missing plugin is reported (full mode).
+handle_astra() { # site, user, [quiet]
+	local site="$1" user="$2" quiet="${3:-}"
+	local status update
+
+	if ! status="$(astra_field "${site}" "${user}" status)"; then
+		log_warning "cannot read the ${ASTRA_PLUGIN} status on ${site}"
+		return 0
+	fi
+	if [[ -z "${status}" ]]; then
+		log_info "${ASTRA_PLUGIN} is not installed on ${site}"
+		return 0
+	fi
+	if [[ "${status}" != 'active' ]]; then
+		log_warning "${ASTRA_PLUGIN} is not active on ${site} (status: ${status})"
+		return 0
+	fi
+
+	if ! update="$(astra_field "${site}" "${user}" update)"; then
+		log_warning "cannot read the ${ASTRA_PLUGIN} update state on ${site}"
+		return 0
+	fi
+	if [[ "${update}" != 'available' ]]; then
+		log_info "no ${ASTRA_PLUGIN} update available on ${site}"
+		return 0
+	fi
+
+	if [[ -n "${ASTRA_KEY}" ]]; then
+		log_info "activating the ${ASTRA_PLUGIN} license on ${site}"
+		run_wp_cli "${site}" "${user}" brainstormforce license activate "${ASTRA_PLUGIN}" "${ASTRA_KEY}" || true
+	else
+		log_warning "ASTRA_KEY is not set; a license-protected download may fail on ${site}"
+	fi
+
+	if run_wp_cli "${site}" "${user}" plugin update "${ASTRA_PLUGIN}"; then
+		log_success "${ASTRA_PLUGIN} updated on ${site}"
+		return 0
+	fi
+	log_error "${ASTRA_PLUGIN} update failed on ${site}"
+	return 1
+}
+
+###############################################################################
+# Site list
+###############################################################################
+
+load_sites() {
+	local line site
+
+	if [[ -n "${TARGET_SITE}" ]]; then
+		SITES=( "${TARGET_SITE}" )
+		return 0
+	fi
+
+	if [[ ! -f "${SITES_FILE}" ]]; then
+		ensure_sites_file
+	fi
+	if [[ ! -f "${SITES_FILE}" ]]; then
+		log_error "site list not found: ${SITES_FILE}"
+		exit "${EXIT_NOTHING}"
+	fi
+
+	local -a raw=()
+	mapfile -t raw < "${SITES_FILE}" || true
+	for line in "${raw[@]:-}"; do
+		site="$(trim "${line}")"
+		[[ -n "${site}" ]] || continue
+		[[ "${site}" == \#* ]] && continue
+		if [[ -n "${SEEN_SITES[${site}]:-}" ]]; then
+			log_debug "duplicate entry ignored: ${site}"
+			continue
+		fi
+		SEEN_SITES["${site}"]=1
+		SITES+=( "${site}" )
+	done
+
+	if (( ${#SITES[@]} == 0 )); then
+		log_warning "no usable entries in ${SITES_FILE}"
+		exit "${EXIT_NOTHING}"
+	fi
+	log_debug "${#SITES[@]} site(s) queued"
+	return 0
+}
+
+ensure_sites_file() {
+	# Auto-discovery walks the whole web root, which is undesirable in cron
+	# jobs; set AUTO_DISCOVER=0 to require an explicit site list.
+	if [[ "${AUTO_DISCOVER}" != 1 ]]; then
+		log_warning 'site list is missing and auto-discovery is disabled (AUTO_DISCOVER=0)'
+		return 0
+	fi
+	if [[ -x "${DISCOVER_SCRIPT}" ]]; then
+		log_warning "site list missing; running ${DISCOVER_SCRIPT}"
+		if ! "${DISCOVER_SCRIPT}"; then
+			log_warning 'the discovery script exited with an error'
+		fi
+	elif [[ -e "${DISCOVER_SCRIPT}" ]]; then
+		log_warning "${DISCOVER_SCRIPT} is not executable; run: chmod +x '${DISCOVER_SCRIPT}'"
+	else
+		log_warning "discovery script not found: ${DISCOVER_SCRIPT}"
+	fi
+
+	if [[ -f "${SITES_FILE}" ]]; then
+		return 0
+	fi
+	if [[ ! -t 0 ]]; then
+		log_error "no site list and no terminal for manual input; create ${SITES_FILE}"
+		exit "${EXIT_NOTHING}"
+	fi
+
+	local answer
+	printf 'Enter the absolute path of a WordPress installation: ' >&2
+	read -r answer || answer=''
+	answer="$(trim "${answer}")"
+	if [[ -z "${answer}" ]]; then
+		log_error 'no path provided'
+		exit "${EXIT_NOTHING}"
+	fi
+	if [[ ! -d "${answer}" ]]; then
+		log_error "not a directory: ${answer}"
+		exit "${EXIT_NOTHING}"
+	fi
+	if [[ ! -f "${answer}/wp-config.php" ]]; then
+		log_warning "${answer} has no wp-config.php; continuing anyway"
+	fi
+	printf '%s\n' "${answer}" > "${SITES_FILE}"
+	log_success "path saved to ${SITES_FILE}"
+	return 0
+}
+
+###############################################################################
+# Modes
+###############################################################################
+
+# Dispatch the operations of one mode for one site. Returns 0 when every
+# planned operation succeeded, 1 otherwise (failures are counted, not fatal).
+execute_mode() { # mode, site, user
+	local mode="$1" site="$2" user="$3"
+	local failures=0 plugins
+
+	run_op() {
+		run_wp_cli "${site}" "${user}" "$@" || failures=$((failures + 1))
+		return 0
+	}
+
+	log_debug "mode '${mode}' for ${site} as ${user}"
 
 	case "${mode}" in
 		"${MODE_FULL}")
-			debug_echo "🔧 Executing FULL mode operations"
-			run_wp_cli "${site_path}" "${wp_user}" core update
-			run_wp_cli "${site_path}" "${wp_user}" plugin update --all
-			if [[ "${ASTRA_KEY}" != "YOUR_KEY" ]]; then
-				debug_echo "🔧 Processing Astra in FULL mode"
-				_handle_astra_in_full_mode "${site_path}" "${wp_user}"
+			run_op core update
+			run_op plugin update --all
+			if [[ -n "${ASTRA_KEY}" ]]; then
+				handle_astra "${site}" "${user}" quiet || failures=$((failures + 1))
 			else
-				debug_echo "⏩ Skipping Astra in FULL mode - key not set"
+				log_debug 'ASTRA_KEY is empty, Astra is skipped in full mode'
 			fi
-			run_wp_cli "${site_path}" "${wp_user}" theme update --all
-			run_wp_cli "${site_path}" "${wp_user}" core update-db
-			run_wp_cli "${site_path}" "${wp_user}" db optimize
-			run_wp_cli "${site_path}" "${wp_user}" db repair
-			run_wp_cli "${site_path}" "${wp_user}" cron event run --due-now
+			run_op theme update --all
+			run_op core update-db
+			run_op db optimize
+			run_op db repair
+			run_op cron event run --due-now
 			;;
 		"${MODE_CORE}")
-			debug_echo "🔧 Executing CORE mode operations"
-			run_wp_cli "${site_path}" "${wp_user}" core update
-			run_wp_cli "${site_path}" "${wp_user}" core update-db
+			run_op core update
+			run_op core update-db
 			;;
 		"${MODE_PLUGINS}")
-			debug_echo "🔧 Executing PLUGINS mode operations"
-			run_wp_cli "${site_path}" "${wp_user}" plugin update --all
+			run_op plugin update --all
 			;;
 		"${MODE_THEMES}")
-			debug_echo "🔧 Executing THEMES mode operations"
-			run_wp_cli "${site_path}" "${wp_user}" theme update --all
+			run_op theme update --all
 			;;
 		"${MODE_DB_OPTIMIZE}")
-			debug_echo "🔧 Executing DB_OPTIMIZE mode operations"
-			run_wp_cli "${site_path}" "${wp_user}" db optimize
-			run_wp_cli "${site_path}" "${wp_user}" db repair
+			run_op db optimize
+			run_op db repair
 			;;
 		"${MODE_DB_FIX}")
-			debug_echo "🔧 Executing DB_FIX mode operations"
-			run_wp_cli "${site_path}" "${wp_user}" db repair
+			run_op db repair
 			;;
 		"${MODE_CRON}")
-			debug_echo "🔧 Executing CRON mode operations"
-			run_wp_cli "${site_path}" "${wp_user}" cron event run --due-now
+			run_op cron event run --due-now
 			;;
 		"${MODE_ASTRA}")
-			debug_echo "🔧 Executing ASTRA mode operations"
-			_handle_astra_operations "${site_path}" "${wp_user}"
+			handle_astra "${site}" "${user}" || failures=$((failures + 1))
 			;;
 		"${MODE_LIST_PLUGINS}")
-			debug_echo "🔧 Executing LIST_PLUGINS mode operations"
-			debug_echo "📍 site_path=${site_path}, wp_user=${wp_user}"
-			debug_echo "🔍 PLUGIN_NAME=${PLUGIN_NAME}, JSON_OUTPUT=${JSON_OUTPUT}"
-			list_plugins_for_site "${site_path}" "${wp_user}" "${PLUGIN_NAME}" "${JSON_OUTPUT}"
+			if [[ "${JSON_OUTPUT}" == true ]]; then
+				if plugins="$(list_plugins_json "${site}" "${user}" "${PLUGIN_NAME}")"; then
+					printf '{"site": "%s", "plugins": %s}\n' "$(json_escape "${site}")" "${plugins}"
+				else
+					failures=$((failures + 1))
+				fi
+			else
+				show_plugin_table "${site}" "${user}" "${PLUGIN_NAME}" || failures=$((failures + 1))
+			fi
 			;;
 		"${MODE_PLUGIN_MANAGE}")
-			debug_echo "🔧 Executing PLUGIN_MANAGE mode operations"
-			if [[ -z "${PLUGIN_ACTION}" || -z "${PLUGIN_NAME}" ]]; then
-				log_error "Plugin management requires --action and --name options"
-				return 1
-			fi
-			manage_plugin_for_site "${site_path}" "${wp_user}" "${PLUGIN_NAME}" "${PLUGIN_ACTION}" "${FORCE_MODE}"
+			manage_plugin "${site}" "${user}" || failures=$((failures + 1))
 			;;
 		*)
-			log_error "Unknown mode: ${mode}"
+			log_error "unknown mode: ${mode}"
 			return 1
 			;;
 	esac
-	
-	debug_echo "✅ COMPLETED execute_mode for ${mode}"
+
+	(( failures == 0 ))
 }
 
-# ---------------------------------------------------------------------
-# Display startup banner with all parameters and planned operations
-# ---------------------------------------------------------------------
-show_startup_info() {
-    $HEADER_SHOWN && return 0
-    HEADER_SHOWN=true
-    echo ""
-    echo -e "${BOLD}${CYAN}╔═══════════════════════════════════════════════════════════════╗${RESET}"
-    echo -e "${BOLD}${CYAN}║${RESET}     ${BOLD}WordPress Maintenance Automation v${SCRIPT_VERSION}${RESET}                    ${BOLD}${CYAN}║${RESET}"
-    echo -e "${BOLD}${CYAN}║${RESET}     ${DIM}Secure, fast, and modular WP-CLI manager${RESET}                  ${BOLD}${CYAN}║${RESET}"
-    echo -e "${BOLD}${CYAN}╚═══════════════════════════════════════════════════════════════╝${RESET}"
-    echo ""
-    
-    echo -e "${BOLD}📋 SCRIPT CONFIGURATION${RESET}"
-    echo -e "${DIM}$(printf '─%.0s' $(seq 1 65))${RESET}"
-    
-    # Mode information
-    local mode_desc=""
-    case "${MODE}" in
-        "${MODE_FULL}")          mode_desc="Full update (core + plugins + themes + DB + cron)" ;;
-        "${MODE_CORE}")          mode_desc="WordPress core update only" ;;
-        "${MODE_PLUGINS}")       mode_desc="Update all plugins" ;;
-        "${MODE_THEMES}")        mode_desc="Update all themes" ;;
-        "${MODE_DB_OPTIMIZE}")   mode_desc="Database optimization and repair" ;;
-        "${MODE_DB_FIX}")        mode_desc="Database repair only" ;;
-        "${MODE_CRON}")          mode_desc="Run due cron events" ;;
-        "${MODE_ASTRA}")         mode_desc="Astra plugin update with license activation" ;;
-        "${MODE_LIST_PLUGINS}")  mode_desc="List plugins with table/JSON view" ;;
-        "${MODE_PLUGIN_MANAGE}") mode_desc="Plugin management (activate/deactivate/delete)" ;;
-        *)                       mode_desc="Unknown mode" ;;
-    esac
-    printf "${BOLD}🎯 Operation Mode:${RESET}     %-38s${RESET}\n" "${mode_desc}"
-    printf "${BOLD}🔧 Mode Flag:${RESET}          %-38s${RESET}\n" "${MODE}"
-    
-    # Target sites
-    if [[ -n "${TARGET_SITE}" ]]; then
-        printf "${BOLD}📍 Target Site:${RESET}        %-38s${RESET}\n" "${TARGET_SITE}"
-    else
-        printf "${BOLD}📍 Target Sites:${RESET}       %-38s${RESET}\n" "All sites from ${SITES_FILE}"
-    fi
-    
-    # Plugin-specific options
-    if [[ "${MODE}" == "${MODE_PLUGIN_MANAGE}" || "${MODE}" == "${MODE_LIST_PLUGINS}" ]]; then
-        if [[ -n "${PLUGIN_NAME}" ]]; then
-            printf "${BOLD}🔌 Plugin Filter:${RESET}      %-38s${RESET}\n" "${PLUGIN_NAME}"
-        fi
-        if [[ "${MODE}" == "${MODE_PLUGIN_MANAGE}" ]]; then
-            local action_desc=""
-            case "${PLUGIN_ACTION}" in
-                "${ACTION_ACTIVATE}")   action_desc="Activate plugin" ;;
-                "${ACTION_DEACTIVATE}") action_desc="Deactivate plugin" ;;
-                "${ACTION_DELETE}")     action_desc="Delete plugin (DESTRUCTIVE)" ;;
-            esac
-            printf "${BOLD}⚡ Plugin Action:${RESET}     %-38s${RESET}\n" "${action_desc}"
-            if [[ "${FORCE_MODE}" == "true" ]]; then
-                printf "${BOLD}🚀 Force Mode:${RESET}        %-38s${RESET}\n" "ENABLED (skip confirmations)"
-            else
-                printf "${BOLD}🚀 Force Mode:${RESET}        %-38s${RESET}\n" "DISABLED (confirmations enabled)"
-            fi
-        fi
-        if [[ "${JSON_OUTPUT}" == "true" ]]; then
-            printf "${BOLD}📄 Output Format:${RESET}       %-38s${RESET}\n" "JSON"
-        else
-            printf "${BOLD}📄 Output Format:${RESET}       %-38s${RESET}\n" "Table"
-        fi
-    fi
-    
-    # Debug mode
-    if [[ "${DEBUG_MODE}" == "true" ]]; then
-        printf "${BOLD}🐞 Debug Mode:${RESET}          %-38s${RESET}\n" "ENABLED"
-    else
-        printf "${BOLD}🐞 Debug Mode:${RESET}          %-38s${RESET}\n" "DISABLED"
-    fi
-    
-    echo -e "${DIM}$(printf '─%.0s' $(seq 1 65))${RESET}"
-    
-    # Planned operations based on mode
-    echo -e "${BOLD}📝 PLANNED OPERATIONS:${RESET}"
-    echo -e "${DIM}$(printf '─%.0s' $(seq 1 65))${RESET}"
-    
-    case "${MODE}" in
-        "${MODE_FULL}")
-            echo -e "  ${GREEN}✓${RESET} WordPress core update"
-            echo -e "  ${GREEN}✓${RESET} All plugins update"
-            echo -e "  ${GREEN}✓${RESET} Astra plugin update (if installed)"
-            echo -e "  ${GREEN}✓${RESET} All themes update"
-            echo -e "  ${GREEN}✓${RESET} Database update (wp update-db)"
-            echo -e "  ${GREEN}✓${RESET} Database optimization"
-            echo -e "  ${GREEN}✓${RESET} Database repair"
-            echo -e "  ${GREEN}✓${RESET} Cron events execution"
-            ;;
-        "${MODE_CORE}")
-            echo -e "  ${GREEN}✓${RESET} WordPress core update"
-            echo -e "  ${GREEN}✓${RESET} Database update (wp update-db)"
-            ;;
-        "${MODE_PLUGINS}")
-            echo -e "  ${GREEN}✓${RESET} All plugins update"
-            ;;
-        "${MODE_THEMES}")
-            echo -e "  ${GREEN}✓${RESET} All themes update"
-            ;;
-        "${MODE_DB_OPTIMIZE}")
-            echo -e "  ${GREEN}✓${RESET} Database optimization"
-            echo -e "  ${GREEN}✓${RESET} Database repair"
-            ;;
-        "${MODE_DB_FIX}")
-            echo -e "  ${GREEN}✓${RESET} Database repair"
-            ;;
-        "${MODE_CRON}")
-            echo -e "  ${GREEN}✓${RESET} Run due cron events"
-            ;;
-        "${MODE_ASTRA}")
-            echo -e "  ${GREEN}✓${RESET} Check Astra plugin status"
-            echo -e "  ${GREEN}✓${RESET} Update Astra plugin"
-            echo -e "  ${GREEN}✓${RESET} Activate license if update fails"
-            ;;
-        "${MODE_LIST_PLUGINS}")
-            echo -e "  ${GREEN}✓${RESET} Retrieve plugin list"
-            if [[ -n "${PLUGIN_NAME}" ]]; then
-                echo -e "  ${GREEN}✓${RESET} Filter by: ${PLUGIN_NAME}"
-            fi
-            if [[ "${JSON_OUTPUT}" == "true" ]]; then
-                echo -e "  ${GREEN}✓${RESET} Output in JSON format"
-            else
-                echo -e "  ${GREEN}✓${RESET} Output in table format"
-            fi
-            ;;
-        "${MODE_PLUGIN_MANAGE}")
-            echo -e "  ${GREEN}✓${RESET} Find plugin matching: ${PLUGIN_NAME}"
-            echo -e "  ${GREEN}✓${RESET} ${action_desc:-Perform action}"
-            if [[ "${PLUGIN_ACTION}" == "${ACTION_DELETE}" ]]; then
-                echo -e "  ${RED}⚠${RESET} ${RED}DESTRUCTIVE ACTION - files will be permanently deleted${RESET}"
-            fi
-            ;;
-    esac
-    
-    echo -e "${DIM}$(printf '─%.0s' $(seq 1 65))${RESET}"
-    
-    # Warnings
-    local has_warnings=false
-    echo -e "${BOLD}⚠️  WARNINGS & NOTES:${RESET}"
-    echo -e "${DIM}$(printf '─%.0s' $(seq 1 65))${RESET}"
-    
-    if [[ "${PLUGIN_ACTION}" == "${ACTION_DELETE}" && "${FORCE_MODE}" != "true" ]]; then
-        echo -e "  ${YELLOW}⚠${RESET} Deletion requires manual confirmation (type 'DELETE')"
-        has_warnings=true
-    fi
-    
-    if [[ "${DEBUG_MODE}" == "true" ]]; then
-        echo -e "  ${YELLOW}⚠${RESET} Debug mode enabled - verbose output to stderr"
-        echo -e "  ${YELLOW}⚠${RESET} Log file: ${LOG_FILE}"
-        echo -e "  ${YELLOW}⚠${RESET} Error log: ${ERROR_LOG_FILE}"
-        has_warnings=true
-    fi
-    
-    if [[ "${MODE}" == "${MODE_FULL}" ]]; then
-        echo -e "  ${YELLOW}⚠${RESET} Full mode may take several minutes per site"
-        has_warnings=true
-    fi
-    
-    if [[ -n "${TARGET_SITE}" && ! -d "${TARGET_SITE}" ]]; then
-        echo -e "  ${RED}✗${RESET} Target site directory does not exist: ${TARGET_SITE}"
-        has_warnings=true
-    fi
-    
-    if [[ "${has_warnings}" == "false" ]]; then
-        echo -e "  ${GREEN}✓${RESET} No warnings - ready to proceed"
-    fi
-    
-    echo ""
-    echo -e "${DIM}$(printf '─%.0s' $(seq 1 65))${RESET}"
-    echo ""
+process_site() { # site
+	local site="$1" user
+
+	if [[ ! -d "${site}" ]]; then
+		log_warning "skipping, not a directory: ${site}"
+		return 1
+	fi
+	if [[ ! -f "${site}/wp-config.php" ]]; then
+		log_debug "no wp-config.php in ${site}; trying anyway"
+	fi
+
+	STATS_SITES=$((STATS_SITES + 1))
+	log_info "processing ${site}"
+
+	if ! user="$(resolve_site_user "${site}")"; then
+		log_error "cannot determine the system user for ${site}; pass --user"
+		return 1
+	fi
+	if [[ "${user}" != "$(id -un)" ]] && (( EUID != 0 )); then
+		log_error "switching to user '${user}' requires root (site ${site})"
+		return 1
+	fi
+	log_debug "running as '${user}'"
+
+	execute_mode "${MODE}" "${site}" "${user}" || return 1
+	return 0
 }
 
-#########################################
-###           MAIN LOGIC              ###
-#########################################
+###############################################################################
+# Summary
+###############################################################################
 
-debug_echo "🚀 SCRIPT STARTING: ${SCRIPT_NAME}"
+print_summary() { # exit code
+	local exit_code="$1"
 
-# Initialize error log
-debug_echo "📝 Initializing error log: ${ERROR_LOG_FILE}"
-echo "=== WordPress CLI Error Log - Started at: $(date) ===" > "${ERROR_LOG_FILE}"
+	if [[ "${JSON_OUTPUT}" == true ]]; then
+		printf '{"sites": %d, "operations_ok": %d, "errors_logged": %d, "exit": %d, "log": "%s", "error_log": "%s"}\n' \
+			"${STATS_SITES}" "${STATS_OK}" "${STATS_FAILED}" "${exit_code}" \
+			"$(json_escape "${LOG_FILE}")" "$(json_escape "${ERROR_LOG_FILE}")"
+		return 0
+	fi
 
-# Parse arguments
-debug_echo "🔧 Parsing command line arguments: $*"
+	printf '\n%s=== SUMMARY ===%s\n' "${C_BOLD}" "${C_RESET}"
+	printf '  sites processed : %d\n' "${STATS_SITES}"
+	printf '  successful ops  : %s%d%s\n' "${C_GREEN}" "${STATS_OK}" "${C_RESET}"
+	printf '  failures        : %s%d%s\n' "${C_RED}" "${STATS_FAILED}" "${C_RESET}"
+	printf '  mode            : %s%s\n' "${MODE}" "$([[ "${DRY_RUN}" == true ]] && printf ' (dry-run)')"
+	printf '  log file        : %s\n' "${LOG_FILE}"
+	printf '  error log       : %s\n' "${ERROR_LOG_FILE}"
 
-DEBUG_MODE=false
-MODE=""
-TARGET_SITE=""
-PLUGIN_NAME=""
-PLUGIN_ACTION=""
-FORCE_MODE=false
-JSON_OUTPUT=false
+	if (( STATS_SITES == 0 )); then
+		printf '  %snothing was processed%s\n' "${C_YELLOW}" "${C_RESET}"
+	elif (( STATS_FAILED == 0 )); then
+		printf '  %sall operations completed successfully%s\n' "${C_GREEN}" "${C_RESET}"
+	else
+		printf '  %s%d failure(s); inspect %s%s\n' "${C_RED}" "${STATS_FAILED}" "${ERROR_LOG_FILE}" "${C_RESET}"
+	fi
+	return 0
+}
 
-while [[ $# -gt 0 ]]; do
-	case "$1" in
-		--DEBUG|-D)
-			DEBUG_MODE=true
-			debug_echo "🔍 DEBUG mode enabled"
-			shift
-			;;
-		--full|-f)
-			MODE="${MODE_FULL}"
-			debug_echo "🎯 Mode set to: FULL"
-			shift
-			;;
-		--core|-c)
-			MODE="${MODE_CORE}"
-			debug_echo "🎯 Mode set to: CORE"
-			shift
-			;;
-		--plugins|-p)
-			MODE="${MODE_PLUGINS}"
-			debug_echo "🎯 Mode set to: PLUGINS"
-			shift
-			;;
-		--themes|-t)
-			MODE="${MODE_THEMES}"
-			debug_echo "🎯 Mode set to: THEMES"
-			shift
-			;;
-		--db-optimize|-d)
-			MODE="${MODE_DB_OPTIMIZE}"
-			debug_echo "🎯 Mode set to: DB_OPTIMIZE"
-			shift
-			;;
-		--db-fix|-x)
-			MODE="${MODE_DB_FIX}"
-			debug_echo "🎯 Mode set to: DB_FIX"
-			shift
-			;;
-		--cron|-r)
-			MODE="${MODE_CRON}"
-			debug_echo "🎯 Mode set to: CRON"
-			shift
-			;;
-		--astra|-s)
-			MODE="${MODE_ASTRA}"
-			debug_echo "🎯 Mode set to: ASTRA"
-			shift
-			;;
-		--list-plugins|-l)
-			MODE="${MODE_LIST_PLUGINS}"
-			debug_echo "🎯 Mode set to: LIST_PLUGINS"
-			shift
-			;;
-		--plugin-manage|-m)
-			MODE="${MODE_PLUGIN_MANAGE}"
-			debug_echo "🎯 Mode set to: PLUGIN_MANAGE"
-			shift
-			;;
-		--site|-S)
-			if [[ -z "${2:-}" || "${2}" == --* ]]; then
-				log_error "--site requires a path argument"
-				usage
+###############################################################################
+# Main
+###############################################################################
+
+cleanup() {
+	local rc=$?
+	release_lock
+	return "${rc}"
+}
+
+main() {
+	local i total site rc="${EXIT_OK}"
+
+	# Configuration precedence: defaults < config file < environment < CLI.
+	extract_conf_file "$@"
+	load_config_file "${CONF_FILE}"
+	apply_environment
+
+	parse_args "$@"
+	validate_options
+	setup_colors
+	resolve_wp_cli
+
+	if [[ "${DRY_RUN}" != true ]] && (( EUID != 0 )); then
+		log_warning 'running without root: only sites owned by the current user can be processed'
+	fi
+
+	init_logging
+	if ! take_lock; then
+		exit "${EXIT_USAGE}"
+	fi
+
+	log_info "WordPress maintenance ${SCRIPT_VERSION}, mode '${MODE}'$([[ "${DRY_RUN}" == true ]] && printf ' (dry-run)')"
+	log_debug "WP-CLI: ${WP_CLI_PATH}"
+	log_debug "sites file: ${SITES_FILE}"
+
+	load_sites
+	local -a queued=( "${SITES[@]}" )
+	total=${#queued[@]}
+
+	for ((i = 0; i < total; i++)); do
+		site="${queued[i]}"
+		if (( total > 1 )); then
+			progress "$((i + 1))/${total}" "${site}"
+		fi
+		if ! process_site "${site}"; then
+			if [[ "${MODE}" != "${MODE_LIST_PLUGINS}" ]]; then
+				log_error "site failed: ${site}"
 			fi
-			TARGET_SITE="$2"
-			debug_echo "🎯 Target site set to: ${TARGET_SITE}"
-			shift 2
-			;;
-		--action|-A)
-			if [[ -z "${2:-}" || "${2}" == --* ]]; then
-				log_error "--action requires: activate|deactivate|delete"
-				usage
-			fi
-			PLUGIN_ACTION="$2"
-			debug_echo "🎯 Plugin action set to: ${PLUGIN_ACTION}"
-			shift 2
-			;;
-		--name|-N)
-			if [[ -z "${2:-}" || "${2}" == --* ]]; then
-				log_error "--name requires a plugin name argument"
-				usage
-			fi
-			PLUGIN_NAME="$2"
-			debug_echo "🎯 Plugin name filter set to: ${PLUGIN_NAME}"
-			shift 2
-			;;
-		--force|-F)
-			FORCE_MODE=true
-			debug_echo "🎯 Force mode enabled (skip confirmations)"
-			shift
-			;;
-		--json|-J)
-			JSON_OUTPUT=true
-			debug_echo "🎯 JSON output enabled"
-			shift
-			;;
-		--help|-h)
-			usage
-			;;
-		*)
-			log_error "Invalid argument: $1"
-			usage
-			;;
-	esac
-done
+			rc="${EXIT_ERRORS}"
+		fi
+	done
+	progress_done
 
-# Validate mode
-if [[ -z "${MODE}" ]]; then
-	log_error "No mode specified."
-	usage
-fi
-
-# Validate plugin-manage requirements
-if [[ "${MODE}" == "${MODE_PLUGIN_MANAGE}" ]]; then
-	if [[ -z "${PLUGIN_ACTION}" ]]; then
-		log_error "--plugin-manage requires --action (activate|deactivate|delete)"
-		usage
+	if (( STATS_SITES == 0 )); then
+		rc="${EXIT_NOTHING}"
 	fi
-	if [[ -z "${PLUGIN_NAME}" ]]; then
-		log_error "--plugin-manage requires --name (plugin slug or partial name)"
-		usage
-	fi
-	if [[ "${PLUGIN_ACTION}" != "${ACTION_ACTIVATE}" && "${PLUGIN_ACTION}" != "${ACTION_DEACTIVATE}" && "${PLUGIN_ACTION}" != "${ACTION_DELETE}" ]]; then
-		log_error "Invalid action: ${PLUGIN_ACTION}. Must be: activate|deactivate|delete"
-		usage
-	fi
-fi
 
-# Validate list-plugins requirements (no strict requirement, just info)
-if [[ "${MODE}" == "${MODE_LIST_PLUGINS}" ]]; then
-	if [[ -z "${TARGET_SITE}" && -z "${PLUGIN_NAME}" ]]; then
-		debug_echo "ℹ️  No --site or --name specified, will process all sites from ${SITES_FILE}"
-	fi
-fi
+	print_summary "${rc}"
+	exit "${rc}"
+}
 
-debug_echo "🎯 Final mode: ${MODE}"
-debug_echo "🔍 Final DEBUG_MODE: ${DEBUG_MODE}"
-debug_echo "🎯 Final TARGET_SITE: ${TARGET_SITE:-all sites}"
-debug_echo "🎯 Final PLUGIN_NAME: ${PLUGIN_NAME:-all plugins}"
-debug_echo "🎯 Final PLUGIN_ACTION: ${PLUGIN_ACTION:-N/A}"
-debug_echo "🎯 Final FORCE_MODE: ${FORCE_MODE}"
-debug_echo "🎯 Final JSON_OUTPUT: ${JSON_OUTPUT}"
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
-# Validate WP-CLI
-debug_echo "🔧 Validating WP-CLI installation at: ${WP_CLI_PATH}"
-if ! command -v "${WP_CLI_PATH}" >/dev/null 2>&1; then
-	log_error "WP-CLI not found at ${WP_CLI_PATH}. Please install it."
-	exit 1
-fi
-debug_echo "✅ WP-CLI validation passed"
+main "$@"
 
-# Root check
-debug_echo "🔧 Checking if running as root"
-if [[ $EUID -ne 0 ]]; then
-	log_error "This script must be run as root (to switch users via sudo)."
-	exit 1
-fi
-debug_echo "✅ Root check passed"
 
-# Ensure sites file exists (unless targeting a single site)
-if [[ -z "${TARGET_SITE}" ]]; then
-	debug_echo "🔧 Ensuring sites file exists"
-	ensure_sites_file
-fi
-
-# Show startup banner with parameters and planned operations
-if [[ "${DEBUG_MODE}" != "true" ]]; then
-    show_startup_info
-else
-    debug_echo "📋 Skipping startup banner in DEBUG mode (all info shown in debug output)"
-fi
-
-# Show startup banner with parameters and planned operations
-if [[ "${DEBUG_MODE}" != "true" ]]; then
-    show_startup_info
-else
-    debug_echo "📋 Skipping startup banner in DEBUG mode (all info shown in debug output)"
-fi
-
-log_info "Starting WordPress maintenance in '${MODE}' mode"
-
-# Check jq for JSON operations if needed
-if [[ "${JSON_OUTPUT}" == "true" || "${MODE}" == "${MODE_LIST_PLUGINS}" || "${MODE}" == "${MODE_PLUGIN_MANAGE}" ]]; then
-	if ! command -v jq &>/dev/null; then
-		log_warning "jq not found. Some features may be limited."
-		log_info "Install jq for better JSON handling: yum install jq"
-	fi
-fi
-
-# Process sites
-if [[ -n "${TARGET_SITE}" ]]; then
-    # Single site mode
-    debug_echo "🔄 Processing single target site: ${TARGET_SITE}"
-    if [[ ! -d "${TARGET_SITE}" ]]; then
-        log_error "Target site directory does not exist: ${TARGET_SITE}"
-        exit 1
-    fi
-    process_site "${TARGET_SITE}"
-else
-    # Multi-site mode from file
-    log_info "Reading sites from ${SITES_FILE}"
-    debug_echo "🔄 Starting main processing loop"
-    
-    # ✅ Подсчёт сайтов
-    total_lines=0
-    while IFS= read -r line || [[ -n "${line}" ]]; do
-        line="$(trim "${line}")"
-        [[ -z "${line}" || "${line}" =~ ^# ]] && continue
-        ((total_lines++)) || true
-    done < "${SITES_FILE}"
-    
-    debug_echo "📊 Total sites to process: ${total_lines}"
-    
-    current_site=0
-    while IFS= read -r site_path || [[ -n "${site_path}" ]]; do
-        site_path="$(trim "${site_path}")"
-        [[ -z "${site_path}" || "${site_path}" =~ ^# ]] && {
-            debug_echo "⏩ Skipping empty or commented line"
-            continue
-        }
-        ((current_site++)) || true
-        
-        # ✅ Прогресс БЕЗ echo после
-        if [[ "${DEBUG_MODE}" != "true" && "${total_lines}" -gt 1 ]]; then
-            show_progress "${current_site}" "${total_lines}" "Site ${current_site}/${total_lines}"
-        fi
-        
-        if ! process_site "${site_path}"; then
-            log_error "Failed to process site: ${site_path}"
-            ((STATS[error_ops]++)) || true
-        fi
-    done < "${SITES_FILE}"
-    
-    # ✅ Финальная новая строка после завершения цикла
-    if [[ "${DEBUG_MODE}" != "true" && "${total_lines}" -gt 1 ]]; then
-        echo "" >&2
-    fi
-fi
-debug_echo "✅ Main processing loop completed"
-
-log_success "Maintenance completed."
-echo ""
-echo -e "${BOLD}${GREEN}=== SUMMARY ===${RESET}"
-echo "Sites processed: ${STATS[total_sites]}"
-echo "Successful ops:  ${STATS[success_ops]}"
-echo "Errors:          ${STATS[error_ops]}"
-echo "Log file:        ${LOG_FILE}"
-echo "Error log:       ${ERROR_LOG_FILE}"
-
-# =============================================================================
-#                           FINAL STATUS & SUMMARY
-# =============================================================================
-
-debug_echo "✅ Main processing loop completed"
-log_success "Maintenance completed."
-
-echo ""
-echo -e "${BOLD}${GREEN}╔═══════════════════════════════════════════════════════════════╗${RESET}"
-echo -e "${BOLD}${GREEN}║${RESET}                    ${BOLD}OPERATION SUMMARY${RESET}                          ${BOLD}${GREEN}║${RESET}"
-echo -e "${BOLD}${GREEN}╚═══════════════════════════════════════════════════════════════╝${RESET}"
-echo ""
-echo -e "${DIM}┌─────────────────────────────────────────────────────────────────${RESET}"
-echo -e "${DIM}│${RESET} Sites processed:  ${BOLD}${STATS[total_sites]}${RESET}"
-echo -e "${DIM}│${RESET} Successful ops:   ${BOLD}${GREEN}${STATS[success_ops]}${RESET}"
-echo -e "${DIM}│${RESET} Errors:           ${BOLD}${RED}${STATS[error_ops]}${RESET}"
-echo -e "${DIM}│${RESET} Log file:         ${LOG_FILE}"
-echo -e "${DIM}│${RESET} Error log:        ${ERROR_LOG_FILE}"
-echo -e "${DIM}└─────────────────────────────────────────────────────────────────${RESET}"
-echo ""
-
-# Final status indicator
-if [[ ${STATS[error_ops]} -eq 0 ]]; then
-    echo -e "${GREEN}✓ All operations completed successfully${RESET}"
-    exit 0
-else
-    echo -e "${RED}✗ ${STATS[error_ops]} error(s) occurred - check logs${RESET}"
-    exit 1
-fi
