@@ -2,7 +2,7 @@
 
 A secure, fast, and modular WP-CLI management system for maintaining multiple WordPress sites efficiently. This toolkit provides automated updates, database optimization, and maintenance operations across all your WordPress installations.
 
-![Bash](https://img.shields.io/badge/Bash-4.0%2B-blue.svg)
+![Bash](https://img.shields.io/badge/Bash-4.2%2B-blue.svg)
 ![WP-CLI](https://img.shields.io/badge/WP--CLI-2.0%2B-green.svg)
 ![WordPress](https://img.shields.io/badge/WordPress-3.7%2B-0073aa?logo=wordpress&logoColor=white)
 ![License](https://img.shields.io/badge/License-MIT-yellow.svg)
@@ -19,6 +19,7 @@ A secure, fast, and modular WP-CLI management system for maintaining multiple Wo
    - 5.2 [Operation Modes](#52-operation-modes)
    - 5.3 [Options](#53-options)
    - 5.4 [Examples](#54-examples)
+   - 5.5 [Environment Variables](#55-environment-variables)
 6. [How It Works](#6-how-it-works)
    - 6.1 [User Detection](#61-user-detection)
    - 6.2 [Safe Execution](#62-safe-execution)
@@ -76,12 +77,8 @@ chmod +x Find_WP_Senior.sh
 
 ### 3.3 Verify Script Interpreters
 
-Check that the shebang lines at the top of each script point to correct shell paths:
-
-- **Bash_WP-CLI_Update.sh**: Should have `#!/usr/bin/env bash`
-- **Find_WP_Senior.sh**: Should have `#!/bin/bash`
-
-Update if necessary for your system configuration.
+Both scripts use `#!/usr/bin/env bash` and require Bash 4.2 or newer.
+Update the shebang if your system configuration requires a different path.
 
 ### 3.4 Verify WP-CLI Installation
 
@@ -104,7 +101,21 @@ Run the discovery script to automatically find WordPress installations:
 ./Find_WP_Senior.sh
 ```
 
-This will create a `wp-found.txt` file with paths to all discovered WordPress installations.
+This will create a `wp-found.txt` file with paths to all discovered WordPress
+installations. Additional options:
+
+```bash
+./Find_WP_Senior.sh --exclude 'stage-*' --exclude '/var/www/archive' --output /root/sites.txt /var/www
+```
+
+- `--output FILE` - write path list to FILE (default: `./wp-found.txt`)
+- `--exclude PATTERN` - directory-name glob (e.g. `node_modules`, `stage-*`)
+  or an absolute path to prune; repeatable
+- `--max-depth N` - limit scan depth (default: 6)
+- `--version` - print version and exit
+
+Per-site opt-out: create an empty `.no_wp_cli` file inside a WordPress root
+to hide it from discovery.
 
 ### 4.2 Manual Site Configuration
 
@@ -123,15 +134,21 @@ Add one WordPress root directory per line:
 
 ### 4.3 Astra Pro License Configuration
 
-For Astra Pro plugin support, configure your license key in the main script:
+For Astra Pro plugin support, provide your license key via one of these
+sources (in order of precedence). **Never hard-code the key in the script** - it
+would be written to the log files.
 
 ```bash
-# Edit the script and set your Astra Pro license key
-nano Bash_WP-CLI_Update.sh
+# 1) Environment variable (preferred)
+export ASTRA_KEY="YOUR_ACTUAL_LICENSE_KEY_HERE"
+./Bash_WP-CLI_Update.sh --astra
 
-# Locate and update the ASTRA_KEY constant:
-readonly ASTRA_KEY="YOUR_ACTUAL_LICENSE_KEY_HERE"
+# 2) License key file (first line, no trailing spaces)
+echo "YOUR_ACTUAL_LICENSE_KEY_HERE" > astra.key
+chmod 600 astra.key
 ```
+
+The key is redacted as `***` in all log output and on screen.
 
 ## 5. Usage
 
@@ -159,6 +176,12 @@ readonly ASTRA_KEY="YOUR_ACTUAL_LICENSE_KEY_HERE"
 | Option | Short | Description |
 |--------|-------|-------------|
 | `--DEBUG` | `-D` | Enable detailed debug logging |
+| `--site PATH` | `-S` | Target a specific site (instead of wp-found.txt) |
+| `--name NAME` | `-N` | Plugin name filter (list/manage modes) |
+| `--action A` | `-A` | Plugin action: activate|deactivate|delete |
+| `--force` | `-F` | Skip confirmation for destructive actions |
+| `--json` | `-J` | JSON output for --list-plugins |
+| `--version` | `-V` | Print version and exit |
 
 ### 5.4 Examples
 
@@ -191,121 +214,12 @@ Update Astra Pro plugin with license management:
 ./Bash_WP-CLI_Update.sh --astra
 ```
 
-## 6. How It Works
+### 5.5 Environment Variables
 
-### 6.1 User Detection
-The script automatically determines the correct system user for each WordPress installation by checking:
+| Variable | Purpose |
+|----------|---------|
+| `ASTRA_KEY` / `ASTRA_LICENSE_KEY` | Astra Pro license key (see 4.3) |
+| `WP_SKIP_PLUGINS` | Comma-separated plugin slugs skipped during updates |
+| `WP_SITES_FILE` | Alternative path to the sites list file |
+| `NO_COLOR=1` | Disable colored console output |
 
-1. File owner of `wp-config.php`
-2. Directory owner of WordPress root
-3. Path structure patterns
-4. DB_USER from wp-config.php (fallback)
-
-### 6.2 Safe Execution
-- Runs WP-CLI commands as the correct system user
-- Includes proper environment variables
-- Skips problematic plugins during updates
-- Provides comprehensive error handling
-
-### 6.3 Logging System
-
-#### Main Log (`wp_cli_manager.log`)
-Structured logging with timestamps and color-coded console output:
-- `INFO` - General operation information
-- `SUCCESS` - Completed operations  
-- `WARNING` - Non-critical issues
-- `ERROR` - Operation failures
-- `DEBUG` - Detailed debugging information
-
-#### Error Log (`wp_cli_errors.log`)
-Detailed error logging for troubleshooting:
-- Complete command context
-- Full command output
-- Exit codes and error details
-- Timestamped error events
-
-## 7. Troubleshooting
-
-### 7.1 Common Issues
-
-**Script stops after "Processing site"**:
-- Check that WP-CLI is installed at `/usr/local/bin/wp`
-- Verify the WordPress user exists and has proper permissions
-- Run with `--DEBUG` flag for detailed output
-
-**Permission denied errors**:
-- Ensure scripts are executable: `chmod +x *.sh`
-- Run as root user for proper user switching
-
-**WP-CLI not found**:
-- Install WP-CLI globally or update the path in the script
-- Verify installation with `wp --info`
-
-**Astra Pro license errors**:
-- Ensure `ASTRA_KEY` is set to your actual license key in the script
-- Verify Astra Pro plugin is installed and active
-- Check error log for detailed license activation issues
-
-### 7.2 Debug Mode
-
-For detailed troubleshooting, use debug mode:
-
-```bash
-./Bash_WP-CLI_Update.sh --cron --DEBUG
-```
-
-This provides:
-- Step-by-step execution details
-- Command output and exit codes
-- User detection process information
-- Environment variable settings
-
-### 7.3 Error Investigation
-
-Check the detailed error log for in-depth analysis:
-
-```bash
-tail -f wp_cli_errors.log
-```
-
-## 8. Contributing
-
-We welcome contributions! Please feel free to submit pull requests, report bugs, or suggest new features.
-
-### Development Guidelines
-
-1. Follow existing code style and structure
-2. Add appropriate error handling
-3. Include debug information for new features
-4. Update documentation for changes
-5. Test changes thoroughly before submitting
-
-## 9. License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-## 10. Acknowledgments
-
-- **WP-CLI Team** for the excellent command-line interface
-- **WordPress Community** for continuous improvement and updates
-- **Astra Team** for the wonderful theme and plugin ecosystem
-- **Contributors** who help maintain and improve this tool
-
-## 11. Author & Support
-
-**Mikhail Deynekin**
-
-- 🌐 **Website**: [deynekin.com](https://deynekin.com)
-- 📧 **Email**: [mid1977@gmail.com](mailto:mid1977@gmail.com)
-- 🐙 **GitHub**: [@paulmann](https://github.com/paulmann)
-
-### Getting Help
-
-- 📖 **Documentation**: Read this README thoroughly
-- 🐛 **Bug Reports**: [Open an issue](https://github.com/paulmann/Bash_WP-CLI_Update/issues/new)
-- 💡 **Feature Requests**: [Request features](https://github.com/paulmann/Bash_WP-CLI_Update/issues/new)
-- 💬 **Questions**: [Check Discussions](https://github.com/paulmann/Bash_WP-CLI_Update/discussions)
-
----
-
-**Note**: Always test maintenance scripts in a staging environment before deploying to production.
