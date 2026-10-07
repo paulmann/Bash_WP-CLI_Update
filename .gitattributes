@@ -1,0 +1,15 @@
+# Line-ending policy.
+#
+# The shell scripts are executed on Linux; a CRLF would break pattern matching in
+# bash (the CR becomes part of the last word on every line) and would make the
+# generated site list unusable. The repository therefore stores them with LF.
+*.sh                text eol=lf
+*.bash              text eol=lf
+*.conf              text eol=lf
+*.conf.example      text eol=lf
+*.txt               text eol=lf
+*.md                text eol=lf
+
+# The site list is generated at run time and must never be committed.
+wp-found.txt        -text
+*.log               -text
