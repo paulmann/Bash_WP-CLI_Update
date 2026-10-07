@@ -1,0 +1,117 @@
+#!/usr/bin/env bash
+# Stub WP-CLI for the hybrid test bench.
+#
+# It behaves like the real thing where it matters for these tests:
+#   - global flags (--path=, --allow-root, --quiet, --format=, --fields=) may
+#     appear anywhere, so the subcommand is the first two NON-flag arguments;
+#   - `core check-update` exits 1 when there is nothing to do, like the real one;
+#   - `plugin list --format=json` emits a flat JSON array.
+#
+# It records its argv, cwd, user, the environment contract and whether a
+# licence arrived, WITHOUT ever writing a secret value to the log.
+LOG="${FAKE_WP_LOG:-/tmp/wp_invocations.log}"
+
+LIC_STATE='<unset>'
+if [ -n "${WP_CLI_LICENCE:-}" ]; then
+    LIC_STATE="<set,len=${#WP_CLI_LICENCE},cksum=$(printf '%s' "$WP_CLI_LICENCE" | cksum | cut -d' ' -f1)>"
+fi
+{
+    printf 'ARGV:'
+    for a in "$@"; do printf ' [%s]' "$a"; done
+    printf ' | CWD=%s USER=%s' "$PWD" "$(id -un)"
+    printf ' | ASTRFAIL=%s' "${ASTRA_FAIL_SLUG:-<unset>}"
+    printf ' | DOCUMENT_ROOT=%s HOMEDIR=%s HTTP_HOST=%s DOCUMENT_URI=%s HOME=%s LOGNAME=%s' \
+        "${DOCUMENT_ROOT:-<unset>}" "${HOMEDIR:-<unset>}" "${HTTP_HOST:-<unset>}" \
+        "${DOCUMENT_URI:-<unset>}" "${HOME:-<unset>}" "${LOGNAME:-<unset>}"
+    printf ' | LICENCE=%s\n' "$LIC_STATE"
+} >>"$LOG"
+
+fmt='table' fields=''
+positional=()
+for a in "$@"; do
+    case "$a" in
+        --quiet) ;;            # honoured implicitly: the stub is quiet anyway
+        --format=*) fmt="${a#--format=}" ;;
+        --fields=*) fields="${a#--fields=}" ;;
+        --*) ;;                       # any other global flag: ignore
+        *) positional+=("$a") ;;
+    esac
+done
+cmd="${positional[0]-}"
+sub="${positional[1]-}"
+third="${positional[2]-}"
+
+PLUGINS=(
+    "Akismet Anti-Spam|active|none|5.3|akismet|Akismet Anti-Spam|"
+    "WooCommerce|inactive|available|8.1.0|woocommerce|WooCommerce|9.0.0"
+    "All in One SEO|active|none|4.4.0|all-in-one-seo-pack|All in One SEO (AIOSEO)|"
+)
+
+emit_rows() { # kind: plugin|theme
+    local r n st up v sl ti uv out f v_ emitted
+    local -a want=()
+    [ -n "$fields" ] && IFS=',' read -r -a want <<<"$fields" || want=(name status update version)
+    if [ "$fmt" = 'json' ]; then
+        printf '['
+        emitted=0
+        for r in "${PLUGINS[@]}"; do
+            IFS='|' read -r n st up v sl ti uv <<<"$r"
+            if ((emitted)); then printf ','; fi
+            emitted=1
+            printf '{"name":"%s","status":"%s","update":"%s","version":"%s","slug":"%s","title":"%s","update_version":"%s"}' \
+                "$n" "$st" "$up" "$v" "$sl" "$ti" "$uv"
+        done
+        printf ']\n'
+        return 0
+    fi
+    out=''
+    for f in "${want[@]}"; do out+="${out:+$'\t'}${f}"; done
+    printf '%s\n' "$out"
+    for r in "${PLUGINS[@]}"; do
+        IFS='|' read -r n st up v sl ti uv <<<"$r"
+        out=''
+        for f in "${want[@]}"; do
+            case "$f" in
+                name) v_="$n" ;; status) v_="$st" ;; update) v_="$up" ;;
+                version) v_="$v" ;; slug) v_="$sl" ;; title) v_="$ti" ;;
+                update_version) v_="$uv" ;; *) v_='' ;;
+            esac
+            out+="${out:+$'\t'}${v_}"
+        done
+        printf '%s\n' "$out"
+    done
+}
+
+case "$cmd $sub" in
+    'core version') echo '6.4.3' ;;
+    'core check-update')
+        echo 'Success: WordPress is at the latest version.'
+        exit 1 ;;                                  # like the real WP-CLI
+    'core update') echo 'Success: WordPress updated successfully.' ;;
+    'core update-db') echo 'Success: WordPress database upgraded successfully.' ;;
+    'plugin list' | 'theme list') emit_rows ;;
+    'plugin status') echo "Plugin ${third:-unknown} is active" ;;
+    'plugin activate') echo 'Success: Activated plugin.' ;;
+    'plugin deactivate') echo 'Success: Deactivated plugin.' ;;
+    'plugin delete') echo 'Success: Deleted plugin.' ;;
+    'plugin update')
+        # Test hook: fail updates of one slug so retry paths can be exercised.
+        if [ -n "${ASTRA_FAIL_SLUG:-}" ] && [ "$third" = "$ASTRA_FAIL_SLUG" ]; then
+            echo 'Error: The plugin download failed.' >&2
+            exit 1
+        fi
+        echo 'Success: Updated 2 of 2 plugins.' ;;
+    'theme update') echo 'Success: Updated 1 of 1 theme.' ;;
+    'db optimize') echo 'Success: Database optimized.' ;;
+    'db repair') echo 'Success: Database repaired.' ;;
+    'cron event') echo 'Success: Executed a total of 3 cron events.' ;;
+    'cli version') echo 'WP-CLI 2.10.0' ;;
+    'brainstormforce license')
+        if [ -z "${WP_CLI_LICENCE:-}" ]; then
+            echo 'Error: the licence value arrived empty' >&2
+            exit 1
+        fi
+        echo "Success: licence accepted (${LIC_STATE})" ;;
+    *) echo "Success: ${cmd} ${sub} ok" ;;
+esac
+exit 0

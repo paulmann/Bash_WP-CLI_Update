@@ -1,0 +1,128 @@
+# Configuration example for Bash_WP-CLI_Update.sh 6.1.0
+#
+# Copy it to one of these places and edit:
+#
+#   /etc/wp-cli-update.conf            global, read by every invocation
+#   <script dir>/wp-cli-update.conf    per installation, wins over the global one
+#
+# ...or point at any file with --config FILE.
+#
+# The file is DATA, not shell. Only plain KEY=VALUE lines are read; the file is
+# never sourced. A line containing a backtick, $( , a pipe, a semicolon, an
+# ampersand or a redirection makes the whole file be rejected with exit code 4,
+# because a configuration file that can execute code is a privilege escalation
+# waiting for a loose permission bit.
+#
+# Precedence, lowest to highest:
+#   built-in defaults < /etc/wp-cli-update.conf < ./wp-cli-update.conf
+#                     < WP_CLI_UPDATE_<KEY> environment < command line
+#
+# Run `Bash_WP-CLI_Update.sh --print-config` to see the effective value of every
+# setting together with the layer that produced it.
+#
+# Permissions: keep this file readable by root only. It can hold a licence.
+#   chmod 600 wp-cli-update.conf
+
+# ---------------------------------------------------------------- executables
+# Where the wp binary lives. Do not rely on PATH: the manager switches users,
+# and the login shell of a site owner usually has a different PATH than yours.
+# If you set this, it must be an executable file -- there is no silent fallback.
+WP_CLI_PATH=/usr/local/bin/wp
+
+# The discovery script, run automatically when the site list is missing.
+#DISCOVER_SCRIPT=/opt/wp-cli-update/Find_WP_Senior.sh
+
+# ------------------------------------------------------------------ site list
+# One absolute path per line. Blank lines and lines starting with '#' are
+# ignored, a trailing CR is tolerated, and leading/trailing whitespace is
+# trimmed. Produced by Find_WP_Senior.sh.
+SITES_FILE=/var/lib/wp-cli-update/wp-found.txt
+
+# Run the discovery script when the list is missing or empty. Set to 0 on
+# production hosts: an automatic scan of the default web roots costs I/O and can
+# pick up a site you did not mean to touch.
+AUTO_DISCOVER=1
+
+# Process at most this many sites per run, 0 for all. Useful when you are
+# rolling a change out in batches.
+MAX_SITES=0
+
+# Skip these plugins on plugin/theme operations (comma separated, the WP-CLI
+# syntax). The default is EMPTY on purpose: a list that somebody's site needed
+# must not silently ship inside a general tool. Put your own here.
+#SKIP_PLUGINS=
+
+# Also pass --skip-plugins to listing commands. Off by default, because it hides
+# exactly the plugins you are listing.
+SKIP_PLUGINS_FOR_LISTING=0
+
+# ----------------------------------------------------------------------- logs
+LOG_FILE=/var/log/wp-cli-update/manager.log
+ERROR_LOG_FILE=/var/log/wp-cli-update/errors.log
+
+# Rotate when a log grows past LOG_MAX_BYTES, keeping LOG_KEEP generations
+# (manager.log.1 ... manager.log.N). 0 disables rotation.
+LOG_MAX_BYTES=5242880
+LOG_KEEP=3
+
+# debug | info | warn | error
+LOG_LEVEL=info
+
+# How many lines of a failing wp command are printed to the console and written
+# to the error log.
+ERROR_OUTPUT_LINES=20
+
+# auto | always | never. `auto` emits colour only when stdout and stderr are both
+# terminals and NO_COLOR is unset, so logs and CI output stay clean.
+COLOR=auto
+
+# ---------------------------------------------------------------------- locks
+# Prevents two runs from updating the same sites at the same time. flock(1) is
+# used when present, a pid file otherwise.
+LOCK_FILE=/var/run/wp-cli-update.lock
+
+# --------------------------------------------------------------------- safety
+# Per-command timeout in seconds, 0 to disable. A hung wp process otherwise
+# blocks the whole fleet run until someone notices.
+TIMEOUT=600
+
+# Signal sent when the timeout expires, and seconds to wait before escalating to
+# SIGKILL. WP-CLI ignores TERM in some database operations, hence the escalation.
+TIMEOUT_SIGNAL=TERM
+KILL_AFTER=30
+
+# When to pass --allow-root to WP-CLI:
+#   auto    only when the manager itself runs as root (the normal case)
+#   always  always
+#   never   never
+ALLOW_ROOT=auto
+
+# When the run exits non-zero:
+#   any     at least one site failed            (default; right for cron alerts)
+#   all     every site failed                   (right for "best effort" jobs)
+#   never   always 0                            (right when you parse the log)
+FAIL_ON=any
+
+# ---------------------------------------------------------------------- Astra
+# The add-on slug.
+ASTRA_SLUG=astra-addon
+
+# The licence value. Prefer the environment (WP_CLI_UPDATE_LICENCE) or a key
+# file over this one, so the value does not sit in a configuration file:
+#
+#   export WP_CLI_UPDATE_LICENCE=...            # per invocation
+#   ./astra.key                                 # next to the script, chmod 600
+#   /etc/wp-cli-update/astra.key                # host-wide, chmod 600
+#   ~/.astra.key
+#
+# The value is never passed as an argument. It is written to a temporary file
+# that the child shell reads at run time, so it appears neither in `ps` output
+# nor in any log line. Legacy names ASTRA_KEY and ASTRA_LICENSE_KEY are also
+# read from the environment.
+#LICENCE=
+
+# ------------------------------------------------------------- user switching
+# Space separated list of variable NAMES to pass through into the site owner's
+# environment (for example a proxy or an API endpoint). Only the names are
+# listed here; the values are taken from the manager's own environment.
+#USER_ENV=
