@@ -58,11 +58,18 @@ expect_rc 2 'a bad --format exits 2' bash "$M" -l --format yaml
 expect_rc 2 'a bad --color exits 2' bash "$M" --plugins --color rainbow
 expect_rc 2 'a bad --timeout exits 2' bash "$M" --plugins --timeout soon
 expect_rc 2 'an option without its value exits 2' bash "$M" --plugins --sites
-for mode in full core plugins themes db-optimize db-fix cron astra list-plugins plugin-manage; do
-    if bash "$M" --list-modes 2>/dev/null | grep -Fxq "$mode"; then
+# Capture once: running the script ten times in a loop also hides the reason
+# when it produces nothing at all.
+modes_out="$(bash "$M" --list-modes 2>&1)"
+modes_rc=$?
+if [ "$modes_rc" != '0' ] || [ -z "$modes_out" ]; then
+    bad '--list-modes produced nothing' "rc=${modes_rc}, output: $(printf '%s' "$modes_out" | head -3 | tr '\n' '|')"
+fi
+for mode in full core plugins themes db-optimize db-fix cron astra list-plugins plugin-manage verify; do
+    if printf '%s\n' "$modes_out" | grep -Fxq "$mode"; then
         ok "--list-modes advertises ${mode}"
     else
-        bad "--list-modes is missing ${mode}" ''
+        bad "--list-modes is missing ${mode}" "got: $(printf '%s' "$modes_out" | tr '\n' ' ')"
     fi
 done
 
@@ -191,6 +198,13 @@ expect_contains "${WORK}/dry.txt" 'plugin update --all' 'the planned command is 
 expect_contains "${WORK}/dry.txt" 'DRY RUN' 'the banner warns about the dry run'
 
 say 'plugin listing: table, json, csv, tsv'
+# Number of plugins the stub reports. Derived, not hardcoded: the stub grew from
+# three rows to five when the --only-active checks needed an inactive plugin with
+# an update available, and every hardcoded count in this section went stale.
+STUB_PLUGINS="$(grep -c '^    "' "${repo}/tests/stub/wp" 2>/dev/null)"
+STUB_PLUGINS="${STUB_PLUGINS//[^0-9]/}"
+[ -n "$STUB_PLUGINS" ] && [ "$STUB_PLUGINS" -gt 0 ] || STUB_PLUGINS=5
+STUB_ROWS=$((STUB_PLUGINS + 1))
 one_site="${WORK}/one.txt"
 printf '%s\n' "$SITES" >"$one_site"
 list_run() { manager_run --sites "$one_site" -l "$@"; }
@@ -206,24 +220,34 @@ if printf '%s' "$table_out" | grep -Fq 'name'; then
 else
     bad 'the table has no header' ''
 fi
-json_out="$(list_run --format json 2>/dev/null)"
+list_run --format json >"${WORK}/plugins.json" 2>/dev/null
+json_out="$(cat "${WORK}/plugins.json")"
 parsed=0
 if command -v python3 >/dev/null 2>&1; then
-    printf '%s' "$json_out" | python3 -c "
-import json,sys
-d=json.load(sys.stdin)
-assert isinstance(d,list) and len(d)==3, ('rows',len(d))
-assert d[1]['slug']=='woocommerce', d[1]
-assert d[1]['update']=='available', d[1]
-" 2>/dev/null && parsed=1
+    # The expectation is passed as argv, not embedded in the program text, so the
+    # check cannot drift away from the stub when the stub grows another plugin.
+    python3 - "${WORK}/plugins.json" "$STUB_PLUGINS" <<'PYCHECK' 2>/dev/null && parsed=1
+import json, sys
+path, n = sys.argv[1], int(sys.argv[2])
+d = json.load(open(path))
+assert isinstance(d, list) and len(d) == n, ('rows', len(d), n)
+by_slug = {row['slug']: row for row in d}
+assert 'woocommerce' in by_slug, sorted(by_slug)
+assert by_slug['woocommerce']['update'] == 'available', by_slug['woocommerce']
+assert by_slug['akismet']['update'] == 'none', by_slug['akismet']
+PYCHECK
 elif command -v node >/dev/null 2>&1; then
-    printf '%s' "$json_out" | node -e "
-let s='';process.stdin.on('data',c=>s+=c).on('end',()=>{
-const d=JSON.parse(s);
-if(d.length!==3||d[1].slug!=='woocommerce'||d[1].update!=='available')process.exit(1);});" 2>/dev/null && parsed=1
+    node -e '
+const fs=require("fs");
+const [p,n]=[process.argv[1],Number(process.argv[2])];
+const d=JSON.parse(fs.readFileSync(p,"utf8"));
+if(!Array.isArray(d)||d.length!==n)process.exit(1);
+const w=d.find(x=>x.slug==="woocommerce");
+if(!w||w.update!=="available")process.exit(1);
+' "${WORK}/plugins.json" "$STUB_PLUGINS" 2>/dev/null && parsed=1
 fi
 if [ "$parsed" = '1' ]; then
-    ok '--format json is valid JSON with three rows and a correct update flag'
+    ok "--format json is valid JSON with ${STUB_PLUGINS} rows and a correct update flag"
 else
     if command -v python3 >/dev/null 2>&1 || command -v node >/dev/null 2>&1; then
         bad '--format json is not the plugin list' "$(printf '%s' "$json_out" | head -c 200)"
@@ -237,14 +261,14 @@ if printf '%s' "$csv_out" | head -1 | grep -Fq 'name,status,update,version'; the
 else
     bad '--format csv header' "$(printf '%s' "$csv_out" | head -1)"
 fi
-if printf '%s' "$csv_out" | grep -c '' | grep -qx 4; then
-    ok '--format csv has a header and three rows'
+if printf '%s' "$csv_out" | grep -c '' | grep -qx "$STUB_ROWS"; then
+    ok "--format csv has a header and ${STUB_PLUGINS} rows"
 else
     bad '--format csv row count' "$(printf '%s' "$csv_out" | grep -c '')"
 fi
 tsv_out="$(list_run --format tsv 2>/dev/null)"
-if printf '%s' "$tsv_out" | grep -c '' | grep -qx 4; then
-    ok '--format tsv has four lines'
+if printf '%s' "$tsv_out" | grep -c '' | grep -qx "$STUB_ROWS"; then
+    ok "--format tsv has ${STUB_ROWS} lines"
 else
     bad '--format tsv line count' "$(printf '%s' "$tsv_out" | grep -c '')"
 fi

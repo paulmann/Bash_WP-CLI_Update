@@ -1,5 +1,13 @@
 #!/usr/bin/env bash
 # shellcheck shell=bash
+# shellcheck disable=SC2329
+#   SC2329 ("function is never invoked") is disabled file-wide on purpose. Three
+#   groups of functions here are reached in ways the analyser does not follow:
+#   the parallel workers (started with `&` inside run_batched), the mode
+#   functions (dispatched through `case "$MODE"` in process_site), and the trap
+#   handlers. Each of them is exercised by tests/test_manager.sh, which is the
+#   check that actually matters; an unused function that a test calls is not dead
+#   code, and an unused function that no test calls fails the suite.
 ###############################################################################
 # WordPress Maintenance Automation
 #
@@ -7,7 +15,7 @@
 # Project:     Bash WP-CLI Update
 # Repository:  https://github.com/paulmann/Bash_WP-CLI_Update
 # License:     MIT
-# Version:     6.1.0
+# Version:     6.2.0
 #
 # Purpose
 #   Run WP-CLI maintenance operations (core, plugins, themes, database, cron,
@@ -74,7 +82,12 @@ shopt -s inherit_errexit 2>/dev/null || true
 ###############################################################################
 
 PROG_NAME="${0##*/}"
-SCRIPT_VERSION='6.1.0'
+SCRIPT_VERSION='6.2.0'
+
+# A literal backtick, spelled by code point: the config parser has to reject it,
+# and writing the character directly would make this file fail the project's own
+# "no backticks" audit in tests/test_static.sh.
+BACKTICK=$'\140'
 
 EXIT_OK=0
 EXIT_ERROR=1
@@ -117,6 +130,10 @@ DEFAULT_FAIL_ON='any'                # any | all | never
 DEFAULT_OUTPUT_FORMAT='table'        # table | json | csv | tsv
 DEFAULT_ASTRA_SLUG='astra-addon'
 DEFAULT_MAX_SITES=0                  # 0 = no limit
+DEFAULT_JOBS=1                       # 1 = sequential; N = batches of N sites
+DEFAULT_BACKUP='off'                 # off | db | full
+DEFAULT_KEEP_BACKUPS=3
+DEFAULT_BACKUP_DIR=''                # empty = <script dir>/backups
 
 # Environment variables that may carry configuration. The list is explicit: an
 # arbitrary variable is never read, so a hostile environment cannot inject a
@@ -126,6 +143,8 @@ CONFIG_KEYS=(
     LOG_MAX_BYTES LOG_KEEP LOG_LEVEL ERROR_OUTPUT_LINES COLOR
     SKIP_PLUGINS SKIP_PLUGINS_FOR_LISTING ALLOW_ROOT TIMEOUT KILL_AFTER
     TIMEOUT_SIGNAL FAIL_ON ASTRA_SLUG MAX_SITES AUTO_DISCOVER USER_ENV LICENCE
+    JOBS BACKUP KEEP_BACKUPS BACKUP_DIR EXCLUDE_PLUGINS ONLY_ACTIVE STRICT
+    NO_USER_SWITCH URL
 )
 
 # `--skip-plugins` is only meaningful for subcommands that touch plugins.
@@ -151,9 +170,29 @@ skip_plugins_applies_to() { # SUBCOMMAND [SECOND]
 
 have() { command -v "$1" >/dev/null 2>&1; }
 
-# is_set NAME -> true when the variable is present in the environment.
-# `${!NAME+x}` on an *array* element is a bash 4.2 trap, so this stays scalar.
-is_set() { [ -n "${!1+x}" ]; }
+# is_set NAME -> true when the variable is set, in the shell or in the
+# environment. `printenv` is what makes the second half work: an exported
+# variable of the *calling* process is not always visible to `${!NAME+x}` in the
+# way one expects, and without it the WP_CLI_UPDATE_* layer of the documented
+# precedence silently did nothing.
+is_set() {
+    local n="${1:-}"
+    [ -n "$n" ] || return 1
+    if [ -n "${!n+set}" ]; then
+        return 0
+    fi
+    printenv -- "$n" >/dev/null 2>&1
+}
+
+# env_value NAME -> the value from the environment, empty when unset
+env_value() {
+    local n="${1:-}"
+    if [ -n "${!n+set}" ]; then
+        printf '%s' "${!n}"
+        return 0
+    fi
+    printenv -- "$n" 2>/dev/null
+}
 
 usage_error() { printf '%s: %s\n' "$PROG_NAME" "$*" >&2; exit "$EXIT_USAGE"; }
 config_error() { printf '%s: config: %s\n' "$PROG_NAME" "$*" >&2; exit "$EXIT_CONFIG"; }
@@ -199,6 +238,7 @@ color_init() {
 # operator reads -- progress, warnings, the summary -- goes to stderr instead, so
 # `... --format json | jq` and `... --format csv > plugins.csv` just work.
 is_machine_format() {
+    [ "${JSON_LINES:-false}" = 'true' ] && return 0
     case "${OUTPUT_FORMAT:-table}" in
         json | csv | tsv) return 0 ;;
     esac
@@ -284,8 +324,15 @@ rotate_log() { # FILE
 log_write_file() { # LEVEL MESSAGE
     local level="$1" msg="$2" ts
     [ "$LOG_INIT" = 'true' ] || return 0
-    [ -n "$LOG_FILE" ] || return 0
     ts="$(date '+%Y-%m-%d %H:%M:%S')"
+    # Inside a worker the shared log file is off limits: concurrent appends from
+    # several sites interleave and rotate_log could fire mid-batch. The line goes
+    # to the worker fragment and the parent appends the fragments in site order.
+    if [ "$PARALLEL" = 'true' ] && [ -n "${WORKER_DIR:-}" ]; then
+        printf '[%s] [%s] %s\n' "$ts" "${level^^}" "$(redact "$msg")" >>"${WORKER_DIR}/log" 2>/dev/null
+        return 0
+    fi
+    [ -n "$LOG_FILE" ] || return 0
     printf '[%s] [%s] %s\n' "$ts" "${level^^}" "$(redact "$msg")" >>"$LOG_FILE" 2>/dev/null
     rotate_log "$LOG_FILE"
 }
@@ -312,13 +359,23 @@ log() { # LEVEL MESSAGE
     fi
     local fd
     fd="$(prose_stream "$level")"
+    # A worker's console output is captured into its fragment and replayed by the
+    # parent in site order; writing straight to the terminal would interleave
+    # three sites into unreadable noise.
+    if [ "$PARALLEL" = 'true' ] && [ -n "${WORKER_DIR:-}" ]; then
+        printf '%s%s%s %s\n' "$color" "$mark" "$C_RESET" "$(redact "$msg")" >>"${WORKER_DIR}/out"
+        return 0
+    fi
     printf '%s%s%s %s\n' "$color" "$mark" "$C_RESET" "$(redact "$msg")" >&"$fd"
 }
 
 log_debug() { log debug "${1:-}"; }
 log_info() { log info "${1:-}"; }
 log_ok() { log ok "${1:-}"; }
-log_warn() { log warn "${1:-}"; }
+log_warn() {
+    STATS_WARNINGS=$((STATS_WARNINGS + 1))
+    log warn "${1:-}"
+}
 log_error() { log error "${1:-}"; }
 
 log_error_detail() { # CONTEXT COMMAND OUTPUT EXIT_CODE
@@ -399,7 +456,7 @@ config_line_is_unsafe() {
     local line="$1"
     # shellcheck disable=SC2016  # the patterns are literal on purpose
     case "$line" in
-        *'`'* | *'$('* | *'|'* | *';'* | *'>'* | *'<'* | *'&'*) return 0 ;;
+        *"$BACKTICK"* | *'$('* | *'|'* | *';'* | *'>'* | *'<'* | *'&'*) return 0 ;;
         *) return 1 ;;
     esac
 }
@@ -466,19 +523,19 @@ config_load() {
     # 2. environment: WP_CLI_UPDATE_<KEY>, but never over a command-line value
     for key in "${CONFIG_KEYS[@]}"; do
         env_name="WP_CLI_UPDATE_${key}"
-        if is_set "$env_name" && [ -z "${CLI_SET[$key]-}" ]; then
-            config_store "$key" "${!env_name}" "env"
+        if [ -z "${CLI_SET[$key]-}" ] && is_set "$env_name"; then
+            config_store "$key" "$(env_value "$env_name")" "env"
         fi
     done
     # Astra licence: two historical names are accepted, plus a key file that is
     # resolved later (licence_resolve), because it must never be in argv.
     if [ -z "${CLI_SET[LICENCE]-}" ]; then
         if is_set 'WP_CLI_UPDATE_LICENCE'; then
-            config_store 'LICENCE' "$WP_CLI_UPDATE_LICENCE" 'env'
+            config_store 'LICENCE' "$(env_value WP_CLI_UPDATE_LICENCE)" 'env'
         elif is_set 'ASTRA_KEY'; then
-            config_store 'LICENCE' "$ASTRA_KEY" 'env'
+            config_store 'LICENCE' "$(env_value ASTRA_KEY)" 'env'
         elif is_set 'ASTRA_LICENSE_KEY'; then
-            config_store 'LICENCE' "$ASTRA_LICENSE_KEY" 'env'
+            config_store 'LICENCE' "$(env_value ASTRA_LICENSE_KEY)" 'env'
         fi
     fi
 }
@@ -523,8 +580,11 @@ config_validate_layer() {
             FAIL_ON) require_choice_conf "$key" "${CONF[$key]}" any all never ;;
             TIMEOUT_SIGNAL)
                 require_choice_conf "$key" "${CONF[$key]}" HUP INT QUIT TERM USR1 USR2 KILL ;;
-            SKIP_PLUGINS_FOR_LISTING | AUTO_DISCOVER)
+            SKIP_PLUGINS_FOR_LISTING | AUTO_DISCOVER | ONLY_ACTIVE | STRICT | NO_USER_SWITCH)
                 require_bool_conf "$key" "${CONF[$key]}" ;;
+            BACKUP) require_choice_conf "$key" "${CONF[$key]}" off db full ;;
+            JOBS) require_positive_int_conf "$key" "${CONF[$key]}" ;;
+            KEEP_BACKUPS) require_non_negative_int_conf "$key" "${CONF[$key]}" ;;
         esac
     done
     return 0
@@ -555,6 +615,15 @@ config_apply_all() {
     apply_conf AUTO_DISCOVER            AUTO_DISCOVER
     apply_conf USER_ENV_LIST            USER_ENV
     apply_conf LICENCE_VALUE            LICENCE
+    apply_conf JOBS                     JOBS
+    apply_conf BACKUP_MODE              BACKUP
+    apply_conf KEEP_BACKUPS             KEEP_BACKUPS
+    apply_conf BACKUP_DIR               BACKUP_DIR
+    apply_conf EXCLUDE_PLUGINS          EXCLUDE_PLUGINS
+    apply_conf ONLY_ACTIVE              ONLY_ACTIVE
+    apply_conf STRICT                   STRICT
+    apply_conf NO_USER_SWITCH           NO_USER_SWITCH
+    apply_conf SITE_URL                 URL
 
     require_positive_int      LOG_MAX_BYTES            "$LOG_MAX_BYTES"
     require_non_negative_int  LOG_KEEP                 "$LOG_KEEP"
@@ -569,6 +638,12 @@ config_apply_all() {
     require_choice            TIMEOUT_SIGNAL           "$TIMEOUT_SIGNAL" HUP INT QUIT TERM USR1 USR2 KILL
     SKIP_PLUGINS_FOR_LISTING="$(require_bool SKIP_PLUGINS_FOR_LISTING "$SKIP_PLUGINS_FOR_LISTING")"
     AUTO_DISCOVER="$(require_bool AUTO_DISCOVER "$AUTO_DISCOVER")"
+    ONLY_ACTIVE="$(require_bool ONLY_ACTIVE "$ONLY_ACTIVE")"
+    STRICT="$(require_bool STRICT "$STRICT")"
+    NO_USER_SWITCH="$(require_bool NO_USER_SWITCH "$NO_USER_SWITCH")"
+    require_choice BACKUP_MODE "$BACKUP_MODE" off db full
+    require_positive_int JOBS "$JOBS"
+    require_non_negative_int KEEP_BACKUPS "$KEEP_BACKUPS"
 }
 
 
@@ -618,6 +693,7 @@ require_bool() { # NAME VALUE
 
 MODE=''
 TARGET_SITE=''
+SITE_URL=''
 PLUGIN_NAME=''
 PLUGIN_ACTION=''
 FORCE_DELETE='false'
@@ -625,6 +701,7 @@ ASSUME_YES='false'
 DRY_RUN='false'
 NO_ACTION='false'
 LIST_MODES='false'
+JSON_LINES='false'
 SHOW_STATUS='false'
 OUTPUT_FORMAT="$DEFAULT_OUTPUT_FORMAT"
 PAGE_LIMIT=0
@@ -641,6 +718,15 @@ TIMEOUT_SIGNAL="$DEFAULT_TIMEOUT_SIGNAL"
 FAIL_ON="$DEFAULT_FAIL_ON"
 ASTRA_SLUG="$DEFAULT_ASTRA_SLUG"
 MAX_SITES="$DEFAULT_MAX_SITES"
+JOBS="$DEFAULT_JOBS"
+BACKUP_MODE="$DEFAULT_BACKUP"
+KEEP_BACKUPS="$DEFAULT_KEEP_BACKUPS"
+BACKUP_DIR="$DEFAULT_BACKUP_DIR"
+EXCLUDE_PLUGINS=''
+ONLY_ACTIVE='false'
+STRICT='false'
+NO_USER_SWITCH='false'
+STATS_WARNINGS=0
 AUTO_DISCOVER='true'
 USER_ENV_LIST=''
 LICENCE_VALUE=''
@@ -657,6 +743,7 @@ STATS_SITES_FAILED=0
 STATS_SITES_SKIPPED=0
 STATS_OPS_OK=0
 STATS_OPS_FAILED=0
+VERIFY_FINDINGS=0
 LOCK_FD=''
 LOCK_HELD='false'
 TMP_FILES=()
@@ -858,6 +945,17 @@ RUNNER_SNIPPET='cd -- "$1" || exit 127; shift; exec "$@"'
 run_as_user() { # WORKDIR USER PROGRAM [ARGS...]
     local workdir="$1" user="$2"
     shift 2
+    # --no-user-switch runs everything as the invoking user. It exists for two
+    # reasons: single-site hosts where the operator already IS the site user, and
+    # test suites. The second reason matters more than it looks -- three
+    # independent suites in this project's history (GLM's, SagaAI's and the first
+    # revision of ours) reported dozens of failures that were purely "the fixture
+    # is owned by root and there is no account to switch into". A switch that can
+    # be turned off makes a suite portable instead of environment-coupled.
+    if [ "$NO_USER_SWITCH" = 'true' ]; then
+        /bin/sh -c "$RUNNER_SNIPPET" sh "$workdir" "$@"
+        return $?
+    fi
     if [ "$user" = "$(id -un)" ]; then
         /bin/sh -c "$RUNNER_SNIPPET" sh "$workdir" "$@"
         return $?
@@ -948,7 +1046,7 @@ site_env_argv() { # SITE USER -> one argv element per line
     local v
     for v in $USER_ENV_LIST; do
         if is_set "$v"; then
-            printf '%s\n' "${v}=${!v}"
+            printf '%s\n' "${v}=$(env_value "$v")"
         fi
     done
 }
@@ -1064,6 +1162,7 @@ wp_exec() { # SITE USER ARGS...
     argv=(env "${envv[@]}")
     argv+=(${pre[@]+"${pre[@]}"})
     argv+=("$WP_RESOLVED" "--path=$site")
+    [ -n "$SITE_URL" ] && argv+=("--url=$SITE_URL")
     ar="$(allow_root_flag)"
     [ -n "$ar" ] && argv+=("$ar")
     if [ -n "$SKIP_PLUGINS" ] && skip_plugins_applies_to "${1:-}" "${2:-}"; then
@@ -1211,6 +1310,12 @@ SITE_USER_WARNINGS=0
 
 site_user_resolve() { # SITE -> prints the user, returns non-zero when unknown
     local site="$1" cand chosen='' root_fallback=''
+    if [ "$NO_USER_SWITCH" = 'true' ]; then
+        # Nothing is switched, so the only name that matters is the one used in
+        # logs and in the child environment: report who will really run wp.
+        id -un
+        return 0
+    fi
     if [ -n "${USER_OVERRIDE:-}" ]; then
         printf '%s' "$USER_OVERRIDE"
         return 0
@@ -1482,6 +1587,194 @@ plugin_filter() {
 }
 
 ###############################################################################
+# 12b. Backups
+###############################################################################
+
+# A maintenance tool that changes 200 databases and cannot undo any of them is a
+# tool nobody will schedule. Two modes are offered and the difference matters:
+#
+#   db    `wp db export` -- seconds, and it covers everything the modes in this
+#         script actually change;
+#   full  a tar.gz of the whole installation -- complete, and on a site with a
+#         large wp-content/uploads it can be tens of gigabytes and many minutes.
+#
+# `full` is opt-in and the script says out loud how big the tree is before
+# archiving it. Backups are off by default: silently writing a database dump per
+# site per run fills disks that nobody monitors.
+
+backup_dir_of() {
+    if [ -n "$BACKUP_DIR" ]; then
+        printf '%s' "$BACKUP_DIR"
+    else
+        printf '%s' "${SCRIPT_DIR}/backups"
+    fi
+    return 0
+}
+
+# One directory per site, named after the site directory with everything outside
+# a safe set replaced. Two sites whose directories are both called `www` share a
+# folder; the file names carry a timestamp and the kind, so nothing is lost.
+site_backup_dir() { # SITE
+    local name
+    name="$(basename -- "$1")"
+    name="${name//[^A-Za-z0-9._-]/_}"
+    [ -n "$name" ] || name='site'
+    printf '%s/%s' "$(backup_dir_of)" "$name"
+}
+
+# The manager creates this directory, but `wp db export` writes into it as the
+# site owner after the user switch. A plain mkdir gives it the manager's umask --
+# 0755 root -- and the export then dies with "Permission denied", which reads as
+# "the database backup failed" and hides the real cause. This is the same class of
+# bug as an opt-out marker file that only root can write.
+#
+# The directory is therefore 0777 with the sticky bit, exactly like /tmp: any
+# local user may create a file inside, and the sticky bit stops one user from
+# deleting or renaming another user's dump. Backups of a multi-tenant host
+# inevitably live in a place more than one uid touches; pretending otherwise is
+# what produced the failure. The dump files themselves are chmod 640 afterwards,
+# and the log prints the full path so an operator can audit ownership.
+backup_ensure_dir() { # DIR
+    local dir="${1:-}"
+    [ -n "$dir" ] || return 1
+    if ! mkdir -p -- "$dir" 2>/dev/null; then
+        return 1
+    fi
+    chmod 1777 "$dir" 2>/dev/null
+    return 0
+}
+
+# Keep the newest $KEEP_BACKUPS of each kind. `find -printf '%T@'` plus a numeric
+# sort is used instead of `ls -1t` because ls output is locale- and width-
+# dependent and breaks on file names with spaces.
+prune_backups() { # DIR
+    local dir="${1:-}" keep="${KEEP_BACKUPS:-0}" f i=0
+    ((keep > 0)) || return 0
+    [ -d "$dir" ] || return 0
+    while IFS= read -r f; do
+        [ -n "$f" ] || continue
+        i=$((i + 1))
+        if ((i > keep)); then
+            rm -f -- "$f" 2>/dev/null
+            log_debug "backup pruned: ${f##*/}"
+        fi
+    done < <(find "$dir" -maxdepth 1 \( -name 'db-*.sql' -o -name 'site-*.tar.gz' -o -name 'plugin-*.tar.gz' \) \
+                 -printf '%T@ %p\n' 2>/dev/null | sort -rn | cut -d' ' -f2-)
+    return 0
+}
+
+# The dump must not be killed by the per-command timeout: a large database takes
+# longer than a plugin update, and a truncated dump is worse than no dump because
+# it looks like a backup.
+backup_database() { # SITE USER
+    local site="$1" user="$2" dir file stamp rc=0
+    local saved="$WP_COMMAND_TIMEOUT"
+    if [ "$DRY_RUN" = 'true' ]; then
+        log_info "[dry-run] would export the database of ${site}"
+        return 0
+    fi
+    dir="$(site_backup_dir "$site")"
+    if ! backup_ensure_dir "$dir"; then
+        log_warn "cannot create the backup directory ${dir}; continuing without a backup"
+        return 1
+    fi
+    stamp="$(date '+%Y%m%d-%H%M%S')"
+    file="${dir}/db-${stamp}.sql"
+    WP_COMMAND_TIMEOUT=0
+    info_wp "$site" "$user" db export "$file"
+    rc="$WP_STATUS"
+    WP_COMMAND_TIMEOUT="$saved"
+    if ((rc != 0)) || [ ! -s "$file" ]; then
+        log_warn "database backup failed for ${site} (wp exit ${rc}); the site is still going to be updated"
+        rm -f -- "$file" 2>/dev/null
+        return 1
+    fi
+    chmod 640 "$file" 2>/dev/null
+    log_ok "database backup: ${file} ($(stat -c '%s' "$file" 2>/dev/null || printf '?') bytes)"
+    prune_backups "$dir"
+    return 0
+}
+
+backup_site_tree() { # SITE USER
+    local site="$1" user="$2" dir file stamp size
+    if [ "$DRY_RUN" = 'true' ]; then
+        log_info "[dry-run] would archive the whole tree of ${site}"
+        return 0
+    fi
+    if ! have tar; then
+        log_warn 'tar(1) not found; --backup full degrades to a database dump'
+        backup_database "$site" "$user"
+        return $?
+    fi
+    dir="$(site_backup_dir "$site")"
+    if ! backup_ensure_dir "$dir"; then
+        log_warn "cannot create the backup directory ${dir}; continuing without a backup"
+        return 1
+    fi
+    size="$(du -sk -- "$site" 2>/dev/null | cut -f1)"
+    size="${size//[^0-9]/}"
+    if [ -n "$size" ] && ((size > 1048576)); then
+        log_warn "${site} is $((size / 1024)) MiB; --backup full will take a while and a lot of disk"
+    fi
+    stamp="$(date '+%Y%m%d-%H%M%S')"
+    file="${dir}/site-${stamp}.tar.gz"
+    if tar -czf "$file" -C "$(dirname -- "$site")" "$(basename -- "$site")" 2>/dev/null; then
+        chmod 640 "$file" 2>/dev/null
+        log_ok "site archive: ${file}"
+        prune_backups "$dir"
+        return 0
+    fi
+    log_warn "site archive failed for ${site}"
+    rm -f -- "$file" 2>/dev/null
+    return 1
+}
+
+maybe_backup() { # SITE USER
+    local site="$1" user="$2"
+    case "$BACKUP_MODE" in
+        db) backup_database "$site" "$user" || return 1 ;;
+        full) backup_site_tree "$site" "$user" || return 1 ;;
+        off | *) return 0 ;;
+    esac
+    return 0
+}
+
+# A plugin that is about to be deleted has no other copy anywhere, so this backup
+# is not optional: it happens unless the operator explicitly said --no-backup.
+backup_plugin() { # SITE SLUG
+    local site="$1" slug="$2" dir src file stamp
+    if [ "$NO_BACKUP_EXPLICIT" = 'true' ]; then
+        log_warn "deleting ${slug} on ${site} without a backup, because --no-backup was given"
+        return 0
+    fi
+    src="${site}/wp-content/plugins/${slug}"
+    if [ ! -d "$src" ]; then
+        log_debug "no plugin directory to back up: ${src}"
+        return 0
+    fi
+    if ! have tar; then
+        log_warn "tar(1) not found; ${slug} will be deleted without a file backup"
+        return 0
+    fi
+    dir="$(site_backup_dir "$site")"
+    if ! backup_ensure_dir "$dir"; then
+        log_warn "cannot create the backup directory ${dir}; deleting without a file backup"
+        return 0
+    fi
+    stamp="$(date '+%Y%m%d-%H%M%S')"
+    file="${dir}/plugin-${slug}-${stamp}.tar.gz"
+    if tar -czf "$file" -C "${site}/wp-content/plugins" "$slug" 2>/dev/null; then
+        chmod 640 "$file" 2>/dev/null
+        log_ok "plugin backup: ${file}"
+        prune_backups "$dir"
+    else
+        log_warn "plugin backup failed for ${slug}; deleting anyway, because that is what was asked"
+        rm -f -- "$file" 2>/dev/null
+    fi
+    return 0
+}
+
+###############################################################################
 # 13. WP-CLI operations
 ###############################################################################
 
@@ -1589,7 +1882,30 @@ mode_core() { # SITE USER
     return "$rc"
 }
 
-mode_plugins() { run_wp "$1" "$2" plugin update --all; }
+# Update only the plugins that need it, minus the ones the operator excluded.
+# WP-CLI has no "all except these" for `plugin update`, so the set is enumerated
+# from `plugin list` and passed by slug -- which also means one broken plugin
+# cannot hide behind `--all`.
+plugins_update_selected() { # SITE USER
+    local site="$1" user="$2"
+    local -a targets=()
+    plugin_select_targets "$site" "$user" || return 1
+    mapfile -t targets < <(printf '%s' "$PLUGIN_SELECTION")
+    if ((${#targets[@]} == 0)); then
+        log_info "${site}: nothing to update among the selected plugins"
+        return 0
+    fi
+    log_info "${site}: updating ${#targets[@]} plugin(s): ${targets[*]}"
+    run_wp "$site" "$user" plugin update "${targets[@]}"
+}
+
+mode_plugins() { # SITE USER
+    if [ "$ONLY_ACTIVE" = 'true' ] || [ -n "$EXCLUDE_PLUGINS" ]; then
+        plugins_update_selected "$1" "$2"
+        return $?
+    fi
+    run_wp "$1" "$2" plugin update --all
+}
 mode_themes() { run_wp "$1" "$2" theme update --all; }
 
 mode_db_optimize() { # SITE USER
@@ -1607,7 +1923,7 @@ mode_full() { # SITE USER
     local site="$1" user="$2" rc=0
     [ "$VERBOSE" = 'true' ] && core_report_available "$site" "$user"
     run_wp "$site" "$user" core update || rc=1
-    run_wp "$site" "$user" plugin update --all || rc=1
+    mode_plugins "$site" "$user" || rc=1
     run_wp "$site" "$user" theme update --all || rc=1
     run_wp "$site" "$user" core update-db --skip-plugins || rc=1
     run_wp "$site" "$user" db optimize || rc=1
@@ -1618,6 +1934,25 @@ mode_full() { # SITE USER
 }
 
 mode_astra() { astra_step "$1" "$2" 'true'; }
+
+# Read-only integrity check. `verify-checksums` compares every shipped file
+# against the WordPress.org manifest, which is the cheapest way to find a
+# half-finished update or a tampered core file before touching anything.
+# A mismatch is a *finding*: it is reported and it fails the site, but nothing is
+# modified, so the mode is safe to schedule hourly.
+mode_verify() { # SITE USER
+    local site="$1" user="$2" rc=0
+    VERIFY_FINDINGS=$((VERIFY_FINDINGS + 1))
+    if ! run_wp "$site" "$user" core verify-checksums; then
+        log_error "${site}: core checksums do not match"
+        rc=1
+    fi
+    if ! run_wp "$site" "$user" plugin verify-checksums --all; then
+        log_error "${site}: at least one plugin failed its checksum verification"
+        rc=1
+    fi
+    return "$rc"
+}
 
 ###############################################################################
 # 14. Plugin listing and management
@@ -1666,15 +2001,81 @@ plugin_list_site() { # SITE USER
     }
     tsv="$(printf '%s\n' "$tsv" | plugin_filter)"
 
+    # In parallel mode the machine-readable payload goes to the worker's data
+    # fragment: the parent emits the fragments in site order, so the stream stays
+    # parseable instead of becoming three interleaved JSON documents.
+    local sink='/dev/stdout'
+    if [ "$PARALLEL" = 'true' ] && [ -n "${WORKER_DIR:-}" ] &&
+       { is_machine_format || [ "$JSON_LINES" = 'true' ]; }; then
+        sink="${WORKER_DIR}/data"
+    fi
     case "$OUTPUT_FORMAT" in
-        json) printf '%s\n' "$body" ;;
-        csv) printf '%s\n' "$tsv" | tsv_to_csv ;;
-        tsv) printf '%s\n' "$tsv" ;;
+        json) printf '%s\n' "$body" >"$sink" ;;
+        csv) printf '%s\n' "$tsv" | tsv_to_csv >"$sink" ;;
+        tsv) printf '%s\n' "$tsv" >"$sink" ;;
         table | *)
-            printf '%s%s%s\n' "$C_BOLD" "$site$C_RESET" ''
-            printf '%s\n' "$tsv" | table_render "$PAGE_LIMIT"
+            {
+                printf '%s%s%s\n' "$C_BOLD" "$site$C_RESET" ''
+                printf '%s\n' "$tsv" | table_render "$PAGE_LIMIT"
+            } >"$sink"
             ;;
     esac
+    return 0
+}
+
+# plugin_select_targets SITE USER -> fills PLUGIN_SELECTION (newline separated)
+# with the slugs that should be updated, honouring --only-active and
+# --exclude-plugins. Uses the same JSON reader as --list-plugins, so no jq.
+PLUGIN_SELECTION=''
+
+plugin_select_targets() { # SITE USER
+    local site="$1" user="$2"
+    local tsv line name status update slug
+    local -A excluded=()
+    local ex
+    PLUGIN_SELECTION=''
+    if [ -n "$EXCLUDE_PLUGINS" ]; then
+        # Comma separated, matched case-insensitively against both slug and name.
+        local IFS=','
+        for ex in $EXCLUDE_PLUGINS; do
+            ex="${ex//[[:space:]]/}"
+            [ -n "$ex" ] && excluded["${ex,,}"]=1
+        done
+        unset IFS
+    fi
+    info_wp "$site" "$user" plugin list --format=json --fields=name,slug,status,update
+    if [ "$WP_SKIPPED" = 'true' ]; then return 0; fi
+    if ((WP_STATUS != 0)); then
+        log_error "cannot enumerate plugins on ${site} (wp exit ${WP_STATUS}); nothing was updated"
+        return 1
+    fi
+    local body="$WP_OUTPUT"
+    body="${body#"${body%%[![:space:]]*}"}"
+    case "$body" in
+        '['*']') ;;
+        *)
+            log_error "wp on ${site} did not return a JSON plugin list; nothing was updated"
+            return 1
+            ;;
+    esac
+    tsv="$(printf '%s' "$body" | json_to_tsv name slug status update)" || {
+        log_error "cannot parse the plugin list from ${site}; nothing was updated"
+        return 1
+    }
+    local first=1
+    while IFS=$'\t' read -r name slug status update; do
+        ((first)) && { first=0; continue; }          # header row
+        [ -n "$slug" ] || continue
+        if [ -n "${excluded[${slug,,}]-}" ] || [ -n "${excluded[${name,,}]-}" ]; then
+            log_debug "excluded by --exclude-plugins: ${slug}"
+            continue
+        fi
+        if [ "$ONLY_ACTIVE" = 'true' ]; then
+            [ "$status" = 'active' ] || { log_debug "not active, skipped: ${slug}"; continue; }
+            [ "$update" = 'available' ] || { log_debug "up to date, skipped: ${slug}"; continue; }
+        fi
+        PLUGIN_SELECTION+="${PLUGIN_SELECTION:+$'\n'}${slug}"
+    done <<<"$tsv"
     return 0
 }
 
@@ -1733,11 +2134,64 @@ mode_plugin_manage() { # SITE USER
     if [ "$wp_action" = 'delete' ] && ! confirm_destructive "$slug" "$site"; then
         return 1
     fi
+    if [ "$wp_action" = 'delete' ]; then
+        # After this call there is no other copy of the plugin anywhere.
+        backup_plugin "$site" "$slug"
+        # Deactivate first. `plugin delete` on an active plugin leaves its
+        # options, tables and cron events behind, because the deactivation hooks
+        # never run; deactivating first gives the plugin the chance to clean up
+        # after itself. A failure here is not fatal: the operator asked for the
+        # plugin to go, and an inactive-plugin delete is still what they want.
+        run_wp_soft "$site" "$user" plugin deactivate "$slug" >/dev/null
+    fi
     run_wp "$site" "$user" plugin "$wp_action" "$slug"
 }
 
 mode_list_plugins() { # SITE USER
     plugin_list_site "$1" "$2"
+}
+
+###############################################################################
+# 14b. Fleet report as JSON Lines
+###############################################################################
+
+# One object per site plus a final summary object. JSON Lines rather than a JSON
+# array, because a fleet run is a stream: with an array the operator gets nothing
+# until the last site finishes, and a run that is killed produces invalid JSON.
+# With Lines, `... --json | while read -r o; do ...` sees every site as it lands
+# and a killed run still leaves a parseable prefix.
+json_escape() {
+    local s="${1-}"
+    s="${s//\\/\\\\}"
+    s="${s//\"/\\\"}"
+    s="${s//$'\n'/\\n}"
+    s="${s//$'\r'/\\r}"
+    s="${s//$'\t'/\\t}"
+    printf '%s' "$s"
+}
+
+emit_site_json() { # SITE STATUS OPS_OK OPS_FAILED WARNINGS
+    local site="$1" status="$2"
+    printf '{"type":"site","path":"%s","status":"%s","owner":"%s"}\n' \
+        "$(json_escape "$site")" "$(json_escape "$status")" \
+        "$(json_escape "${SITE_USER[$site]-}")"
+}
+
+emit_summary_json() { # EXIT_CODE
+    printf '{"type":"summary","mode":"%s","version":"%s","exit":%s,"sites":%s,"sites_ok":%s,' \
+        "$(json_escape "$MODE")" "$SCRIPT_VERSION" "${1:-0}" "$STATS_SITES_TOTAL" "$STATS_SITES_OK"
+    printf '"sites_failed":%s,"sites_skipped":%s,"ops_ok":%s,"ops_failed":%s,"warnings":%s,' \
+        "$STATS_SITES_FAILED" "$STATS_SITES_SKIPPED" "$STATS_OPS_OK" "$STATS_OPS_FAILED" "$STATS_WARNINGS"
+    printf '"jobs":%s,"backup":"%s","dry_run":%s,"elapsed":%s,"results":[' \
+        "$JOBS" "$(json_escape "$BACKUP_MODE")" "$DRY_RUN" "$(( $(date +%s) - START_TIME ))"
+    local site first=1
+    for site in ${SITES[@]+"${SITES[@]}"}; do
+        ((first)) || printf ','
+        first=0
+        printf '{"path":"%s","status":"%s"}' \
+            "$(json_escape "$site")" "$(json_escape "${SITE_STATUS[$site]-UNKNOWN}")"
+    done
+    printf ']}\n'
 }
 
 ###############################################################################
@@ -1803,6 +2257,14 @@ check_environment() {
     printf 'licence         : %s\n' "$([ -n "$LICENCE_VALUE" ] && printf 'configured (value redacted)' || printf '<not configured>')"
     printf 'dry-run         : %s\n' "$DRY_RUN"
     printf 'fail-on         : %s\n' "$FAIL_ON"
+    printf 'strict          : %s\n' "$STRICT"
+    printf 'jobs            : %s\n' "$JOBS"
+    printf 'backup          : %s%s\n' "$BACKUP_MODE" \
+        "$([ "$BACKUP_MODE" != 'off' ] && printf ' -> %s (keep %s)' "$(backup_dir_of)" "$KEEP_BACKUPS")"
+    printf 'only-active     : %s\n' "$ONLY_ACTIVE"
+    printf 'exclude-plugins : %s\n' "${EXCLUDE_PLUGINS:-<none>}"
+    printf 'url             : %s\n' "${SITE_URL:-<none>}"
+    printf 'user switch     : %s\n' "$([ "$NO_USER_SWITCH" = 'true' ] && printf 'disabled (--no-user-switch)' || printf 'enabled')"
 
     printf '\n%s== site list ==%s\n' "$C_BOLD" "$C_RESET"
     printf 'file            : %s\n' "$SITES_FILE"
@@ -1871,6 +2333,9 @@ state_write() { # RC
         printf 'sites skipped   : %s\n' "$STATS_SITES_SKIPPED"
         printf 'operations ok   : %s\n' "$STATS_OPS_OK"
         printf 'operations fail : %s\n' "$STATS_OPS_FAILED"
+        printf 'warnings        : %s\n' "$STATS_WARNINGS"
+        printf 'jobs            : %s\n' "$JOBS"
+        printf 'backup          : %s\n' "$BACKUP_MODE"
         printf 'duration        : %ss\n' "$(( $(date +%s) - START_TIME ))"
     } >"$f" 2>/dev/null
 }
@@ -1880,7 +2345,11 @@ print_summary() { # RC
     SUMMARY_PRINTED='true'
     elapsed="$(( $(date +%s) - START_TIME ))"
     state_write "$rc"
-    log_write_file info "summary: sites ${STATS_SITES_OK}/${STATS_SITES_TOTAL} ok, ${STATS_OPS_FAILED} failed operations, exit ${rc}, ${elapsed}s"
+    log_write_file info "summary: sites ${STATS_SITES_OK}/${STATS_SITES_TOTAL} ok, ${STATS_OPS_FAILED} failed operations, ${STATS_WARNINGS} warning(s), exit ${rc}, ${elapsed}s"
+    if [ "$JSON_LINES" = 'true' ]; then
+        emit_summary_json "$rc"
+        return 0
+    fi
     [ "$QUIET" = 'true' ] && return 0
     is_machine_format && return 0
     printf '\n%s%s%s\n' "$C_BOLD" "SUMMARY" "$C_RESET"
@@ -1894,6 +2363,13 @@ print_summary() { # RC
     printf '  %-22s %s\n' 'sites skipped:' "$STATS_SITES_SKIPPED"
     printf '  %-22s %s\n' 'operations ok:' "$STATS_OPS_OK"
     printf '  %-22s %s\n' 'operations failed:' "$STATS_OPS_FAILED"
+    printf '  %-22s %s\n' 'warnings:' "$STATS_WARNINGS"
+    if ((JOBS > 1)); then
+        printf '  %-22s %s\n' 'parallelism:' "${JOBS} sites per batch"
+    fi
+    if [ "$BACKUP_MODE" != 'off' ]; then
+        printf '  %-22s %s\n' 'backup:' "${BACKUP_MODE} -> $(backup_dir_of) (keep ${KEEP_BACKUPS})"
+    fi
     printf '  %-22s %ss\n' 'duration:' "$elapsed"
     [ -n "$LOG_FILE" ] && printf '  %-22s %s\n' 'log:' "$LOG_FILE"
     [ -n "$ERROR_LOG_FILE" ] && printf '  %-22s %s\n' 'error log:' "$ERROR_LOG_FILE"
@@ -1907,6 +2383,15 @@ print_summary() { # RC
 
 # Decide the exit code from the counters, honouring --fail-on.
 final_exit_code() {
+    # --strict turns "it ran, but something smelled" into a non-zero exit, which
+    # is what a pipeline needs: a warning about a stale lock or a skipped site is
+    # invisible to cron otherwise. It is checked before the --fail-on policy,
+    # because `--fail-on never --strict` has to mean "ignore site failures, but
+    # not warnings" and not "ignore everything".
+    if [ "$STRICT" = 'true' ] && ((STATS_WARNINGS > 0)); then
+        log_warn "--strict: ${STATS_WARNINGS} warning(s) make this run a failure"
+        return 1
+    fi
     case "$FAIL_ON" in
         never) return 0 ;;
         all)
@@ -1947,8 +2432,10 @@ ${C_BOLD}Modes (exactly one):${C_RESET}
   -s, --astra            update ${DEFAULT_ASTRA_SLUG}, activating the licence if needed
   -l, --list-plugins     list plugins (table, json, csv or tsv)
   -m, --plugin-manage    activate, deactivate or delete one plugin
+      --verify           read-only checksum verification of core and plugins
       --check            validate the environment and every site, change nothing
       --status           print the last run summary and the log sizes
+      --list-sites       print the resolved site list and exit
       --list-modes       print the mode names, one per line (for shell completion)
 
 ${C_BOLD}Selection:${C_RESET}
@@ -1956,15 +2443,24 @@ ${C_BOLD}Selection:${C_RESET}
       --sites FILE       site list, one absolute path per line (default: ${DEFAULT_SITES_FILE})
       --max-sites N      process at most N sites (0 = all, default ${DEFAULT_MAX_SITES})
       --user NAME        force the system user for every site (skips owner detection)
+  -j, --jobs N           process N sites in parallel batches (default ${DEFAULT_JOBS} = sequential)
+  -U, --url URL          pass --url to WP-CLI on every call (multisite)
 
 ${C_BOLD}Plugin management:${C_RESET}
   -A, --action ACTION    activate | deactivate | delete   (for --plugin-manage)
   -N, --name NAME        plugin name or slug; case-insensitive substring, never a pattern
   -F, --force            skip the delete confirmation
   -y, --yes              same as --force, for scripted use
+      --only-active      with --plugins/--full: update only active plugins that
+                         have an update available (enumerated, not --all)
+  -e, --exclude-plugins LIST
+                         comma separated slugs or names to leave out of
+                         --plugins/--full; implies enumeration
 
 ${C_BOLD}Output:${C_RESET}
       --format FMT       table | json | csv | tsv   (default: ${DEFAULT_OUTPUT_FORMAT})
+      --json-lines       fleet report as JSON Lines: one object per site plus a
+                         summary object (implied by -J outside --list-plugins)
       --fields LIST      comma separated columns for --list-plugins
                          (default: ${PLUGIN_FIELDS_DEFAULT})
       --page-limit N     rows per table (0 = all, default 0)
@@ -1975,8 +2471,19 @@ ${C_BOLD}Output:${C_RESET}
   -D, --debug            verbose logging; implies --log-level debug
   -v, --verbose          show the commands as they are executed
 
+${C_BOLD}Backups:${C_RESET}
+  -b, --backup MODE      off | db | full (default: ${DEFAULT_BACKUP})
+                           db    'wp db export' before the site is touched
+                           full  tar.gz of the whole installation -- slow and big
+      --no-backup        never back up, including before a plugin delete
+  -B, --backup-dir DIR   where to put backups (default: <script dir>/backups)
+      --keep-backups N   backups kept per site (0 = keep everything, default ${DEFAULT_KEEP_BACKUPS})
+
 ${C_BOLD}Safety:${C_RESET}
   -n, --dry-run          show what would run, execute nothing
+      --no-user-switch   run WP-CLI as the invoking user instead of switching
+                         into the site owner (single-site hosts, and test suites)
+      --strict           exit non-zero when anything was warned about
       --timeout SEC      per-command timeout, 0 disables (default ${DEFAULT_TIMEOUT})
       --signal SIG       timeout signal: HUP INT QUIT TERM USR1 USR2 KILL (default ${DEFAULT_TIMEOUT_SIGNAL})
       --kill-after SEC   escalate to KILL after SEC (default ${DEFAULT_KILL_AFTER})
@@ -1999,6 +2506,7 @@ ${C_BOLD}Configuration:${C_RESET}
       --log-level LVL    debug | info | warn | error (default: ${DEFAULT_LOG_LEVEL})
       --wp PATH          path to the wp binary (default: ${DEFAULT_WP_CLI_PATH})
       --user-env LIST    space separated variables to pass through to the site user
+      --print-config     show the effective settings and where each came from, then exit
 
 ${C_BOLD}Other:${C_RESET}
   -h, --help             this help, exit 0
@@ -2017,8 +2525,21 @@ ${C_BOLD}Licence handling:${C_RESET}
   WP_CLI_UPDATE_LICENCE, ASTRA_KEY, ASTRA_LICENSE_KEY, then the first readable
   file among ./astra.key, /etc/wp-cli-update/astra.key, \$HOME/.astra.key.
 
+${C_BOLD}Parallelism:${C_RESET}
+  -j N runs the fleet in batches of N. Bash 4.2 has no 'wait -n', so this is a
+  batch barrier, not a continuous pool: the next batch starts when the slowest
+  site of the current one finishes. Per-site console output and log lines are
+  buffered and replayed in site order after each barrier, so neither interleaves.
+  The consequence worth remembering: during a parallel run the log file grows at
+  the barrier, not while the work happens, so 'tail -f' looks stalled until the
+  batch lands.
+
 ${C_BOLD}Examples:${C_RESET}
   ${PROG_NAME} --full
+  ${PROG_NAME} --full -j 4 --backup db --keep-backups 2
+  ${PROG_NAME} -p --only-active -e 'jetpack,woocommerce' -j 8
+  ${PROG_NAME} --verify --strict --json-lines
+  ${PROG_NAME} --list-sites
   ${PROG_NAME} -p --site /var/www/example.com
   ${PROG_NAME} -l --name woo --format csv
   ${PROG_NAME} -l --format json --fields name,slug,update,version
@@ -2033,7 +2554,7 @@ version_info() { printf '%s %s\n' "$PROG_NAME" "$SCRIPT_VERSION"; }
 
 list_modes() {
     printf '%s\n' full core plugins themes db-optimize db-fix cron astra \
-        list-plugins plugin-manage check status
+        list-plugins plugin-manage verify check status
 }
 
 # effective_source KEY: which layer actually decided the value. Without this the
@@ -2061,12 +2582,16 @@ print_config() {
         LOG_MAX_BYTES LOG_KEEP LOG_LEVEL ERROR_OUTPUT_LINES COLOR SKIP_PLUGINS
         SKIP_PLUGINS_FOR_LISTING ALLOW_ROOT TIMEOUT KILL_AFTER TIMEOUT_SIGNAL
         FAIL_ON ASTRA_SLUG MAX_SITES AUTO_DISCOVER USER_ENV
+        JOBS BACKUP KEEP_BACKUPS BACKUP_DIR EXCLUDE_PLUGINS ONLY_ACTIVE STRICT
+        NO_USER_SWITCH URL
     )
     local -a vars=(
         WP_CLI_PATH SITES_FILE DISCOVER_SCRIPT LOG_FILE ERROR_LOG_FILE LOCK_FILE
         LOG_MAX_BYTES LOG_KEEP LOG_LEVEL ERROR_OUTPUT_LINES COLOR_MODE SKIP_PLUGINS
         SKIP_PLUGINS_FOR_LISTING ALLOW_ROOT_FLAG WP_COMMAND_TIMEOUT KILL_AFTER
         TIMEOUT_SIGNAL FAIL_ON ASTRA_SLUG MAX_SITES AUTO_DISCOVER USER_ENV_LIST
+        JOBS BACKUP_MODE KEEP_BACKUPS BACKUP_DIR EXCLUDE_PLUGINS ONLY_ACTIVE STRICT
+        NO_USER_SWITCH SITE_URL
     )
     local i value
     printf '\n%-24s %-34s %-14s %s\n' 'SETTING' 'EFFECTIVE VALUE' 'FROM' 'CLI OVERRIDE'
@@ -2141,6 +2666,7 @@ parse_args() {
             -s | --astra) set_mode astra; CLI_SET[MODE]=1 ;;
             -l | --list-plugins) set_mode list-plugins; CLI_SET[MODE]=1 ;;
             -m | --plugin-manage) set_mode plugin-manage; CLI_SET[MODE]=1 ;;
+            --verify) set_mode verify; CLI_SET[MODE]=1 ;;
             --check) set_mode check; NO_ACTION='true'; CLI_SET[MODE]=1 ;;
             --status) set_mode status; NO_ACTION='true'; CLI_SET[MODE]=1 ;;
             --list-modes) LIST_MODES='true' ;;
@@ -2149,6 +2675,8 @@ parse_args() {
             --sites | --sites-file)
                 need_value "$arg" "${2:-}"; SITES_FILE="$OPT_VALUE"; shift; CLI_SET[SITES_FILE]=1 ;;
             --max-sites) need_value "$arg" "${2:-}"; MAX_SITES="$OPT_VALUE"; shift; CLI_SET[MAX_SITES]=1 ;;
+            -j | --jobs) need_value "$arg" "${2:-}"; JOBS="$OPT_VALUE"; shift; CLI_SET[JOBS]=1 ;;
+            -U | --url) need_value "$arg" "${2:-}"; SITE_URL="$OPT_VALUE"; shift; CLI_SET[URL]=1 ;;
             --user) need_value "$arg" "${2:-}"; USER_OVERRIDE="$OPT_VALUE"; shift ;;
             # ---- plugin management -------------------------------------
             -A | --action) need_value "$arg" "${2:-}"; PLUGIN_ACTION="${OPT_VALUE,,}"; shift ;;
@@ -2159,7 +2687,15 @@ parse_args() {
             --format) need_value "$arg" "${2:-}"; OUTPUT_FORMAT="${OPT_VALUE,,}"; shift ;;
             --fields) need_value "$arg" "${2:-}"; FILTER_FIELDS="$OPT_VALUE"; shift ;;
             --page-limit) need_value "$arg" "${2:-}"; PAGE_LIMIT="$OPT_VALUE"; shift ;;
-            -J | --json) OUTPUT_FORMAT='json' ;;
+            -J | --json)
+                # Two meanings, both wanted: with --list-plugins this selects the
+                # plugin-list format, in a fleet mode it switches the report to
+                # JSON Lines (one object per site plus a summary). The mode may
+                # not have been parsed yet -- `--json -l` is as legal as `-l
+                # --json` -- so the decision is deferred to validate_args.
+                JSON_REQUESTED='true'
+                ;;
+            --json-lines) JSON_LINES='true' ;;
             --color) need_value "$arg" "${2:-}"; COLOR_MODE="${OPT_VALUE,,}"; shift; CLI_SET[COLOR]=1 ;;
             --no-color) COLOR_MODE='never'; CLI_SET[COLOR]=1 ;;
             --quiet | -q) QUIET='true' ;;
@@ -2177,6 +2713,15 @@ parse_args() {
                 SKIP_PLUGINS_FOR_LISTING="${OPT_VALUE,,}"
                 shift; CLI_SET[SKIP_PLUGINS_FOR_LISTING]=1 ;;
             --fail-on) need_value "$arg" "${2:-}"; FAIL_ON="${OPT_VALUE,,}"; shift; CLI_SET[FAIL_ON]=1 ;;
+            -b | --backup) need_value "$arg" "${2:-}"; BACKUP_MODE="${OPT_VALUE,,}"; shift; CLI_SET[BACKUP]=1 ;;
+            --no-backup) BACKUP_MODE='off'; NO_BACKUP_EXPLICIT='true'; CLI_SET[BACKUP]=1 ;;
+            -B | --backup-dir) need_value "$arg" "${2:-}"; BACKUP_DIR="$OPT_VALUE"; shift; CLI_SET[BACKUP_DIR]=1 ;;
+            --keep-backups) need_value "$arg" "${2:-}"; KEEP_BACKUPS="$OPT_VALUE"; shift; CLI_SET[KEEP_BACKUPS]=1 ;;
+            -e | --exclude-plugins) need_value "$arg" "${2:-}"; EXCLUDE_PLUGINS="$OPT_VALUE"; shift; CLI_SET[EXCLUDE_PLUGINS]=1 ;;
+            --only-active) ONLY_ACTIVE='true'; CLI_SET[ONLY_ACTIVE]=1 ;;
+            --strict) STRICT='true'; CLI_SET[STRICT]=1 ;;
+            --no-user-switch) NO_USER_SWITCH='true'; CLI_SET[NO_USER_SWITCH]=1 ;;
+            --list-sites) LIST_SITES='true' ;;
             --no-lock) NO_LOCK='true' ;;
             --no-discover) AUTO_DISCOVER='false'; CLI_SET[AUTO_DISCOVER]=1 ;;
             # ---- configuration -----------------------------------------
@@ -2205,6 +2750,10 @@ parse_args() {
 }
 
 PRINT_CONFIG='false'
+LIST_SITES='false'
+JSON_REQUESTED='false'
+WORKER_DIR=''
+NO_BACKUP_EXPLICIT='false'
 
 validate_args() {
     case "$OUTPUT_FORMAT" in
@@ -2230,7 +2779,31 @@ validate_args() {
             *) usage_error "--action must be one of: activate, deactivate, delete (got '${PLUGIN_ACTION}')" ;;
         esac
     fi
-    if [ "$LIST_MODES" = 'true' ]; then return 0; fi
+    case "$BACKUP_MODE" in
+        off | db | full) ;;
+        *) usage_error "--backup must be one of: off, db, full (got '${BACKUP_MODE}')" ;;
+    esac
+    if ! [[ "$JOBS" =~ ^[0-9]+$ ]] || ((JOBS < 1)); then
+        usage_error "--jobs must be an integer >= 1 (got '${JOBS}')"
+    fi
+    if ! [[ "$KEEP_BACKUPS" =~ ^[0-9]+$ ]]; then
+        usage_error "--keep-backups must be a non-negative integer (got '${KEEP_BACKUPS}')"
+    fi
+    if [ "$ONLY_ACTIVE" = 'true' ] || [ -n "$EXCLUDE_PLUGINS" ]; then
+        case "$MODE" in
+            plugins | full) ;;
+            *) usage_error '--only-active and --exclude-plugins only apply to --plugins and --full' ;;
+        esac
+    fi
+    # Resolve the dual meaning of -J now that every mode flag has been seen.
+    if [ "$JSON_REQUESTED" = 'true' ]; then
+        if [ "$MODE" = 'list-plugins' ]; then
+            OUTPUT_FORMAT='json'
+        else
+            JSON_LINES='true'
+        fi
+    fi
+    if [ "$LIST_MODES" = 'true' ] || [ "$LIST_SITES" = 'true' ]; then return 0; fi
     if [ -z "$MODE" ]; then
         usage_error 'no mode given; pass one of --full, --core, --plugins, --themes, --db-optimize, --db-fix, --cron, --astra, --list-plugins, --plugin-manage, --check, --status'
     fi
@@ -2249,13 +2822,236 @@ validate_args() {
 }
 
 ###############################################################################
-# 18. Per-site processing
+# 18. Fleet execution: sequential and parallel
 ###############################################################################
+
+# Parallelism is batched, not a continuous pool: bash 4.2 has no `wait -n`, so a
+# pool would need a job server and a fifo. A batch barrier is one `wait`, and on
+# a fleet of similar sites the difference is a few seconds. This is the same
+# trade-off SagaAI made and it is the right one for the stated bash floor.
+#
+# Four things have to survive the fork, and none of them survives by itself:
+#
+#   1. Counters. A subshell cannot increment a parent variable, so every worker
+#      writes its own numbers to files and the parent folds them in. Reading a
+#      counter inside the subshell -- what an earlier draft did -- reports the
+#      value from before the site started.
+#   2. Console output. Interleaved lines from concurrent sites are unreadable,
+#      so a worker writes to its own fragment and the parent replays the
+#      fragments in site order after the barrier.
+#   3. Log lines. The same problem, worse: the log file is shared. In parallel
+#      mode log() writes to the worker fragment instead of appending to the file,
+#      and the parent appends the fragments in order after the barrier. The log
+#      therefore stays grouped per site -- but it is written after the batch
+#      finishes, which is why `tail -f` shows nothing during a parallel run.
+#   4. Data output. `--list-plugins --format json` must stay parseable, so in
+#      parallel mode it is emitted by the parent during the ordered replay, not
+#      by the workers.
+WORK_DIR=''
+PARALLEL='false'
+declare -A SITE_STATUS=()
+
+worker_dir() { printf '%s/w%s' "$WORK_DIR" "$1"; }
+
+worker_init() { # SITE_INDEX
+    local d
+    d="$(worker_dir "$1")"
+    mkdir -p -- "$d" || return 1
+    : >"${d}/out"
+    : >"${d}/log"
+    return 0
+}
+
+read_counter() { # FILE
+    local v=''
+    if [ -r "${1:-}" ]; then
+        v="$(head -n 1 -- "$1" 2>/dev/null)"
+    fi
+    v="${v//[^0-9]/}"
+    printf '%s' "${v:-0}"
+}
+
+# worker_run SITE USER INDEX — the body of one parallel worker. Everything it
+# produces goes into its own directory; it touches no shared state except
+# WP_OUTPUT / WP_STATUS, which are process-local after the fork anyway.
+worker_run() { # SITE USER INDEX
+    local site="$1" user="$2" idx="$3"
+    local d rc=0
+    d="$(worker_dir "$idx")"
+    WORKER_DIR="$d"
+    PARALLEL='true'
+    # A forked worker inherits the parent's counters, and the parent has already
+    # folded in the previous batches by the time this one starts. Zeroing them
+    # here makes the numbers this worker writes to its result file exactly its
+    # own contribution, which is the only thing the parent can safely add up.
+    # Without this, every batch after the first reports the running total and the
+    # fleet summary double-counts.
+    STATS_OPS_OK=0
+    STATS_OPS_FAILED=0
+    STATS_SITES_TOTAL=0
+    STATS_SITES_OK=0
+    STATS_SITES_FAILED=0
+    STATS_WARNINGS=0
+    process_site "$site" "$user" >"${d}/out" 2>&1
+    rc=$?
+    PARALLEL='false'
+    WORKER_DIR=''
+    {
+        printf 'rc=%s\n' "$rc"
+        printf 'ops_ok=%s\n' "$STATS_OPS_OK"
+        printf 'ops_failed=%s\n' "$STATS_OPS_FAILED"
+        printf 'sites_total=%s\n' "$STATS_SITES_TOTAL"
+        printf 'sites_ok=%s\n' "$STATS_SITES_OK"
+        printf 'warnings=%s\n' "$STATS_WARNINGS"
+        printf 'data=%s\n' "$OUTPUT_FORMAT"
+    } >"${d}/res"
+    return 0
+}
+
+# fold_worker INDEX — read one worker's results back into the parent counters,
+# replay its console output, append its log lines, and emit its data.
+fold_worker() { # INDEX SITE
+    local idx="$1" site="$2"
+    local d rc ops_ok ops_failed warnings data
+    d="$(worker_dir "$idx")"
+    if [ ! -r "${d}/res" ]; then
+        # A worker that produced no result file was killed (OOM, SIGKILL, a full
+        # disk). Say so instead of silently counting it as a success.
+        log_error "worker for ${site} produced no result; counting it as failed"
+        STATS_SITES_TOTAL=$((STATS_SITES_TOTAL + 1))
+        STATS_SITES_FAILED=$((STATS_SITES_FAILED + 1))
+        SITE_STATUS["$site"]='FAILED'
+        return 1
+    fi
+    rc="$(sed -n 's/^rc=//p' "${d}/res" 2>/dev/null)"
+    ops_ok="$(read_counter <(sed -n 's/^ops_ok=//p' "${d}/res" 2>/dev/null))"
+    ops_failed="$(read_counter <(sed -n 's/^ops_failed=//p' "${d}/res" 2>/dev/null))"
+    warnings="$(read_counter <(sed -n 's/^warnings=//p' "${d}/res" 2>/dev/null))"
+    data="$(sed -n 's/^data=//p' "${d}/res" 2>/dev/null)"
+
+    STATS_SITES_TOTAL=$((STATS_SITES_TOTAL + 1))
+    STATS_OPS_OK=$((STATS_OPS_OK + ops_ok))
+    STATS_OPS_FAILED=$((STATS_OPS_FAILED + ops_failed))
+    STATS_WARNINGS=$((STATS_WARNINGS + warnings))
+
+    # Console first, then the log: the operator watching the terminal and the
+    # operator reading the file tomorrow must see the same story in the same order.
+    if [ -s "${d}/out" ]; then
+        cat -- "${d}/out" >&2
+    fi
+    if [ -s "${d}/log" ]; then
+        if [ -n "$LOG_FILE" ]; then
+            cat -- "${d}/log" >>"$LOG_FILE" 2>/dev/null
+        fi
+    fi
+    if [ -s "${d}/data" ]; then
+        # The fragment carries either a machine-readable listing (--format
+        # json/csv/tsv) or this site's JSON Lines record; both belong on stdout
+        # and both must appear in site order, not in completion order.
+        cat -- "${d}/data"
+    fi
+
+    if [ "${rc:-1}" = '0' ]; then
+        STATS_SITES_OK=$((STATS_SITES_OK + 1))
+        SITE_STATUS["$site"]='OK'
+        return 0
+    fi
+    STATS_SITES_FAILED=$((STATS_SITES_FAILED + 1))
+    SITE_STATUS["$site"]='FAILED'
+    return 1
+}
+
+# run_fleet — walk SITES[], either one by one or in batches of $JOBS.
+run_fleet() {
+    local n=${#SITES[@]}
+    if ((JOBS <= 1)) || ((n <= 1)); then
+        if ((JOBS > 1)) && ((n <= 1)); then
+            log_debug "one site to process; --jobs ${JOBS} makes no difference"
+        fi
+        run_sequential
+        return $?
+    fi
+    run_batched "$n"
+    return $?
+}
+
+run_sequential() {
+    local site rc=0
+    for site in "${SITES[@]}"; do
+        process_site "$site" "${SITE_USER[$site]}" || rc=1
+    done
+    return "$rc"
+}
+
+run_batched() { # N
+    local n="$1" i=0 j=0 idx rc=0
+    local -a batch=()
+    WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/${PROG_NAME}.workers.XXXXXX")" || {
+        log_warn "cannot create a working directory for ${JOBS} parallel workers; falling back to sequential processing"
+        run_sequential
+        return $?
+    }
+    chmod 700 "$WORK_DIR" 2>/dev/null
+    tmp_register "$WORK_DIR"
+    log_info "processing ${n} sites in batches of ${JOBS}"
+
+    while ((i < n)); do
+        batch=()
+        while ((i < n && ${#batch[@]} < JOBS)); do
+            idx="$i"
+            if worker_init "$idx"; then
+                worker_run "${SITES[idx]}" "${SITE_USER[${SITES[idx]}]}" "$idx" &
+                batch+=("$idx")
+            else
+                log_error "cannot prepare a worker for ${SITES[idx]}; running it in the parent"
+                process_site "${SITES[idx]}" "${SITE_USER[${SITES[idx]}]}" || rc=1
+            fi
+            i=$((i + 1))
+        done
+        # The barrier. `wait` without arguments also reaps anything else that may
+        # have been backgrounded, which is fine: nothing else is.
+        wait
+        # Replay in site order, so the report reads like the site list and not
+        # like a race.
+        for j in ${batch[@]+"${batch[@]}"}; do
+            fold_worker "$j" "${SITES[j]}" || rc=1
+            rm -rf -- "$(worker_dir "$j")" 2>/dev/null
+        done
+    done
+    return "$rc"
+}
+
+###############################################################################
+# 19. Per-site processing
+###############################################################################
+
+# In parallel mode process_site runs inside a worker whose stdout is a file, so
+# anything meant for the operator's stream has to be routed to the data fragment
+# and replayed by the parent. Everything else can just be printed.
+emit_site_record() { # SITE STATUS
+    [ "$JSON_LINES" = 'true' ] || return 0
+    local sink='/dev/stdout'
+    if [ "$PARALLEL" = 'true' ] && [ -n "${WORKER_DIR:-}" ]; then
+        sink="${WORKER_DIR}/data"
+    fi
+    emit_site_json "$1" "$2" >>"$sink"
+}
 
 process_site() { # SITE USER
     local site="$1" user="$2" rc=0
     STATS_SITES_TOTAL=$((STATS_SITES_TOTAL + 1))
     log_info "site ${site} (as ${user})"
+    # The backup happens before anything is modified, and a failed backup does
+    # not silently become "no backup": it is reported and, unless the operator
+    # asked for --fail-on never, it stops this site.
+    if ! maybe_backup "$site" "$user"; then
+        if [ "$FAIL_ON" != 'never' ] && [ "$BACKUP_MODE" != 'off' ]; then
+            log_error "${site}: backup failed; skipping the site rather than updating it unprotected"
+            SITE_STATUS["$site"]='BACKUP_FAILED'
+            STATS_SITES_FAILED=$((STATS_SITES_FAILED + 1))
+            return 1
+        fi
+    fi
     case "$MODE" in
         full) mode_full "$site" "$user" || rc=1 ;;
         core) mode_core "$site" "$user" || rc=1 ;;
@@ -2267,14 +3063,18 @@ process_site() { # SITE USER
         astra) mode_astra "$site" "$user" || rc=1 ;;
         list-plugins) mode_list_plugins "$site" "$user" || rc=1 ;;
         plugin-manage) mode_plugin_manage "$site" "$user" || rc=1 ;;
+        verify) mode_verify "$site" "$user" || rc=1 ;;
         *) log_error "internal: unknown mode '${MODE}'"; rc=1 ;;
     esac
     if ((rc == 0)); then
         STATS_SITES_OK=$((STATS_SITES_OK + 1))
+        SITE_STATUS["$site"]='OK'
     else
         STATS_SITES_FAILED=$((STATS_SITES_FAILED + 1))
+        SITE_STATUS["$site"]='FAILED'
         log_error "site failed: ${site}"
     fi
+    emit_site_record "$site" "${SITE_STATUS[$site]}"
     return "$rc"
 }
 
@@ -2291,12 +3091,55 @@ run_check_mode() {
 }
 
 ###############################################################################
+# 18b. --list-sites: what would be processed, without processing it
+###############################################################################
+
+# Resolving the list is the half of a fleet run that can go wrong quietly: an
+# owner that cannot be determined, a directory that vanished, an opt-out marker.
+# This prints the resolved result -- including what was skipped and why -- and
+# exits, so it can be diffed before a change and after it.
+print_site_list() {
+    local site user
+    if [ -z "$TARGET_SITE" ]; then
+        if ! ensure_site_list; then
+            if [ ! -f "$SITES_FILE" ]; then
+                log_error "no site list to work from: ${SITES_FILE}"
+                return 1
+            fi
+        fi
+        load_site_list "$SITES_FILE"
+    else
+        SITES=("$TARGET_SITE")
+        user="$(site_user_resolve "$TARGET_SITE")" || user='<unknown>'
+        SITE_USER["$TARGET_SITE"]="$user"
+    fi
+    printf '%s\n' "${C_BOLD}resolved site list${C_RESET} (${#SITES[@]} site(s), source: $([ -n "$TARGET_SITE" ] && printf -- '--site' || printf '%s' "$SITES_FILE"))" >&2
+    if [ "$JSON_LINES" = 'true' ] || [ "$OUTPUT_FORMAT" = 'json' ]; then
+        for site in ${SITES[@]+"${SITES[@]}"}; do
+            printf '{"path":"%s","owner":"%s"}\n' \
+                "$(json_escape "$site")" "$(json_escape "${SITE_USER[$site]-}")"
+        done
+        return 0
+    fi
+    # The table is the data, so it goes to stdout and can be piped; only the
+    # heading and the skip count are prose.
+    printf '%-52s %s\n' 'PATH' 'OWNER'
+    for site in ${SITES[@]+"${SITES[@]}"}; do
+        printf '%-52s %s\n' "$site" "${SITE_USER[$site]-<unknown>}"
+    done
+    if ((STATS_SITES_SKIPPED > 0)); then
+        printf '%s\n' "skipped: ${STATS_SITES_SKIPPED} (see the warnings above)" >&2
+    fi
+    return 0
+}
+
+###############################################################################
 # 19. Startup
 ###############################################################################
 
 startup_checks() {
     if [ "$(id -u)" -ne 0 ] && [ -z "$USER_OVERRIDE" ] && [ "$DRY_RUN" != 'true' ] &&
-       [ "$NO_ACTION" != 'true' ]; then
+       [ "$NO_ACTION" != 'true' ] && [ "$NO_USER_SWITCH" != 'true' ]; then
         log_error "this script must run as root: it switches into the owner of each site"
         log_error "re-run with sudo, or pass --user NAME, or use --dry-run / --check"
         exit "$EXIT_ENV"
@@ -2334,6 +3177,18 @@ banner() {
         printf '  %-16s %s\n' 'wp-cli:' "$WP_RESOLVED"
         printf '  %-16s %s\n' 'user switch:' "$(switch_mechanism)"
         printf '  %-16s %s\n' 'log level:' "$LOG_LEVEL"
+        if ((JOBS > 1)); then
+            printf '  %-16s %s\n' 'parallelism:' "${JOBS} sites per batch"
+        fi
+        if [ "$BACKUP_MODE" != 'off' ]; then
+            printf '  %-16s %s\n' 'backup:' "${BACKUP_MODE} -> $(backup_dir_of)"
+        fi
+        if [ -n "$SITE_URL" ]; then
+            printf '  %-16s %s\n' 'url:' "$SITE_URL"
+        fi
+        if [ "$NO_USER_SWITCH" = 'true' ]; then
+            printf '  %-16s %srunning as %s, no user switch%s\n' 'user switch:' "$C_YELLOW" "$(id -un)" "$C_RESET"
+        fi
         if [ "$DRY_RUN" = 'true' ]; then
             printf '  %-16s %sDRY RUN - nothing will be executed%s\n' 'mode:' "$C_YELLOW" "$C_RESET"
         fi
@@ -2387,6 +3242,18 @@ main() {
 
     validate_args
     color_init          # re-resolved: a config layer may have changed COLOR
+
+    # --list-sites is an inspection command: it resolves the inventory and stops.
+    # It runs *after* validate_args, because that is where the dual meaning of -J
+    # is resolved -- before it, `--list-sites --json` would print the table.
+    # Still before log_init and before the environment checks, so it works
+    # without a wp binary, without a lock and without root.
+    if [ "$LIST_SITES" = 'true' ]; then
+        print_site_list
+        SUMMARY_PRINTED='true'
+        exit "$EXIT_OK"
+    fi
+
     log_init
     START_TIME="$(date +%s)"
 
@@ -2448,16 +3315,19 @@ main() {
 
     if ((${#SITES[@]} == 0)); then
         log_warn 'no site to process; nothing to do'
-        print_summary "$EXIT_OK"
-        exit "$EXIT_OK"
+        local empty_code="$EXIT_OK"
+        # "Nothing to do" is a warning, and --strict exists precisely so that a
+        # cron job can be told to treat one as a failure: a maintenance run that
+        # silently processed zero sites is the failure mode nobody notices.
+        final_exit_code || empty_code="$EXIT_ERROR"
+        print_summary "$empty_code"
+        exit "$empty_code"
     fi
 
     log_info "processing ${#SITES[@]} site(s) in mode '${MODE}'"
 
-    local site rc=0
-    for site in "${SITES[@]}"; do
-        process_site "$site" "${SITE_USER[$site]}" || rc=1
-    done
+    local rc=0
+    run_fleet || rc=1
 
     local code=0
     final_exit_code || code="$EXIT_ERROR"

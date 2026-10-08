@@ -1,4 +1,4 @@
-# Configuration example for Bash_WP-CLI_Update.sh 6.1.0
+# Configuration example for Bash_WP-CLI_Update.sh 6.2.0
 #
 # Copy it to one of these places and edit:
 #
@@ -126,3 +126,56 @@ ASTRA_SLUG=astra-addon
 # environment (for example a proxy or an API endpoint). Only the names are
 # listed here; the values are taken from the manager's own environment.
 #USER_ENV=
+
+# ---------------------------------------------------------------- parallelism
+# Process N sites at a time. 1 (the default) is sequential.
+#
+# This is a batch barrier, not a continuous pool: bash 4.2 has no `wait -n`, so
+# the next batch waits for the slowest site of the current one. Pick N from the
+# slowest shared resource, which is normally the database server and not the CPU
+# -- 4 to 8 is a sane range for one MySQL instance on one host.
+#
+# While a batch runs, per-site output and log lines are buffered and replayed in
+# site order at the barrier. `tail -f` on the log therefore looks stalled until
+# the batch lands; this is deliberate, interleaved lines from concurrent sites
+# are unreadable.
+JOBS=1
+
+# -------------------------------------------------------------------- backups
+# off | db | full
+#   db    `wp db export` before the site is touched. Seconds, and it covers
+#         everything these modes change.
+#   full  tar.gz of the whole installation. Complete, and on a site with a large
+#         wp-content/uploads it is tens of gigabytes and many minutes; the script
+#         warns with the tree size before archiving.
+# Off by default on purpose: a dump per site per run fills disks nobody monitors.
+BACKUP=off
+BACKUP_DIR=/var/backups/wp-cli-update
+# Backups kept per site, 0 = keep everything. Pruned after each new backup.
+KEEP_BACKUPS=3
+
+# ------------------------------------------------------- plugin selection
+# Update only active plugins that actually have an update available. The set is
+# enumerated from `plugin list --format=json` and passed by slug, so one broken
+# plugin cannot hide behind `--all`.
+ONLY_ACTIVE=0
+
+# Comma separated slugs or names to leave out of --plugins/--full. Matching is
+# case-insensitive against both the slug and the display name, and it is a whole
+# token comparison -- never a pattern, so nothing here needs escaping.
+#EXCLUDE_PLUGINS=
+
+# ------------------------------------------------------------------- multisite
+# Passed to WP-CLI as --url on every call. Needed when one directory serves
+# several sites and the operation must target one of them.
+#URL=
+
+# ------------------------------------------------------------------- reporting
+# Exit non-zero when anything was warned about, not only when something failed.
+# This is what makes a warning visible to cron and to CI.
+STRICT=0
+
+# Run WP-CLI as the invoking user instead of switching into the site owner.
+# For single-site hosts where the operator already is the site user, and for
+# test suites. Leave it off on a multi-tenant host: the switch is the point.
+NO_USER_SWITCH=0

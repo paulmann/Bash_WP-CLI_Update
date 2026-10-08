@@ -8,7 +8,7 @@ list by scanning web roots.
 
 | Component | Version | Purpose |
 |---|---|---|
-| `Bash_WP-CLI_Update.sh` | **6.1.0** | Run maintenance operations over a site list |
+| `Bash_WP-CLI_Update.sh` | **6.2.0** | Run maintenance operations over a site list |
 | `Find_WP_Senior.sh` | **2.1.0** | Discover WordPress installations and write the site list |
 | `tools/scan-secrets.sh` | 1.1.0 | Look for credential literals in the repository |
 
@@ -59,12 +59,45 @@ Exactly one mode per run. `--list-modes` prints them for shell completion.
 | `--cron` | `-r` | `cron event run --due-now` |
 | `--astra` | `-s` | `plugin update <slug>`, then `brainstormforce license activate` and a retry if that failed |
 | `--list-plugins` | `-l` | `plugin list --format=json`, rendered as table / json / csv / tsv |
-| `--plugin-manage` | `-m` | resolve `--name` to one slug, then `plugin activate\|deactivate\|delete` |
+| `--plugin-manage` | `-m` | resolve `--name` to one slug, deactivate it, back it up, then `plugin delete` |
+| `--verify` | | read-only `core verify-checksums` + `plugin verify-checksums --all` |
 | `--check` | | validate the environment and every listed site, change nothing |
 | `--status` | | print the recorded summary of the last run and the log sizes |
+| `--list-sites` | | print the resolved site list with owners and exit |
 
 A failing site never aborts the run: it is counted, reported, and the loop goes
-on to the next site. `wp core check-update` is deliberately not counted as an
+on to the next site.
+
+### Fleet-wide options
+
+| Option | What it does |
+|---|---|
+| `-j, --jobs N` | process N sites in parallel batches (default 1 = sequential) |
+| `-b, --backup db\|full` | `wp db export`, or a tar.gz of the whole tree, before the site is touched |
+| `-B, --backup-dir DIR`, `--keep-backups N` | where backups go and how many generations survive |
+| `--only-active` | update only plugins that are active **and** have an update available |
+| `-e, --exclude-plugins LIST` | leave these slugs out of `--plugins` / `--full` |
+| `-U, --url URL` | pass `--url` to WP-CLI on every call (multisite) |
+| `-J, --json` / `--json-lines` | fleet report as JSON Lines: one object per site plus a summary |
+| `--strict` | exit non-zero when anything was warned about, not only when something failed |
+| `--no-user-switch` | run WP-CLI as the invoking user instead of switching into the site owner |
+
+**Parallelism is a batch barrier, not a continuous pool.** Bash 4.2 has no
+`wait -n`, so the next batch starts when the slowest site of the current one
+finishes. Per-site console output and log lines are buffered and replayed in site
+order at the barrier, so neither interleaves — which means `tail -f` on the log
+looks stalled until the batch lands. That is deliberate: three sites writing into
+one file at once is unreadable. Choose N from the slowest shared resource, which
+is normally the database server, not the CPU; 4–8 is a sane range for one MySQL
+instance on one host.
+
+**Backups are off by default**, because a dump per site per run fills disks that
+nobody monitors. `--backup db` costs seconds and covers everything these modes
+change; `--backup full` is complete and can be tens of gigabytes, so the script
+reports the tree size before archiving. A plugin deletion is the exception: it is
+always archived first unless `--no-backup` was given explicitly, and the operator
+is warned in the log when that happens. If a backup fails, the site is **skipped
+rather than updated unprotected**, unless `--fail-on never` says otherwise. `wp core check-update` is deliberately not counted as an
 operation, because it exits 1 when the site is already up to date and would cry
 wolf on every healthy run.
 
@@ -193,6 +226,7 @@ account) report **SKIP** with the reason instead of failing.
 | `test_static.sh` | `bash -n`, ShellCheck clean, LF endings, executable bits, and the absence of the constructs that broke this project before: `eval`, backticks, `"${arr[@]:-}"`, `printf %q`, `su -c` without `-s`, sourcing a config file, personal data in code |
 | `test_base_contract.sh` | **the public surface of the original scripts**: every mode and short form, every documented option, the exit-code contract, the `.no_wp_cli` marker, paths with spaces, the `DOCUMENT_ROOT`/`HTTP_HOST`/`HOMEDIR`/`DOCUMENT_URI` environment contract, CRLF site lists, and that no scan ever exceeds the requested roots |
 | `test_finder.sh` | detection rule, exclusions, depth, deduplication, all four output formats (JSON and CSV validated with a real parser), atomic write and permission preservation, `--status`, `--skip-existing`, empty-result exit code |
+| `test_fleet.sh` | the fleet-wide surface: `--no-user-switch`, `-j N` measured against a sleeping stub (sequential ≥ 4 s vs `-j 5` ≈ 1 s), counters identical at `-j 1/2/3/5`, console order and log contiguity, a failing site inside a batch, `--backup db\|full`, rotation with `--keep-backups`, a backup destination that cannot be created, deletion backup and deactivation, `--verify` issues no mutation, `--only-active` and `--exclude-plugins` selection, `--strict`, JSON Lines shape and ordering, `--list-sites`, `--url`, the configuration layers for the new keys, every shell metacharacter in a config file, a killed worker, leaked worker directories |
 | `test_manager.sh` | per-mode argv, `--skip-plugins` policy, `--allow-root` policy, dry run, all four list formats, `--fields`, `--name` filtering, slug resolution, ambiguity refusal, delete confirmation, injection attempts through `--name` and through a site path, the licence never reaching argv or a log, `--check`, `--status`, failure counting, `--fail-on`, timeouts, concurrent runs, stale locks, config precedence, config-file rejection, log rotation, colour policy |
 | `test_secretguard.sh` | the guard finds planted values in five name conventions, masks them by default, exits 1 under `--strict`, honours the allowlist, finds a value that was committed and later removed (`--history`), and stays quiet on placeholders, paths, expansions and settings |
 
@@ -221,8 +255,15 @@ changing these scripts. The four that matter most:
 ## Cron
 
 ```cron
-# Maintenance at 03:20, alerting only on real failures.
-20 3 * * *  root  /opt/wp-cli-update/Bash_WP-CLI_Update.sh --full --quiet --timeout 900 >> /var/log/wp-cli-update/cron.log 2>&1
+# Maintenance at 03:20: four sites at a time, a database dump first, two
+# generations kept, and --strict so that a warning also pages somebody.
+20 3 * * *  root  /opt/wp-cli-update/Bash_WP-CLI_Update.sh --full -j 4 --backup db \
+                  --keep-backups 2 --timeout 900 --strict --quiet \
+                  >> /var/log/wp-cli-update/cron.log 2>&1
+
+# Nightly integrity check, machine-readable, only the sites that are not OK.
+40 4 * * *  root  /opt/wp-cli-update/Bash_WP-CLI_Update.sh --verify -j 8 --json-lines \
+                  | grep -v '"status":"OK"' >> /var/log/wp-cli-update/verify.log
 
 # Refresh the inventory on Sundays, keeping the list even when it comes back empty.
 0 4 * * 0   root  /opt/wp-cli-update/Find_WP_Senior.sh --output /var/lib/wp-cli-update/wp-found.txt /var/www >> /var/log/wp-cli-update/cron.log 2>&1
@@ -236,15 +277,19 @@ The lock makes an overlap harmless: the second run exits 3 with
 ## Repository layout
 
 ```
-Bash_WP-CLI_Update.sh          the manager (6.1.0)
+Bash_WP-CLI_Update.sh          the manager (6.2.0)
 Find_WP_Senior.sh              the discovery tool (2.1.0)
 wp-cli-update.conf.example     every setting, documented
 tools/scan-secrets.sh          secret guard (1.1.0)
 tools/secret-allowlist.txt     known-benign lines, each with a reason
 tests/run_tests.sh             suite runner, non-zero on any failure
+tests/test_fleet.sh            parallelism, backups, fleet-wide reporting
 tests/harness.sh               shared fixtures and counters
 tests/stub/wp                  recording stub of WP-CLI
 tests/test_*.sh                five suites
+legacy/                        byte-exact archive of the original main scripts
+ANALYSIS.md                    audit of the original code, with the PoC
+REFACTORING.md                 what this tree took from each of the five revisions
 AGENT.md                       binding rules for changes
 PROJECT_MAP.md                 file-by-file map with dependencies
 CHANGELOG.md                   Keep a Changelog
