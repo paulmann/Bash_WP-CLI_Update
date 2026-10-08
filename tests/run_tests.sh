@@ -36,7 +36,7 @@ printf 'runuser    : %s\n' "$(command -v runuser 2>/dev/null || printf 'absent')
 printf 'site user  : %s\n' "${TEST_SITE_USER:-<auto-detect>}"
 printf '\n'
 
-SUITES=(test_static.sh test_base_contract.sh test_finder.sh test_manager.sh test_secretguard.sh)
+SUITES=(test_static.sh test_base_contract.sh test_finder.sh test_manager.sh test_fleet.sh test_secretguard.sh)
 if (($# > 0)); then
     SUITES=()
     for arg in "$@"; do

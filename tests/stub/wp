@@ -33,6 +33,7 @@ for a in "$@"; do
         --quiet) ;;            # honoured implicitly: the stub is quiet anyway
         --format=*) fmt="${a#--format=}" ;;
         --fields=*) fields="${a#--fields=}" ;;
+        --path=*) SITE_PATH="${a#--path=}" ;;
         --*) ;;                       # any other global flag: ignore
         *) positional+=("$a") ;;
     esac
@@ -45,6 +46,8 @@ PLUGINS=(
     "Akismet Anti-Spam|active|none|5.3|akismet|Akismet Anti-Spam|"
     "WooCommerce|inactive|available|8.1.0|woocommerce|WooCommerce|9.0.0"
     "All in One SEO|active|none|4.4.0|all-in-one-seo-pack|All in One SEO (AIOSEO)|"
+    "Jetpack|active|available|13.0|jetpack|Jetpack|13.5"
+    "Old Plugin|inactive|available|1.0|old-plugin|Old Plugin|1.1"
 )
 
 emit_rows() { # kind: plugin|theme
@@ -102,6 +105,14 @@ case "$cmd $sub" in
         fi
         echo 'Success: Updated 2 of 2 plugins.' ;;
     'theme update') echo 'Success: Updated 1 of 1 theme.' ;;
+    'db export')
+        # write something to the requested path, like the real one does
+        out="${positional[2]:-}"
+        if [ -n "$out" ] && [ "$out" != '/dev/null' ]; then
+            printf -- '-- MySQL dump (stub)\n-- site: %s\nSELECT 1;\n' "${SITE_PATH:-unknown}" >"$out" 2>/dev/null || {
+                echo 'Error: cannot write the dump' >&2; exit 1; }
+        fi
+        echo 'Success: Exported to the given path.' ;;
     'db optimize') echo 'Success: Database optimized.' ;;
     'db repair') echo 'Success: Database repaired.' ;;
     'cron event') echo 'Success: Executed a total of 3 cron events.' ;;

@@ -8,7 +8,7 @@ was not visible until the script was run against a real fleet.
 
 Two standalone GNU/Linux bash scripts for WordPress maintenance:
 
-- `Bash_WP-CLI_Update.sh` (6.1.0) — per-site WP-CLI maintenance, run as the
+- `Bash_WP-CLI_Update.sh` (6.2.0) — per-site WP-CLI maintenance, run as the
   system user that owns each installation.
 - `Find_WP_Senior.sh` (2.1.0) — WordPress root discovery; writes the site list.
 
@@ -73,6 +73,42 @@ Plus `tools/scan-secrets.sh` (1.1.0) and the suites in `tests/`.
     check-update` exits 1 when the site is up to date; counting it reports a
     healthy fleet as broken.
 
+### Fleet-wide rules added in v6.2.0
+
+15. **A worker may not touch parent state — it cannot.** A subshell's increments
+    are lost at exit. Every number a worker produces goes into
+    `${WORK_DIR}/wN/res`, and `fold_worker` is the only place that adds them up.
+    A worker zeroes its counters at fork: without that it reports the running
+    total and every batch after the first double-counts. `test_fleet.sh` runs the
+    same fleet at `-j 1`, `-j 2`, `-j 3` and `-j 5` and asserts identical totals,
+    which is the check that catches a regression here.
+16. **Nothing writes to the console or the log file from inside a worker.** Both
+    go to fragments and are replayed at the barrier in site order, so neither the
+    terminal nor the log interleaves. If you need to emit from a worker, decide
+    which of the three sinks it belongs to — `out` for prose, `log` for log lines,
+    `data` for machine-readable payloads — and use that.
+17. **A backup that failed is not a backup that was skipped.** If `--backup` was
+    asked for and produced no file, the site must not be updated, unless
+    `--fail-on never` says otherwise. A truncated dump is worse than no dump,
+    because it looks like a backup.
+18. **A deletion backs up and deactivates first.** `plugin delete` on an active
+    plugin leaves its options, tables and cron events behind, because the
+    deactivation hooks never run.
+19. **`-j N` is a batch barrier and must stay one.** Bash 4.2 has no `wait -n`.
+    If a change needs a continuous pool, raise the documented bash floor in the
+    same commit and say so in the CHANGELOG.
+20. **A new fleet-wide setting needs all of these**, or it will work on the
+    command line and silently not work from a config file: a `DEFAULT_*`
+    constant, an entry in `CONFIG_KEYS`, an `apply_conf` line, validation in both
+    `config_validate_layer` and `validate_args`, a line in `print_config`, a line
+    in `--check`'s report, a help entry, a documented default in
+    `wp-cli-update.conf.example`, and a precedence check in `test_fleet.sh`.
+21. **`is_set` / `env_value` consult `printenv`,** not only shell variables. A
+    version that tested `${!NAME+x}` alone made the whole environment layer of
+    the documented precedence disappear, and every check still passed because
+    they all set shell variables. Read the environment the way a login shell
+    hands it over.
+
 ## Conventions
 
 - bash 4.2+; `shopt -s inherit_errexit` where available.
@@ -101,7 +137,7 @@ A change is finished when all of these hold:
 bash -n Bash_WP-CLI_Update.sh Find_WP_Senior.sh          # parses
 shellcheck Bash_WP-CLI_Update.sh Find_WP_Senior.sh \
            tools/scan-secrets.sh tests/*.sh tests/stub/wp # zero findings
-bash tests/run_tests.sh                                   # zero failures
+bash tests/run_tests.sh                                   # 532 checks, zero failures
 bash tools/scan-secrets.sh --strict                       # exit 0
 ```
 
@@ -109,7 +145,9 @@ bash tools/scan-secrets.sh --strict                       # exit 0
 
 ```bash
 Bash_WP-CLI_Update.sh --check                  # environment and sites
+Bash_WP-CLI_Update.sh --list-sites             # what would be touched, and as whom
 Bash_WP-CLI_Update.sh --full --dry-run         # the exact commands, per site
+Bash_WP-CLI_Update.sh --full --dry-run -j 4    # the same, at the intended width
 Find_WP_Senior.sh --output - /one/small/root   # only that root, nothing else
 ```
 

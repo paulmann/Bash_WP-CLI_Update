@@ -2,7 +2,7 @@
 
 File-by-file map of the repository, with the direction of every dependency.
 
-**Files: 20** · generated 2026-10-07 · `tests/test_static.sh` verifies the count
+**Files: 26** · generated 2026-10-08 · `tests/test_static.sh` verifies the count
 against `git ls-files`, so this document cannot go stale silently the way the
 auto-generated map of an earlier revision did (it declared 5 files while the
 branch shipped 11, in a second language, with a content fingerprint that did not
@@ -15,7 +15,7 @@ same commit.
 
 | File | Version | Purpose | Depends on |
 |---|---|---|---|
-| `Bash_WP-CLI_Update.sh` | 6.1.0 | Runs WP-CLI maintenance over every site in the list, each as its owner. Modes, configuration layers, locking, logging, timeouts, licence handoff, rendering. | `Find_WP_Senior.sh` (only when the site list is missing and `AUTO_DISCOVER` is on) · `wp` · `runuser`/`sudo`/`su` · `flock`, `timeout` (optional) |
+| `Bash_WP-CLI_Update.sh` | 6.2.0 | Runs WP-CLI maintenance over every site in the list, each as its owner. Modes, configuration layers, locking, logging, timeouts, licence handoff, rendering. | `Find_WP_Senior.sh` (only when the site list is missing and `AUTO_DISCOVER` is on) · `wp` · `runuser`/`sudo`/`su` · `flock`, `timeout` (optional) |
 | `Find_WP_Senior.sh` | 2.1.0 | Scans named web roots for WordPress installations, honours `.no_wp_cli` and exclusions, deduplicates, enriches with metadata, writes the list atomically. | `find`, `sort`, `stat`, `mktemp` |
 | `wp-cli-update.conf.example` | — | Every manager setting with its default and the reason it exists. Copy to `/etc/wp-cli-update.conf` or next to the script. | read by `Bash_WP-CLI_Update.sh` |
 
@@ -35,6 +35,12 @@ trailing whitespace) and the `--output` / `--sites` flags.
 | File | Purpose | Depends on |
 |---|---|---|
 | `tests/run_tests.sh` | Runs every suite, prints the environment it found, tallies all suites, exits non-zero on any failure. Accepts suite names as arguments. | `tests/test_*.sh` |
+| `ANALYSIS.md` | Audit of the **original** `main` code: every defect with a line citation, the reproduced command-injection proof of concept, what was verified and is *not* a defect, and the residual limitations of the replacement. | `legacy/` |
+| `REFACTORING.md` | What v6.2.0 took from each of the five revisions, what it rejected and with which measurement, and the fourteen defects found while integrating. | `ANALYSIS.md`, `tests/` |
+| `legacy/Bash_WP-CLI_Update.v5.0.sh` | Byte-exact copy of `main:Bash_WP-CLI_Update.sh`, verified with `git hash-object`. Executed by nothing. Exists so that citations in `ANALYSIS.md` stay checkable without git history and so that rollback does not depend on git. | — |
+| `legacy/Find_WP_Senior.v1.01.sh` | Byte-exact copy of `main:Find_WP_Senior.sh`. Same reason. | — |
+| `legacy/README.md` | Why the archive exists, and a do-not-fix notice: the known defects are left exactly as they were. | — |
+| `tests/test_fleet.sh` | The fleet-wide surface: `--no-user-switch`; `-j N` measured against a sleeping stub (5 s sequential vs 1 s at `-j 5`, 3 s at `-j 2`); counters identical at `-j 1/2/3/5`; console order and log contiguity; a failing site inside a batch; a worker killed with SIGKILL; leaked worker directories; `--backup db\|full` and rotation; an impossible backup destination; plugin-deletion backup and deactivation; `--verify` issues no mutation; `--only-active` and `--exclude-plugins`; `--strict`; JSON Lines shape, ordering and purity; `--list-sites`; `--url`; the configuration layers for the new keys; every shell metacharacter in a config file. | `tests/harness.sh` |
 | `tests/harness.sh` | Shared harness: file-backed counters (so a check inside a pipeline still counts), the synthetic WordPress tree, the stub `wp` installation, environment probes, assertion helpers, SKIP handling. | `tests/stub/wp` |
 | `tests/stub/wp` | Recording stub of WP-CLI. Logs its own argv, cwd, user, the environment contract and whether a licence arrived (length and checksum only, never the value). Answers `plugin list` in table and JSON. | — |
 | `tests/test_static.sh` | `bash -n`, ShellCheck cleanliness, LF endings, executable bits, shebang and mode switches, absence of banned constructs, absence of personal data, documentation present and version-consistent, project map not stale. | `shellcheck` (SKIPs without it) |
@@ -56,6 +62,32 @@ trailing whitespace) and the `--output` / `--sites` flags.
 | `LICENSE` | MIT. |
 
 ## Data flow
+
+The manager grew a fleet layer on top of the per-site one in v6.2.0:
+
+```
+parse_args → validate_args → config_load → config_apply_all → validate_args
+   │
+   ├─ --list-modes / --print-config / --list-sites … inspect and exit
+   │
+   └─ log_init → lock_acquire → ensure_site_list → load_site_list
+        → resolve_site_users → run_fleet
+             ├─ run_sequential            (JOBS == 1)
+             └─ run_batched               (JOBS > 1)
+                  worker_init → worker_run & → wait → fold_worker
+                       └─ process_site → maybe_backup → mode_* → run_wp
+        → print_summary (+ emit_summary_json under --json-lines)
+        → final_exit_code
+```
+
+Four things a parallel worker cannot do on its own, and where each is handled:
+
+| Problem | Where it is solved |
+|---|---|
+| a subshell cannot increment a parent counter | the worker zeroes its counters at fork and writes them to `${WORK_DIR}/wN/res`; `fold_worker` adds them up |
+| concurrent sites interleave on the terminal | the worker's stdout is a fragment; the parent replays fragments in site order at the barrier |
+| concurrent sites interleave in the shared log file | `log_write_file` appends to the fragment while `PARALLEL=true`; the parent appends fragments in order |
+| a machine-readable payload must stay parseable | `render_plugin_table` and `emit_site_record` route to the fragment whenever the output is machine-readable |
 
 ```
 Find_WP_Senior.sh --output FILE [ROOT ...]

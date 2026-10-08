@@ -8,6 +8,132 @@ This is a user-facing document. An internal agent log is not a changelog: entrie
 of the form “script (backup v3) - refactor” were published by two earlier
 revisions and told the reader nothing they could act on.
 
+## [6.2.0 / 2.1.0] - 2026-10-08
+
+Fleet release. Everything here was taken from the `SagaAI_DeepSeeek_Flash`
+revision (`3904a73`) after a comparative measurement showed it ahead of this tree
+on four counts, plus one archive idea and one documentation idea. What was
+deliberately **not** taken is listed at the bottom, with the measurement that
+decided it. `REFACTORING.md` records the audit in full.
+
+### Added
+
+- `-j, --jobs N`: parallel site processing in batches. Bash 4.2 has no `wait -n`,
+  so this is a batch barrier, not a continuous pool. Per-site console output and
+  log lines are buffered in per-worker fragments and replayed in **site order** at
+  the barrier, so neither the terminal nor the log file interleaves. Measured on
+  five sites of one second each: 5 s sequential, 1 s at `-j 5`, 3 s at `-j 2`.
+- `--no-user-switch`: run WP-CLI as the invoking user. Two audiences: single-site
+  hosts where the operator already is the site user, and test suites. The second
+  one matters more than it looks — three independent suites in this project's
+  history (GLM's, SagaAI's, and the first revision of ours) reported dozens of
+  failures that were purely "the fixture is owned by root and there is no account
+  to switch into". With the switch disable-able, the suite is portable.
+- `-b, --backup db|full`, `-B, --backup-dir`, `--keep-backups N`, `--no-backup`.
+  `db` runs `wp db export` with the per-command timeout disabled, because a
+  truncated dump is worse than no dump: it looks like a backup. `full` archives
+  the tree and reports its size first. Rotation prunes by mtime with
+  `find -printf '%T@' | sort -rn`, not `ls -1t`, whose output is locale- and
+  width-dependent.
+- A plugin deletion now backs up `wp-content/plugins/<slug>` to a tar.gz **and
+  deactivates the plugin first**. `plugin delete` on an active plugin leaves its
+  options, tables and cron events behind, because the deactivation hooks never
+  run. `--no-backup` is honoured but logged as a warning.
+- `--verify`: read-only `core verify-checksums` plus `plugin verify-checksums
+  --all`. Nothing is mutated, so it is safe to schedule hourly.
+- `--only-active`: update only plugins that are active **and** have an update
+  available. The set is enumerated from `plugin list --format=json` and passed by
+  slug, so one broken plugin can no longer hide behind `--all`.
+- `-e, --exclude-plugins LIST`: leave named plugins out of `--plugins` and
+  `--full`. Matched case-insensitively against slug and display name as whole
+  tokens — never as a pattern, so nothing needs escaping.
+- `-U, --url URL`: passed to WP-CLI as `--url` on every call, for multisite
+  installations where one directory serves several URLs.
+- `-J, --json` / `--json-lines`: the fleet report as JSON Lines — one object per
+  site plus a summary object. Lines rather than an array, because a fleet run is
+  a stream: with an array the operator gets nothing until the last site finishes,
+  and a killed run produces invalid JSON. `-J` keeps its old meaning under
+  `--list-plugins` (the plugin-list format); the dual meaning is resolved after
+  all mode flags have been parsed, so `--json -l` and `-l --json` agree.
+- `--strict`: exit non-zero when anything was warned about, not only when
+  something failed. Applies to an empty fleet as well, because "processed zero
+  sites" is exactly the silent failure a cron job needs to shout about.
+- `--list-sites`: resolve the inventory — including owner detection and the
+  finder run — print it and exit. Works without a wp binary, without a lock and
+  without root.
+- `legacy/`: byte-exact copies of the two original `main` scripts, verified with
+  `git hash-object`. Citations of the form `main:396` in `ANALYSIS.md` are
+  checkable without git history, and rollback does not depend on git.
+- `ANALYSIS.md`: audit of the original code — every defect with a line citation,
+  the reproduced command-injection PoC, what was verified and is **not** a
+  defect, and the residual limitations of the new code.
+- `REFACTORING.md`: what this tree took from each of the five revisions, what it
+  rejected and why, and the fourteen defects found while integrating them.
+- `tests/test_fleet.sh`: 95 checks over the fleet-wide surface, including timing
+  assertions for parallelism, counter equality across `-j 1/2/3/5`, log
+  contiguity, a killed worker, and every shell metacharacter in a config file.
+- New configuration keys, all three layers deep: `JOBS`, `BACKUP`,
+  `KEEP_BACKUPS`, `BACKUP_DIR`, `EXCLUDE_PLUGINS`, `ONLY_ACTIVE`, `STRICT`,
+  `NO_USER_SWITCH`, `URL`.
+
+### Changed
+
+- **BREAKING for `--list-plugins` consumers that counted rows**: the recording
+  stub in `tests/stub/wp` now reports five plugins instead of three, because
+  `--only-active` cannot be tested without an inactive plugin that has an update.
+  The suite derives its expectations from the stub instead of hardcoding a count.
+- `-J` outside `--list-plugins` now means JSON Lines rather than "the plugin list
+  in JSON". Inside `--list-plugins` it is unchanged.
+- `plugin delete` deactivates first. A caller that relied on `delete` alone
+  reaching WP-CLI now sees one extra `plugin deactivate` call per deletion.
+- The version is 6.2.0 rather than 6.1.0: the public surface grew by nine options
+  and one mode.
+
+### Fixed
+
+- **The environment layer of the configuration precedence did not exist.**
+  `is_set` tested only shell variables, so `WP_CLI_UPDATE_JOBS=7` from a login
+  shell was never seen and the documented `file < environment < command line`
+  order collapsed into `file < command line`. `is_set` now consults `printenv`,
+  and a new `env_value` reads the value the same way.
+- **`--list-sites --json` printed the table.** The branch ran before
+  `validate_args`, which is where the dual meaning of `-J` is resolved. It now
+  runs after.
+- **`--strict` did not fire on an empty fleet.** The "nothing to do" path exited 0
+  before `final_exit_code` was consulted, so the one run a cron job most needs to
+  hear about was the one it never reported.
+- A worker forked for a parallel batch inherited the parent's counters and wrote
+  them back, so every batch after the first double-counted. Workers now zero
+  their counters at fork; the totals are identical at `-j 1`, `-j 2`, `-j 3` and
+  `-j 5`, and the suite asserts exactly that.
+- `--skip-plugins` reached `plugin list`, hiding the very plugins being listed.
+  It is now applied only to operations that change plugins or themes, and to
+  listings only under `--skip-plugins-for-listing on`.
+- The backtick guard in the config parser was dead. It compared against a
+  variable that had been written as `BACKTICK="$'\140'"` — in double quotes that
+  is the seven-character literal `$'\140'`, not a backtick, so a config line
+  containing a real backtick was accepted. `BACKTICK=$'\140'` now, and the suite
+  walks all seven metacharacters.
+- `run_sequential` called `run_fleet`, which called `run_sequential`: an
+  integration patch had matched the loop inside the helper instead of the one in
+  `main`, so `-j N` silently ran sequentially. `tests/test_fleet.sh` measures the
+  wall clock against a sleeping stub, which is the only reason this was caught.
+- Backticks in the `--help` text were executed: the usage heredoc is unquoted (it
+  expands `${PROG_NAME}`), so a literal pair of backticks became a command
+  substitution and `--help` hung. The help now uses single quotes for literals.
+- `--print-config` showed the configuration *layer* rather than the layer that
+  decided the value, so a command-line override was reported as coming from the
+  file. An `effective_source` column and a `CLI OVERRIDE` column replaced it.
+
+### Not adopted, deliberately
+
+| From `SagaAI` | Why not |
+|---|---|
+| Passing the Astra licence as an argument to `wp` | Measured: the value lands in the child's argv and is visible in `ps` for the duration of the call. Their own `ANALYSIS.md` §10 discloses this, and their own script header forbids it. This tree keeps the temporary-file handoff, where the value is never an argument of any process. |
+| `source` for the configuration file | Their guard refuses group/world-writable files and that guard works, but a root-owned 0644 file is still root code execution. Measured: a payload in such a file ran. This tree parses `KEY=VALUE` and rejects any line with a metacharacter. |
+| `shell_join` on `printf %q` for the `su` fallback | Correct *there*, because `-s /bin/sh` is explicit — that is precisely the mistake `v6.0.0-deepseek` made. But `%q` emits `$'…'` for strings with control characters, which POSIX `sh` does not understand. The positional-parameter runner needs no quoting at all and has no such edge. |
+| The author's plugin list as the default `--skip-plugins` | One installation's requirement shipped as everybody's default. The default here is empty and the list lives in `wp-cli-update.conf.example` as a comment. |
+
 ## [6.1.0 / 2.1.0] - 2026-10-07
 
 Consolidated release. It merges the four 2026 revisions
