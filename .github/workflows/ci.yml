@@ -1,0 +1,72 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master, develop]
+  pull_request:
+
+jobs:
+  test:
+    name: bash ${{ matrix.bash }} on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, ubuntu-24.04]
+        include:
+          - os: ubuntu-22.04
+            bash: "5.1"
+          - os: ubuntu-24.04
+            bash: "5.2"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0        # the secret scanner's --history mode walks commits
+
+      - name: Install helpers
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq shellcheck jq curl wget gnupg perl util-linux
+          bash --version | head -n 1
+
+      - name: Build artifacts from src/
+        run: WPU_BUILD_ID="ci-${GITHUB_SHA::8}" WPU_SYNTAX_FORK=1 bash tools/build.sh
+
+      - name: Artifacts must match src/ (no drift)
+        run: WPU_BUILD_ID="ci-${GITHUB_SHA::8}" bash tools/build.sh --check
+
+      - name: shellcheck
+        run: |
+          shellcheck -x Bash_WP-CLI_Update.sh Find_WP_Senior.sh tools/*.sh
+          for f in src/manager/*.sh src/finder/*.sh tests/*.sh tests/stub/wp; do
+            shellcheck -e SC2154 -e SC2034 -e SC2329 -x "$f"
+          done
+
+      - name: No CRLF anywhere
+        run: |
+          if git grep -Il $'\r' -- . ':(exclude)legacy'; then
+            echo "CRLF found in the files above"; exit 1
+          fi
+          echo "LF only: ok"
+
+      - name: Secret scan (work tree + history)
+        run: bash tools/scan-secrets.sh --strict --history
+
+      - name: Test suites (no root, no WordPress, no WP-CLI, no network)
+        run: bash tests/run_tests.sh
+
+  # The user-switch and privilege paths need root; GitHub runners provide it.
+  test-root:
+    name: user-switch paths (root)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install helpers
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq shellcheck jq
+          sudo useradd -m -s /bin/bash wptest || true
+      - name: Build
+        run: bash tools/build.sh
+      - name: Suites with a real switch target
+        run: sudo -E TEST_SITE_USER=wptest bash tests/run_tests.sh

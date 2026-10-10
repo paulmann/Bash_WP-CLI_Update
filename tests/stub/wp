@@ -1,0 +1,438 @@
+#!/usr/bin/env bash
+# Stub WP-CLI for the test bench.
+#
+# It behaves like the real thing where it matters for these tests:
+#   - global flags (--path=, --url=, --allow-root, --quiet, --format=, --fields=)
+#     may appear anywhere, so the subcommand is the first two NON-flag arguments;
+#   - `core check-update` and `cli check-update` exit 1 when there is nothing to
+#     do, exactly like the real ones;
+#   - `plugin list --format=json` emits a flat JSON array;
+#   - list commands accept `--format=count|ids|json|csv|tsv`;
+#   - `cli update` simulates a self-update, including the phar-only refusal.
+#
+# It records its argv, cwd, user, the environment contract and whether a licence
+# arrived, WITHOUT ever writing a secret value to the log.
+#
+# Test hooks (all optional, all environment variables):
+#   FAKE_WP_LOG        where argv is recorded          (default /tmp/wp_invocations.log)
+#   ASTRA_FAIL_SLUG    make `plugin update <slug>` fail
+#   WP_FAIL_CMD        make this "cmd sub" pair fail
+#   WP_NOISY_JSON      print a notice on stderr before JSON output
+#   WP_MULTISITE       answer `site list` with subsites instead of failing
+#   WP_CLI_STUB_VER    version reported by `cli version`   (default 2.11.0)
+#   WP_UPDATE_TO       version `cli update` pretends to install
+#   WP_NO_CLI_UPDATE   make `cli update` refuse (simulates a non-phar install)
+#   WP_CORE_VER        version reported by `core version`  (default 6.5.2)
+#   WP_PHP_VER         PHP version reported by `cli info`
+#   WP_HANG            sleep this many seconds before answering (timeout tests)
+LOG="${FAKE_WP_LOG:-/tmp/wp_invocations.log}"
+
+if [ -n "${WP_HANG:-}" ]; then
+    sleep "${WP_HANG}"
+fi
+
+LIC_STATE='<unset>'
+if [ -n "${WP_CLI_LICENCE:-}" ]; then
+    LIC_STATE="<set,len=${#WP_CLI_LICENCE},cksum=$(printf '%s' "$WP_CLI_LICENCE" | cksum | cut -d' ' -f1)>"
+fi
+{
+    printf 'ARGV:'
+    for a in "$@"; do printf ' [%s]' "$a"; done
+    printf ' | CWD=%s USER=%s' "$PWD" "$(id -un)"
+    printf ' | ASTRFAIL=%s' "${ASTRA_FAIL_SLUG:-<unset>}"
+    printf ' | DOCUMENT_ROOT=%s HOMEDIR=%s HTTP_HOST=%s DOCUMENT_URI=%s HOME=%s LOGNAME=%s' \
+        "${DOCUMENT_ROOT:-<unset>}" "${HOMEDIR:-<unset>}" "${HTTP_HOST:-<unset>}" \
+        "${DOCUMENT_URI:-<unset>}" "${HOME:-<unset>}" "${LOGNAME:-<unset>}"
+    printf ' | LICENCE=%s\n' "$LIC_STATE"
+} >>"$LOG"
+
+fmt='table' fields='' url=''
+positional=()
+for a in "$@"; do
+    case "$a" in
+        --quiet | --allow-root | --skip-plugins | --skip-plugins=*) ;;
+        --format=*) fmt="${a#--format=}" ;;
+        --fields=*) fields="${a#--fields=}" ;;
+        --path=*) SITE_PATH="${a#--path=}" ;;
+        --url=*) url="${a#--url=}" ;;
+        --*) ;;                       # any other global flag: ignore
+        *) positional+=("$a") ;;
+    esac
+done
+cmd="${positional[0]-}"
+sub="${positional[1]-}"
+third="${positional[2]-}"
+
+# A plugin that writes to stderr must not be able to corrupt a JSON payload.
+if [ -n "${WP_NOISY_JSON:-}" ]; then
+    printf 'PHP Deprecated: something in a plugin\n' >&2
+fi
+
+PLUGINS=(
+    "Akismet Anti-Spam|active|none|5.3|akismet|Akismet Anti-Spam|"
+    "WooCommerce|inactive|available|8.1.0|woocommerce|WooCommerce|9.0.0"
+    "All in One SEO|active|none|4.4.0|all-in-one-seo-pack|All in One SEO (AIOSEO)|"
+    "Jetpack|active|available|13.0|jetpack|Jetpack|13.5"
+    "Old Plugin|inactive|available|1.0|old-plugin|Old Plugin|1.1"
+)
+THEMES=(
+    "twentytwentyfour|active|none|1.0|Twenty Twenty-Four|"
+    "astra|inactive|available|4.6.0|Astra|4.6.1"
+)
+
+_want_fields() { # default...
+    local -a want=()
+    if [ -n "$fields" ]; then
+        local saved="$IFS"; IFS=','; want=($fields); IFS="$saved"
+    else
+        want=("$@")
+    fi
+    printf '%s\n' "${want[@]}"
+}
+
+emit_rows() { # kind: plugin|theme
+    local kind="$1" r n st up v sl ti uv out f v_ emitted
+    local -a rows=()
+    if [ "$kind" = 'plugin' ]; then rows=("${PLUGINS[@]}"); else rows=("${THEMES[@]}"); fi
+
+    # --update=available / --status=active filtering, the way the real one does it
+    local -a filtered=()
+    local a
+    for a in "$@"; do :; done
+    for r in ${rows[@]+"${rows[@]}"}; do
+        if [ "$kind" = 'plugin' ]; then
+            IFS='|' read -r n st up v sl ti uv <<<"$r"
+        else
+            IFS='|' read -r sl st up v ti uv <<<"$r"
+            n="$ti"
+        fi
+        if [ -n "${FILTER_UPDATE:-}" ] && [ "$up" != "${FILTER_UPDATE}" ]; then continue; fi
+        if [ -n "${FILTER_STATUS:-}" ] && [ "$st" != "${FILTER_STATUS}" ]; then continue; fi
+        filtered+=("$r")
+    done
+
+    case "$fmt" in
+        count)
+            printf '%s\n' "${#filtered[@]}"
+            return 0
+            ;;
+        ids)
+            emitted=0
+            for r in ${filtered[@]+"${filtered[@]}"}; do
+                if [ "$kind" = 'plugin' ]; then
+                    IFS='|' read -r n st up v sl ti uv <<<"$r"
+                else
+                    IFS='|' read -r sl st up v ti uv <<<"$r"
+                fi
+                ((emitted)) && printf ' '
+                emitted=1
+                printf '%s' "$sl"
+            done
+            printf '\n'
+            return 0
+            ;;
+        json)
+            printf '['
+            emitted=0
+            for r in ${filtered[@]+"${filtered[@]}"}; do
+                ((emitted)) && printf ','
+                emitted=1
+                if [ "$kind" = 'plugin' ]; then
+                    IFS='|' read -r n st up v sl ti uv <<<"$r"
+                    printf '{"name":"%s","status":"%s","update":"%s","version":"%s","slug":"%s","title":"%s","update_version":"%s"}' \
+                        "$n" "$st" "$up" "$v" "$sl" "$ti" "$uv"
+                else
+                    IFS='|' read -r sl st up v ti uv <<<"$r"
+                    printf '{"name":"%s","status":"%s","update":"%s","version":"%s","title":"%s","update_version":"%s"}' \
+                        "$sl" "$st" "$up" "$v" "$ti" "$uv"
+                fi
+            done
+            printf ']\n'
+            return 0
+            ;;
+    esac
+
+    local -a want=()
+    mapfile -t want < <(_want_fields name status update version)
+    out=''
+    for f in ${want[@]+"${want[@]}"}; do out+="${out:+$'\t'}${f}"; done
+    printf '%s\n' "$out"
+    for r in ${filtered[@]+"${filtered[@]}"}; do
+        if [ "$kind" = 'plugin' ]; then
+            IFS='|' read -r n st up v sl ti uv <<<"$r"
+        else
+            IFS='|' read -r sl st up v ti uv <<<"$r"
+            n="$ti"
+        fi
+        out=''
+        for f in ${want[@]+"${want[@]}"}; do
+            case "$f" in
+                name) v_="$n" ;; status) v_="$st" ;; update) v_="$up" ;;
+                version) v_="$v" ;; slug) v_="$sl" ;; title) v_="$ti" ;;
+                update_version) v_="$uv" ;; *) v_='' ;;
+            esac
+            out+="${out:+$'\t'}${v_}"
+        done
+        printf '%s\n' "$out"
+    done
+}
+
+# Re-read the filter flags, which are global and may appear anywhere.
+FILTER_UPDATE='' FILTER_STATUS='' FILTER_ROLE=''
+for a in "$@"; do
+    case "$a" in
+        --update=*) FILTER_UPDATE="${a#--update=}" ;;
+        --status=*) FILTER_STATUS="${a#--status=}" ;;
+        --role=*) FILTER_ROLE="${a#--role=}" ;;
+        --update) FILTER_UPDATE='available' ;;
+    esac
+done
+
+CORE_VER="${WP_CORE_VER:-6.5.2}"
+# `cli update` simulates a self-update by writing the new version to a file that
+# the next invocation reads back. Without that the test could not observe the
+# update at all, because the stub's version would be frozen in its own source.
+CLI_VER_FILE_VALUE=''
+if [ -n "${WP_STUB_VERSION_FILE:-}" ] && [ -f "${WP_STUB_VERSION_FILE}" ]; then
+    CLI_VER_FILE_VALUE="$(head -n 1 -- "${WP_STUB_VERSION_FILE}" 2>/dev/null)"
+fi
+CLI_VER="${WP_CLI_STUB_VER:-${CLI_VER_FILE_VALUE:-2.11.0}}"
+PHP_VER="${WP_PHP_VER:-8.2.14}"
+
+# The test hook that makes failure paths testable at all: a specific "cmd sub"
+# pair can be made to fail without touching the rest of the surface.
+if [ -n "${WP_FAIL_CMD:-}" ] && [ "$cmd $sub" = "${WP_FAIL_CMD}" ]; then
+    echo "Error: simulated failure for '${WP_FAIL_CMD}'" >&2
+    exit 1
+fi
+
+case "$cmd $sub" in
+    'core version') echo "$CORE_VER" ;;
+    'core check-update')
+        if [ -n "${WP_CORE_UPDATE:-}" ]; then
+            if [ "$fmt" = 'json' ]; then
+                printf '[{"version":"%s","update_type":"%s","package_url":"https://downloads.wordpress.org/release/wordpress-%s.zip"}]\n' \
+                    "${WP_CORE_UPDATE}" "${WP_CORE_UPDATE_TYPE:-minor}" "${WP_CORE_UPDATE}"
+            else
+                printf '+-------------+-------------+------------------------------------------------------+\n'
+                printf '| version     | update_type | package_url                                          |\n'
+                printf '+-------------+-------------+------------------------------------------------------+\n'
+                printf '| %s | %s | https://downloads.wordpress.org/release/... |\n' \
+                    "${WP_CORE_UPDATE}" "${WP_CORE_UPDATE_TYPE:-minor}"
+            fi
+            exit 0
+        fi
+        echo 'Success: WordPress is at the latest version.'
+        exit 1 ;;                                  # like the real WP-CLI
+    'core update') echo 'Success: WordPress updated successfully.' ;;
+    'core update-db') echo 'Success: WordPress database upgraded successfully.' ;;
+    'core verify-checksums')
+        if [ -n "${WP_BAD_CHECKSUMS:-}" ]; then
+            echo 'Warning: File does not match the checksum for its version.' >&2
+            echo 'Error: Only verify-checksums for WordPress core is supported.' >&2
+            exit 1
+        fi
+        echo 'Success: WordPress installation verifies against checksums' ;;
+    'plugin list' | 'theme list')
+        if [ "$cmd" = 'plugin' ]; then emit_rows plugin; else emit_rows theme; fi
+        ;;
+    'plugin verify-checksums')
+        if [ -n "${WP_BAD_PLUGIN_CHECKSUMS:-}" ]; then
+            echo 'Error: Checksum verification failed for plugin "hello.php".' >&2
+            exit 1
+        fi
+        echo 'Success: Verified 4 of 5 plugins.' ;;
+    'plugin status') echo "Plugin ${third:-unknown} is active" ;;
+    'plugin activate') echo 'Success: Activated plugin.' ;;
+    'plugin deactivate') echo 'Success: Deactivated plugin.' ;;
+    'plugin delete') echo 'Success: Deleted plugin.' ;;
+    'plugin install') echo "Success: Installed ${third:-plugin}." ;;
+    'plugin update')
+        if [ -n "${ASTRA_FAIL_SLUG:-}" ] && [ "$third" = "$ASTRA_FAIL_SLUG" ]; then
+            echo 'Error: The plugin download failed.' >&2
+            exit 1
+        fi
+        echo 'Success: Updated 2 of 2 plugins.' ;;
+    'theme update') echo 'Success: Updated 1 of 1 theme.' ;;
+    'language core') echo 'Success: Translations are up to date.' ;;
+    'language plugin') echo 'Success: Translations are up to date.' ;;
+    'language theme') echo 'Success: Translations are up to date.' ;;
+    'cache flush') echo 'Success: The cache was flushed.' ;;
+    'rewrite flush') echo 'Success: Rewrite rules flushed.' ;;
+    'transient delete') echo 'Success: 3 transients deleted.' ;;
+    'db export')
+        out="${positional[2]:-}"
+        if [ -n "$out" ] && [ "$out" != '/dev/null' ]; then
+            d="$(dirname -- "$out")"
+            if [ ! -w "$d" ]; then
+                echo "Error: cannot write to ${d}" >&2
+                exit 1
+            fi
+            {
+                printf -- '-- MySQL dump (stub)\n'
+                printf -- '-- site: %s\n' "${SITE_PATH:-unknown}"
+                printf 'SELECT 1;\n'
+                printf -- '-- Dump completed on %s\n' "$(date)"
+            } >"$out" 2>/dev/null || {
+                echo 'Error: cannot write the dump' >&2; exit 1; }
+        fi
+        echo 'Success: Exported to the given path.' ;;
+    'db import')
+        f="${positional[2]:-}"
+        [ -f "$f" ] || { echo "Error: no such file: ${f}" >&2; exit 1; }
+        echo "Success: Imported from '${f}'." ;;
+    'db optimize') echo 'Success: Database optimized.' ;;
+    'db repair') echo 'Success: Database repaired.' ;;
+    'db query')
+        # `SELECT COALESCE(SUM(...))` from information_schema, as --report asks
+        case "${third:-}" in
+            SELECT*) printf '10485760\n' ;;
+            *) echo 'Success: Query executed.' ;;
+        esac ;;
+    'db size')
+        if [ "$fmt" = 'json' ]; then
+            printf '[{"name":"wp_options","size":"10 MiB","table_rows":1000}]\n'
+        else
+            printf '+------------+----------+\n| Name       | Size     |\n+------------+----------+\n| wp_options | 10 MiB   |\n+------------+----------+\nTotal size: 10485760\n'
+        fi ;;
+    'cron event')
+        case "$third" in
+            run) echo 'Success: Executed a total of 3 cron events.' ;;
+            list)
+                if [ "$fmt" = 'count' ]; then printf '3\n'
+                elif [ "$fmt" = 'json' ]; then printf '[{"hook":"wp_version_check","next_run":"2026-01-01 00:00:00"}]\n'
+                else printf 'hook\tnext_run\nwp_version_check\t2026-01-01 00:00:00\n'; fi ;;
+            *) echo 'Success: cron ok' ;;
+        esac ;;
+    'cron test') echo 'Success: WP-Cron seems to be working correctly.' ;;
+    'option get')
+        case "$third" in
+            home | siteurl) printf '%s\n' "${WP_HOME:-https://example.test}" ;;
+            blogname) printf 'Test Site\n' ;;
+            *) printf 'stub-value\n' ;;
+        esac ;;
+    'config get')
+        case "$third" in
+            WP_DEBUG) printf '%s\n' "${WP_DEBUG_VALUE:-false}" ;;
+            *) printf '' ;;
+        esac
+        [ -n "${WP_CONFIG_MISSING:-}" ] && exit 1
+        ;;
+    'user list')
+        case "$fmt" in
+            count)
+                if [ -n "${FILTER_ROLE:-}" ]; then printf '2\n'; else printf '7\n'; fi ;;
+            ids) printf '1 2\n' ;;
+            json) printf '[{"ID":1,"user_login":"admin","user_email":"a@example.test"},{"ID":2,"user_login":"editor","user_email":"e@example.test"}]\n' ;;
+            csv) printf 'user_login\nadmin\neditor\n' ;;
+            *) printf 'ID\tuser_login\n1\tadmin\n2\teditor\n' ;;
+        esac ;;
+    'post list')
+        # revisions / trash / auto-drafts for --cleanup
+        case "$fmt" in
+            ids) printf '101 102 103\n' ;;
+            count) printf '3\n' ;;
+            json)
+                printf '[{"ID":101,"post_parent":11,"post_date":"2026-01-05 10:00:00"},'
+                printf '{"ID":102,"post_parent":11,"post_date":"2026-01-04 10:00:00"},'
+                printf '{"ID":103,"post_parent":12,"post_date":"2026-01-03 10:00:00"}]\n' ;;
+            *) printf 'ID\tpost_title\n101\tRevision\n' ;;
+        esac ;;
+    'post delete') echo "Success: Trashed post ${third:-}." ;;
+    'comment list')
+        case "$fmt" in
+            ids) printf '201 202\n' ;;
+            count) printf '2\n' ;;
+            *) printf 'comment_ID\n201\n202\n' ;;
+        esac ;;
+    'comment delete') echo 'Success: Deleted 2 comments.' ;;
+    'maintenance-mode')
+        case "$third" in
+            activate) echo 'Success: Maintenance mode enabled.' ;;
+            deactivate) echo 'Success: Maintenance mode disabled.' ;;
+            status) echo 'Success: Maintenance mode is turned off.' ;;
+        esac ;;
+    'site list')
+        if [ -z "${WP_MULTISITE:-}" ]; then
+            echo "Error: This is not a multisite installation." >&2
+            exit 1
+        fi
+        case "$fmt" in
+            count) printf '2\n' ;;
+            ids) printf '1 2\n' ;;
+            json) printf '[{"blog_id":1,"url":"https://example.test"},{"blog_id":2,"url":"https://two.example.test"}]\n' ;;
+            *) printf 'blog_id\turl\n1\thttps://example.test\n2\thttps://two.example.test\n' ;;
+        esac ;;
+    'cli version') echo "WP-CLI ${CLI_VER}" ;;
+    'cli info')
+        cat <<INFO
+OS:     Linux 6.1.0 x86_64
+Shell:  /bin/bash
+PHP binary:     /usr/bin/php
+PHP version:    ${PHP_VER}
+php.ini used:   /etc/php/cli/php.ini
+MySQL binary:   /usr/bin/mysql
+MySQL version:  mysql  Ver 15.1 Distrib 10.11.0
+WP-CLI root dir:        phar://wp-cli.phar/vendor/wp-cli/wp-cli
+WP-CLI vendor dir:      phar://wp-cli.phar/vendor
+WP_CLI phar path:       /root
+WP-CLI packages dir:    /root/.wp-cli/packages
+WP-CLI global config:
+WP-CLI project config:
+WP-CLI version: ${CLI_VER}
+INFO
+        ;;
+    'cli check-update')
+        if [ -n "${WP_CLI_NEWER:-}" ]; then
+            if [ "$fmt" = 'json' ]; then
+                printf '[{"version":"%s","update_type":"%s","package_url":"https://github.com/wp-cli/wp-cli/releases/download/v%s/wp-cli-%s.phar"}]\n' \
+                    "${WP_CLI_NEWER}" "${WP_CLI_UPDATE_TYPE:-minor}" "${WP_CLI_NEWER}" "${WP_CLI_NEWER}"
+            else
+                printf 'A new version of WP-CLI is available: %s\n' "${WP_CLI_NEWER}"
+            fi
+            exit 0
+        fi
+        echo 'Success: WP-CLI is at the latest version.'
+        exit 1 ;;
+    'cli update')
+        if [ -n "${WP_NO_CLI_UPDATE:-}" ]; then
+            echo 'Error: This is not a Phar installation, so "wp cli update" cannot work.' >&2
+            exit 1
+        fi
+        target="${WP_UPDATE_TO:-2.12.0}"
+        echo "You have version ${CLI_VER}. Would you like to update to ${target}? [y/n] y"
+        echo "Downloading from https://github.com/wp-cli/wp-cli/releases/download/v${target}/wp-cli-${target}.phar..."
+        echo 'New version works. Proceeding to replace.'
+        # simulate the real updater: keep the old phar next to the new one, and
+        # record the new version where the next invocation will read it
+        if [ -n "${WP_STUB_SELF:-}" ] && [ -f "${WP_STUB_SELF}" ]; then
+            cp -p -- "${WP_STUB_SELF}" "${WP_STUB_SELF}.old" 2>/dev/null
+        fi
+        if [ -n "${WP_STUB_VERSION_FILE:-}" ]; then
+            printf '%s\n' "$target" >"$WP_STUB_VERSION_FILE"
+        fi
+        echo "Success: Updated WP-CLI to ${target}." ;;
+    'brainstormforce license')
+        if [ -z "${WP_CLI_LICENCE:-}" ]; then
+            echo 'Error: the licence value arrived empty' >&2
+            exit 1
+        fi
+        echo "Success: licence accepted (${LIC_STATE})" ;;
+    'help')
+        # `wp help <cmd>` answers non-zero for a command that does not exist,
+        # which is how the manager probes for feature support.
+        case "$third" in
+            '' | cli | core | plugin | theme | db | cron | option | user | post | comment | \
+                cache | rewrite | transient | language | site | config | maintenance-mode | \
+                search-replace | eval | package | super-admin | network | role | cap | menu | \
+                widget | sidebar | media | import | export | find)
+                printf 'usage: wp %s <subcommand>\n' "${third}"
+                ;;
+            *)
+                printf "Error: '%s' is not a registered command.\n" "${third}" >&2
+                exit 1
+                ;;
+        esac ;;
+    *) echo "Success: ${cmd} ${sub} ok" ;;
+esac
+exit 0

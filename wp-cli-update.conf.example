@@ -1,0 +1,377 @@
+# Configuration example for Bash_WP-CLI_Update.sh 7.0.0
+#
+# Copy it to one of these places and edit:
+#
+#   /etc/wp-cli-update.conf            global, read by every invocation
+#   <script dir>/wp-cli-update.conf    per installation, wins over the global one
+#
+# ...or point at any file with --config FILE. A fully commented file matching
+# your exact version can always be regenerated with:
+#
+#   ./Bash_WP-CLI_Update.sh --init-config /etc/wp-cli-update.conf
+#
+# The file is DATA, not shell. Only plain KEY=VALUE lines are read; the file is
+# never sourced. A line containing a backtick, $( , ${ , a pipe, a semicolon, an
+# ampersand or a redirection makes the whole file be rejected with exit code 4.
+# A file that is group- or world-writable is rejected for the same reason: the
+# manager runs as root, so whoever can write this file can run code as root.
+#
+#   chmod 600 wp-cli-update.conf
+#
+# Precedence, lowest to highest:
+#   built-in defaults < /etc/wp-cli-update.conf < ./wp-cli-update.conf
+#                     < WP_CLI_UPDATE_<KEY> environment < command line
+#
+# Every key can also be set as WP_CLI_UPDATE_<KEY> in the environment, and most
+# have a command-line flag. Run `--print-config` to see the effective value of
+# every setting together with the layer that produced it.
+
+# ---------------------------------------------------------------- executables
+# Where the wp binary lives. Do not rely on PATH: the manager switches users,
+# and the login shell of a site owner usually has a different PATH than yours.
+# If you set this, it must be an executable file -- there is no silent fallback.
+WP_CLI_PATH=/usr/local/bin/wp
+
+# Oldest WP-CLI this tool will drive. Below it, every fleet run refuses with
+# exit 3, because modes like `language`, `maintenance-mode` and the JSON output
+# of `cli check-update` do not exist in ancient builds and would silently do
+# something else than the documentation says.
+WP_CLI_MIN_VERSION=2.8.0
+
+# Compare the installed WP-CLI with the newest upstream release at startup and
+# warn when it is behind. Costs one `wp cli check-update` per run; leave it off
+# on hosts without outbound internet.
+WP_CLI_LATEST_CHECK=0
+
+# Release metadata endpoint used when `wp cli check-update` cannot answer.
+WP_CLI_RELEASE_API=https://api.github.com/repos/wp-cli/wp-cli/releases/latest
+
+# --wpcli-update policy:
+#   channel  stable | nightly
+#   scope    auto (newest within the current major) | patch | minor | major
+#   target   pin one version; installed by verified direct download
+WP_CLI_UPDATE_CHANNEL=stable
+WP_CLI_UPDATE_SCOPE=auto
+#WP_CLI_TARGET_VERSION=2.11.0
+
+# A downloaded phar is verified (GPG signature preferred, SHA-512 fallback)
+# before it replaces anything, and the verification FAILS CLOSED: no method
+# available means no install. The key and its expected fingerprint are the
+# published WP-CLI release signing key.
+WP_CLI_VERIFY_PHAR=1
+WP_CLI_GPG_KEY_URL=https://raw.githubusercontent.com/wp-cli/builds/gh-pages/wp-cli.pgp
+WP_CLI_GPG_FINGERPRINT=63AF7AA15067C05616FDDD88A3A2E8F226F0BC06
+# Where replaced wp binaries are kept for --wpcli-rollback (default: next to
+# the binary, as <name>.bak-<timestamp>).
+#WP_CLI_BACKUP_DIR=/var/backups/wp-cli
+
+# Update WP-CLI without asking (cron, CI). --wpcli-update also assumes yes when
+# stdin is not a terminal.
+WP_CLI_UPDATE_YES=0
+
+# Let the updater retry without TLS verification. Off, and it should stay off:
+# it exists for hosts stuck behind a TLS-intercepting proxy, not for convenience.
+WP_CLI_INSECURE=0
+
+# php binary used to smoke-test a phar before installing it.
+PHP_BIN=php
+
+# curl is preferred (it reports HTTP status codes); wget is the fallback.
+# auto | curl | wget
+HTTP_CLIENT=auto
+
+# jq accelerates JSON parsing when present; the built-in reader is used when it
+# is not, with identical results. auto | yes | no
+USE_JQ=auto
+
+# ------------------------------------------------------------------ site list
+# One absolute path per line. Blank lines and '#' comments are ignored, a
+# trailing CR is tolerated, and leading/trailing whitespace is trimmed. An owner
+# may be forced per line by appending a TAB and the user name:
+#
+#   /var/www/shop.example.com<TAB>shopuser
+#
+# '-' reads the list from stdin. Produced by Find_WP_Senior.sh.
+SITES_FILE=/var/lib/wp-cli-update/wp-found.txt
+
+# The discovery script, run automatically when the site list is missing (never
+# when it exists but is empty -- that is a statement, not an accident).
+#DISCOVER_SCRIPT=/opt/wp-cli-update/Find_WP_Senior.sh
+
+# Web roots passed to the discovery script when it runs.
+#DISCOVER_ROOTS=/var/www /srv/www
+
+# Run the discovery script when the list is missing. Set to 0 on production
+# hosts: an automatic scan of the default web roots costs I/O and can pick up a
+# site you did not mean to touch.
+AUTO_DISCOVER=1
+
+# Process at most this many work units per run, 0 for all. Useful when rolling
+# a change out in batches.
+MAX_SITES=0
+
+# Force one system user for every site (skips owner detection).
+#SITE_USER=www-data
+
+# Only process / never process paths matching these comma separated globs.
+# Exclude wins over include. Patterns are bash globs, never regexes, never code.
+#INCLUDE_SITES=/var/www/prod-*
+#EXCLUDE_SITES=/var/www/*staging*,/var/www/sandbox
+
+# How to treat a multisite installation:
+#   auto | main  operate on the installation (the main site)
+#   off          never ask a site whether it is a multisite
+#   all          expand every installation into one work unit per subsite,
+#                each targeted with --url
+MULTISITE=auto
+
+# Skip these plugins on mutating plugin/theme operations (comma separated, the
+# WP-CLI syntax). The default is EMPTY on purpose: a list that somebody's site
+# needed must not silently ship inside a general tool.
+#SKIP_PLUGINS=
+
+# Also pass --skip-plugins to listing commands. Off by default, because it hides
+# exactly the plugins you are listing.
+SKIP_PLUGINS_FOR_LISTING=0
+
+# Comma separated slugs or names left out of --plugins/--full. Matching is
+# case-insensitive against slug and display name, whole-token, never a pattern.
+#EXCLUDE_PLUGINS=
+
+# Update only active plugins that actually have an update available. The set is
+# enumerated from `plugin list --format=json` and passed by slug, so one broken
+# plugin cannot hide behind `--all`.
+ONLY_ACTIVE=0
+
+# ----------------------------------------------------------------------- logs
+LOG_FILE=/var/log/wp-cli-update/manager.log
+ERROR_LOG_FILE=/var/log/wp-cli-update/errors.log
+
+# Rotate when a log grows past LOG_MAX_BYTES, keeping LOG_KEEP generations
+# (manager.log.1 ... manager.log.N). 0 disables rotation.
+LOG_MAX_BYTES=5242880
+LOG_KEEP=3
+
+# debug | info | warn | error
+LOG_LEVEL=info
+
+# text | json  (json lines: {"ts":...,"level":...,"pid":...,"msg":...})
+LOG_FORMAT=text
+
+# Mirror every line into syslog via logger(1), so a host that already ships
+# journald or rsyslog somewhere gets the maintenance history for free.
+SYSLOG=0
+
+# How many lines of a failing wp command are printed to the console and written
+# to the error log.
+ERROR_OUTPUT_LINES=20
+
+# auto | always | never. `auto` emits colour only when stdout and stderr are
+# both terminals, NO_COLOR is unset and TERM is not dumb.
+COLOR=auto
+
+# ---------------------------------------------------------------------- locks
+# Prevents two runs from updating the same sites at the same time. flock(1) is
+# used when present, a pid file otherwise.
+LOCK_FILE=/var/run/wp-cli-update.lock
+# Seconds to wait for a held lock instead of failing immediately (exit 3).
+LOCK_TIMEOUT=0
+# Refuse to run at all when the lock cannot be taken (default: warn and run
+# unprotected when the lock FILE cannot even be opened).
+LOCK_REQUIRED=0
+
+# --------------------------------------------------------------------- safety
+# Per-command timeout in seconds, 0 to disable. Enforced with timeout(1) when
+# present, with a perl supervisor when it is not; a hung wp process otherwise
+# blocks the whole fleet run until someone notices.
+TIMEOUT=600
+
+# Signal sent when the timeout expires, and seconds to wait before escalating
+# to SIGKILL. WP-CLI ignores TERM in some database operations, hence escalation.
+TIMEOUT_SIGNAL=TERM
+KILL_AFTER=30
+
+# When to pass --allow-root to WP-CLI: auto (only when the manager is root),
+# always, never.
+ALLOW_ROOT=auto
+
+# When the run exits non-zero:
+#   any     at least one site failed            (default; right for cron alerts)
+#   all     every site failed                   (right for "best effort" jobs)
+#   never   always 0                            (right when you parse the log)
+FAIL_ON=any
+
+# Exit non-zero when anything was WARNED about, not only when something failed.
+# This is what makes a warning visible to cron and to CI.
+STRICT=0
+
+# Stop the fleet after the first failing site (exit 6). For rollouts where the
+# first failure means "stop and look", not "keep going".
+FAIL_FAST=0
+
+# Re-attempt a failing site this many times (transient network/API failures).
+RETRY=0
+
+# Sleep this long between sites (sequential runs). Be nice to a shared database
+# server and to wordpress.org.
+STAGGER=0
+
+# Whole-run budget in seconds: when it is used up, no new site is started, the
+# summary/state/metrics say "stopped early", and the exit code is 6. Keeps a
+# nightly run inside its maintenance window. 0 disables.
+MAX_DURATION=0
+
+# Abort a backup when the target filesystem has less free MiB than this. A dump
+# written onto a full disk is truncated, and a truncated dump looks exactly like
+# a backup until the moment it is needed. 0 disables the guard.
+MIN_FREE_MIB=0
+
+# Passed to WP-CLI as --url on every call (multisite pinning).
+#URL=
+
+# table | json | csv | tsv
+OUTPUT_FORMAT=table
+
+# Put each site into WordPress maintenance mode while it is updated, and take
+# it out afterwards -- unconditionally, including after a failure. Needs
+# WordPress 5.5+ and WP-CLI 2.4+; probed, never assumed.
+MAINTENANCE_MODE=0
+
+# ---------------------------------------------------------------- parallelism
+# Process N sites at a time. 1 (the default) is sequential.
+#
+# This is a batch barrier, not a continuous pool: bash 4.2 has no `wait -n`, so
+# the next batch waits for the slowest site of the current one. Pick N from the
+# slowest shared resource, which is normally the database server and not the
+# CPU -- 4 to 8 is a sane range for one MySQL instance on one host.
+#
+# While a batch runs, per-site output and log lines are buffered and replayed in
+# site order at the barrier. `tail -f` on the log therefore looks stalled until
+# the batch lands; this is deliberate, interleaved lines from concurrent sites
+# are unreadable.
+JOBS=1
+
+# -------------------------------------------------------------------- backups
+# off | db | full
+#   db    `wp db export` before the site is touched. Seconds, and it covers
+#         everything these modes change.
+#   full  tar.gz of the whole installation. Complete, and on a site with a large
+#         wp-content/uploads it is tens of gigabytes and many minutes; the tool
+#         warns with the tree size before archiving.
+# Off by default on purpose: a dump per site per run fills disks nobody monitors.
+# A FAILED backup skips its site rather than updating it unprotected.
+BACKUP=off
+BACKUP_DIR=/var/backups/wp-cli-update
+# Backups kept per site and kind, 0 = keep everything. Pruned after each write.
+KEEP_BACKUPS=3
+# Take a dump of the current database before --restore overwrites it.
+BACKUP_BEFORE_RESTORE=1
+
+# ------------------------------------------------------------- what --full is
+# --full = core files, schema, plugins, themes, translations, cron, caches,
+# rewrite rules, db optimize (+ Astra when a licence resolves). db repair is
+# NOT part of it: `mysqlcheck --repair` is a no-op that still walks every
+# InnoDB table and locks MyISAM ones -- an outage window for no benefit. Repair
+# belongs in --db-fix, after something reported breakage.
+FULL_DB_REPAIR=0
+FULL_CACHE=1
+FULL_LANGUAGES=1
+
+# ---------------------------------------------------------------- cache mode
+# Transients removed by --cache: expired | all | none
+CACHE_TRANSIENTS=expired
+CACHE_REWRITE_FLUSH=1
+# Extra wp subcommands run by --cache, as plain whitespace separated tokens
+# (each token becomes one argv element; never a shell string). This is where a
+# page-cache plugin gets flushed:
+#CACHE_EXTRA=litespeed-purge-all rocket-clean --confirm
+
+# ------------------------------------------------------------- cleanup mode
+# Revisions kept PER POST (0 = delete all). Trash/spam handling is opt-in per
+# kind; --cleanup without --yes reports counts and changes nothing.
+CLEANUP_REVISIONS_KEEP=50
+CLEANUP_TRASH=0
+CLEANUP_SPAM=1
+CLEANUP_AUTODRAFT=0
+CLEANUP_TRANSIENTS=expired
+CLEANUP_OPTIMIZE=1
+
+# ------------------------------------------------------------- security mode
+# Fail the audit below this WordPress version (empty = do not check).
+#SECURITY_MIN_WP=6.3
+SECURITY_UPLOADS_SCAN=1
+SECURITY_WORLD_WRITABLE=1
+SECURITY_SECRETS=1
+# Warn above this many administrator accounts, 0 disables.
+SECURITY_MAX_ADMINS=0
+
+# -------------------------------------------------------------- report mode
+REPORT_DB_SIZE=1
+# Walks wp-content/uploads: accurate and slow on big media libraries.
+REPORT_UPLOADS_SIZE=0
+REPORT_CRON_TEST=1
+
+# ---------------------------------------------------------------- smoke test
+# Fetch the site URL after a site was changed. "wp exited 0" is not "the site
+# works"; a white screen after a plugin update is the most common fleet
+# incident and it is invisible to every exit code WP-CLI returns.
+SMOKE_TEST=0
+SMOKE_TIMEOUT=15
+SMOKE_EXPECT=200,301,302,303,307,308
+SMOKE_SSL_VERIFY=1
+# fail = a failed smoke test fails the site; warn = report and move on.
+SMOKE_ON_FAIL=fail
+
+# ------------------------------------------------------------------ Astra Pro
+ASTRA_SLUG=astra-addon
+
+# The licence value. Prefer the environment (WP_CLI_UPDATE_LICENCE) or a key
+# file over this one, so the value does not sit in a configuration file:
+#
+#   export WP_CLI_UPDATE_LICENCE=...            # per invocation
+#   ./astra.key                                 # next to the script, chmod 600
+#   /etc/wp-cli-update/astra.key                # host-wide, chmod 600
+#   ~/.astra.key
+#
+# The value is never passed as an argument of THIS process. By default it is
+# piped to the child over stdin (LICENCE_HANDOFF=stdin) and read there at run
+# time; `file` uses a short-lived temporary file instead, for the rare wrapper
+# that consumes stdin. Either way the value appears in no log line, no dry-run
+# listing, no report and no error box: every outgoing string passes a redactor
+# that knows the value. Legacy environment names ASTRA_KEY and
+# ASTRA_LICENSE_KEY are also read.
+#LICENCE=
+LICENCE_HANDOFF=stdin
+
+# ------------------------------------------------------------ user switching
+# Run WP-CLI as the invoking user instead of switching into the site owner.
+# For single-site hosts where the operator already IS the site user, and for
+# test suites. Leave it off on a multi-tenant host: the switch is the point.
+NO_USER_SWITCH=0
+
+# Space separated variable NAMES passed through into the site owner's
+# environment (for example a proxy or an API endpoint). Only names are listed
+# here; the values are taken from the manager's own environment, so neither a
+# config file nor a command line can inject a VALUE into the environment of wp.
+#USER_ENV=
+
+# ----------------------------------------------------------------- reporting
+# JSON document describing the last run, written atomically after every run
+# (even an interrupted one). This is what a dashboard should read.
+#STATE_FILE=/var/lib/wp-cli-update/state.json
+
+# Prometheus textfile-collector metrics (wpu_* series), written atomically
+# after every run. Point node_exporter's textfile collector at the directory.
+#METRICS_FILE=/var/lib/wp-cli-update/prometheus/wpu.prom
+
+# never | failure | always
+NOTIFY_ON=never
+# Generic JSON POST target (the full run document) or a chat webhook:
+#NOTIFY_WEBHOOK_URL=https://hooks.slack.com/services/YOUR/WEBHOOK/HERE
+# generic | slack | discord | telegram
+NOTIFY_WEBHOOK_FORMAT=generic
+# Executable given the summary as argv (--exit, --sites, --failed, ...) and as
+# environment (WPU_*). Never passed through a shell: it must be an absolute
+# path, and it can name an executable, which is a strictly smaller grant than a
+# shell would be. A failing notification is a warning, never a run failure.
+#NOTIFY_COMMAND=/usr/local/sbin/wpu-notify

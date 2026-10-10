@@ -1,0 +1,62 @@
+# --- generated at run time, never committed ---------------------------------
+# The site list is produced by Find_WP_Senior.sh. Committing it would freeze an
+# inventory that is supposed to reflect the host, and a stale list is more
+# dangerous than no list: the manager would happily work on sites that moved.
+wp-found.txt
+*.list
+
+# Logs and the state file read back by --status.
+*.log
+*.log.[0-9]
+*.log.state
+wp_cli_manager.log*
+wp_cli_errors.log*
+
+# Locks. A committed lock file makes every fresh clone refuse to run until
+# somebody works out why.
+.lock
+*.lock
+.Bash_WP-CLI_Update.sh.lock/
+
+# --- secrets ----------------------------------------------------------------
+# The licence is read from the environment or from one of these files. None of
+# them may ever be committed; tools/scan-secrets.sh --strict is the second line
+# of defence, not the first.
+astra.key
+*.key
+wp-cli-update.conf
+!wp-cli-update.conf.example
+.env
+.env.*
+secrets.*
+credentials*
+
+# --- local configuration that is not the shipped example --------------------
+config.local
+*.local.conf
+
+# --- editors, tools, operating systems --------------------------------------
+.*.sw?
+.sw?
+*~
+\#*\#
+.idea/
+.vscode/
+*.bak
+*.orig
+*.rej
+.DS_Store
+Thumbs.db
+
+# --- test and coverage droppings --------------------------------------------
+tests/tmp/
+coverage/
+*.pyc
+__pycache__/
+
+# --- machine-local index and agent scratch space ---------------------------
+# .ragraf holds the RAGRAF index (index, revisions, drift journal, code graph):
+# derived, machine-specific data that is rebuilt automatically and must never be
+# committed. It is excluded from the RAGRAF scan itself as well as from git.
+.ragraf/
+.zwork/

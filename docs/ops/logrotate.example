@@ -1,0 +1,18 @@
+# /etc/logrotate.d/wp-cli-update
+#
+# The tool rotates its own logs by size (LOG_MAX_BYTES / LOG_KEEP), which is the
+# mechanism that works everywhere including containers. This logrotate snippet
+# is for hosts that want time-based rotation and compression in one place; the
+# two mechanisms coexist because logrotate's `copytruncate` never races the
+# writer (the tool appends with >>; a plain rename would leave it writing into
+# the rotated file until the next run).
+
+/var/log/wp-cli-update/*.log {
+    weekly
+    rotate 8
+    compress
+    delaycompress
+    missingok
+    notifempty
+    copytruncate
+}

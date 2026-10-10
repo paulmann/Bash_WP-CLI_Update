@@ -1,0 +1,49 @@
+# /etc/cron.d/wp-cli-update — scheduled WordPress fleet maintenance
+#
+# Install:  cp docs/ops/cron.example /etc/cron.d/wp-cli-update
+#           chmod 644 /etc/cron.d/wp-cli-update   (cron.d files must be root-owned,
+#                                                  not group/world-writable)
+#
+# Exit codes drive the alerting: 0 = clean, 1 = something failed, 3 = the host
+# cannot run (no wp, version floor, lock held), 5 = nothing to do, 6 = stopped
+# early (window/fail-fast). MAILTO gets stderr, which is all the prose.
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+MAILTO=ops@example.com
+WPU=/opt/wp-cli-update/Bash_WP-CLI_Update.sh
+
+# Tuesday inventory: what state is the fleet in? (read-only, cheap)
+15 3 * * 2  root  $WPU --report --format tsv --state-file /var/lib/wp-cli-update/report.json >/var/lib/wp-cli-update/report.tsv 2>>/var/log/wp-cli-update/cron.log
+
+# Nightly updates with a database backup, a smoke test afterwards, and a
+# notification only when something failed. --max-duration keeps the run inside
+# the maintenance window; sites that did not start are simply next night's job.
+30 3 * * *  root  $WPU --full -j 4 --backup db --keep-backups 2 \
+    --timeout 900 --max-duration 5400 \
+    --smoke-test --state-file /var/lib/wp-cli-update/state.json \
+    --metrics-file /var/lib/wp-cli-update/prometheus/wpu.prom \
+    --notify failure --webhook https://hooks.example.com/your-webhook --webhook-format slack \
+    >>/var/log/wp-cli-update/cron.log 2>&1
+
+# Monday security audit; --strict makes warnings (and any critical finding)
+# page instead of hiding in a log.
+0 6 * * 1  root  $WPU --security --strict --json-lines \
+    >>/var/lib/wp-cli-update/security.jsonl 2>>/var/log/wp-cli-update/cron.log
+
+# Hourly integrity check on the read-only path (checksums need outbound HTTPS).
+# Uncomment once you have seen what it reports on YOUR fleet.
+#0 * * * *  root  $WPU --verify --fail-on any >>/var/log/wp-cli-update/cron.log 2>&1
+
+# Weekly hygiene: refresh the inventory, then verify it.
+45 4 * * 0  root  /opt/wp-cli-update/Find_WP_Senior.sh \
+    --output /var/lib/wp-cli-update/wp-found.txt \
+    --manifest /var/lib/wp-cli-update/inventory.tsv --audit /var/www \
+    >>/var/log/wp-cli-update/cron.log 2>&1
+50 4 * * 0  root  /opt/wp-cli-update/Find_WP_Senior.sh \
+    --verify-list /var/lib/wp-cli-update/wp-found.txt \
+    >>/var/log/wp-cli-update/cron.log 2>&1
+
+# Monthly WP-CLI self-update inside the current major (patch/minor), verified
+# download, automatic rollback candidate kept next to the binary.
+0 5 1 * *  root  $WPU --wpcli-update --wpcli-scope minor --yes \
+    >>/var/log/wp-cli-update/cron.log 2>&1
