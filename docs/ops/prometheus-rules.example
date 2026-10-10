@@ -1,0 +1,65 @@
+# Example Prometheus alerting rules for the wpu_* textfile metrics.
+#
+# Install into your Prometheus rules directory and adjust `for:` durations and
+# labels to your alerting policy. The metrics appear after the first run with
+# --metrics-file; point node_exporter's --collector.textfile.directory at the
+# same directory.
+
+groups:
+  - name: wp-fleet-maintenance
+    rules:
+      # The exporter stopped producing: the timer died, the host is off, or the
+      # run crashed before writing metrics. Absence is the loudest failure a
+      # scheduled job has.
+      - alert: WpMaintenanceMetricsStale
+        expr: time - wpu_run_timestamp_seconds > 30 * 3600
+        for: 30m
+        labels: { severity: warning }
+        annotations:
+          summary: "WordPress maintenance run is overdue on {{ $labels.instance }}"
+          description: "No maintenance metrics for >30h (last run {{ $value | humanizeDuration }} ago)."
+
+      - alert: WpMaintenanceRunFailed
+        expr: wpu_exit_code != 0
+        for: 5m
+        labels: { severity: critical }
+        annotations:
+          summary: "Maintenance run exited {{ $value }} on {{ $labels.instance }}"
+          description: "Check wpu_unit_status{path=…} == 0 for the failing sites and the error log for detail."
+
+      - alert: WpSitesFailed
+        expr: wpu_sites_failed > 0
+        for: 5m
+        labels: { severity: critical }
+        annotations:
+          summary: "{{ $value }} site(s) failed maintenance on {{ $labels.instance }}"
+
+      # A critical audit finding = pending security release, checksum mismatch,
+      # PHP in uploads or a world-writable config. Investigate today.
+      - alert: WpSecurityCriticalFindings
+        expr: wpu_findings_critical > 0
+        for: 10m
+        labels: { severity: critical }
+        annotations:
+          summary: "{{ $value }} critical security finding(s) on {{ $labels.instance }}"
+
+      - alert: WpSmokeTestFailed
+        expr: wpu_smoke_failed > 0
+        for: 5m
+        labels: { severity: critical }
+        annotations:
+          summary: "A site did not answer correctly after its update on {{ $labels.instance }}"
+
+      - alert: WpRunStoppedEarly
+        expr: wpu_stopped_early == 1
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "Maintenance stopped early on {{ $labels.instance }} (window too small or fail-fast)"
+
+      - alert: WpRunDurationGrowing
+        expr: wpu_duration_seconds > 5400
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "Maintenance run took {{ $value | humanizeDuration }} on {{ $labels.instance }}"

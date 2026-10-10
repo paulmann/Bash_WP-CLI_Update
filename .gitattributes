@@ -1,0 +1,37 @@
+# Line-ending policy.
+#
+# Every script here is executed on Linux. A CR byte does not disappear harmlessly:
+# it becomes part of the last word on the line, which breaks `case` labels,
+# pattern matching, arithmetic and the shebang, and it makes a generated site list
+# unusable because every path ends with \r. A Windows checkout of this repository
+# must therefore still produce LF files.
+#
+# Normalise on commit, check out with LF.
+*                   text=auto eol=lf
+
+*.sh                text eol=lf
+*.bash              text eol=lf
+*.conf              text eol=lf
+*.conf.example      text eol=lf
+*.txt               text eol=lf
+*.md                text eol=lf
+
+# The stub is executed like any other script, so it follows the same rule; it is
+# listed explicitly because it has no extension.
+tests/stub/wp       text eol=lf
+
+# Generated at run time and must never be committed (see .gitignore). Marked
+# -text so that if one is ever added by force, git does not rewrite its endings.
+wp-found.txt        -text
+*.log               -text
+*.log.state         -text
+
+# Binary assets, should the project ever grow one.
+*.png               binary
+*.jpg               binary
+*.gif               binary
+*.ico               binary
+*.pdf               binary
+
+# Linguist: the repository is a shell project, not a documentation project.
+*.md                linguist-documentation

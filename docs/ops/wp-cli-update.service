@@ -1,0 +1,66 @@
+# wp-cli-update.service — one-shot fleet maintenance under systemd
+#
+# Install:
+#   install -m 644 docs/ops/wp-cli-update.service /etc/systemd/system/
+#   install -m 644 docs/ops/wp-cli-update.timer   /etc/systemd/system/
+#   systemctl daemon-reload
+#   systemctl enable --now wp-cli-update.timer
+#
+# Why a timer and not cron: journald captures every line with a unit label,
+# `systemctl start wp-cli-update` is a manual re-run, and
+# `systemd-analyze calendar` explains the schedule in plain text.
+
+[Unit]
+Description=WordPress fleet maintenance (WP-CLI)
+Documentation=https://github.com/paulmann/Bash_WP-CLI_Update
+Wants=network-online.target
+After=network-online.target
+# A database server on the same host should be up before updates run.
+# After=mariadb.service mysql.service
+
+[Service]
+Type=oneshot
+# The tool wants root: it switches into each site owner per site.
+User=root
+Environment=HOME=/root
+# Keep the environment predictable even if the unit file is edited later.
+Environment=LC_ALL=C
+ExecStart=/opt/wp-cli-update/Bash_WP-CLI_Update.sh \
+    --full \
+    --jobs 4 \
+    --backup db --keep-backups 2 \
+    --timeout 900 \
+    --max-duration 5400 \
+    --smoke-test \
+    --state-file /var/lib/wp-cli-update/state.json \
+    --metrics-file /var/lib/wp-cli-update/prometheus/wpu.prom \
+    --notify failure --webhook https://hooks.example.com/your-webhook --webhook-format slack
+
+# --- hardening (the tool needs filesystem + process privileges; everything
+# --- else can go). Test with `systemd-analyze security wp-cli-update`.
+NoNewPrivileges=no          # needs to switch users; set to yes only with --no-user-switch
+ProtectSystem=false         # writes into every site tree and the backup dir
+PrivateTmp=no               # the licence handoff file must be readable by site users (LICENCE_HANDOFF=file)
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictRealtime=true
+RestrictNamespaces=true
+MemoryDenyWriteExecute=false   # bash needs none of this, but child php does not run here; keep false if in doubt
+UMask=0077
+
+# A stuck run must not survive its window: the tool bounds each wp command
+# (--timeout), and this bounds the whole unit.
+TimeoutStartSec=7200
+# Do not restart: this is a scheduled maintenance job, and OnFailure below is
+# the alerting path, not a retry loop.
+Restart=no
+
+# Optional: a second unit that pages on non-zero exit.
+# OnFailure=wp-cli-update-alert@%n.service
+
+[Install]
+WantedBy=multi-user.target
