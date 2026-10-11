@@ -37,9 +37,15 @@ jobs:
 
       - name: shellcheck
         run: |
-          shellcheck -x Bash_WP-CLI_Update.sh Find_WP_Senior.sh tools/*.sh
+          # The gate is warning-and-above, the same classes tests/test_static.sh
+          # counts: the note class changes between shellcheck releases (0.11.0
+          # split and renumbered checks), and a gate that flips with a runner
+          # image update teaches people to ignore it. The version is printed so
+          # that update is visible in the log.
+          shellcheck --version | head -n 2
+          shellcheck -S warning -x Bash_WP-CLI_Update.sh Find_WP_Senior.sh tools/*.sh
           for f in src/manager/*.sh src/finder/*.sh tests/*.sh tests/stub/wp; do
-            shellcheck -e SC2154 -e SC2034 -e SC2329 -x "$f"
+            shellcheck -S warning -e SC2154 -e SC2034 -e SC2329 -x "$f"
           done
 
       - name: No CRLF anywhere

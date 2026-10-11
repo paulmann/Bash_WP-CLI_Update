@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 ###############################################################################
 # Section 29 - health report (--report)
 ###############################################################################
@@ -60,7 +61,8 @@ REPORT_HEADERS='SITE	OWNER	WP	PHP	HOME	MULTISITE	PLUGINS	PLUGIN_UPDATES	THEMES	T
 
 # report_unit INDEX -> one TSV row for one work unit
 report_unit() { # INDEX
-    local i="$1" site="${UNIT_PATH[i]}" user="${UNIT_USER[i]}" url="${UNIT_URL[i]}"
+    local i="$1"
+    local site="${UNIT_PATH[i]}" user="${UNIT_USER[i]}" url="${UNIT_URL[i]}"
     local wpver='' home='' multi='no' dbb='' upl='' cron='?' coreupd='no'
     local plugins=0 pupd=0 themes=0 tupd=0 users=0 admins=0 phpv='' phpbin='' cliv=''
 
@@ -502,7 +504,7 @@ mode_security() { # SITE USER URL
     done
 
     local sink
-    data_sink
+    data_sink >/dev/null
     sink="$DATA_SINK"
     if [ "$JSON_LINES" = 'true' ] || [ "$OUTPUT_FORMAT" = 'json' ]; then
         {
@@ -704,7 +706,7 @@ check_environment() {
     printf 'jobs            : %s\n' "$JOBS"
     printf 'retry           : %s\n' "$RETRY"
     printf 'stagger         : %ss\n' "$STAGGER"
-    printf 'run budget      : %s\n' "$(((MAX_DURATION > 0)) && duration_human "$MAX_DURATION" || printf 'unlimited')"
+    printf 'run budget      : %s\n' "$( ((MAX_DURATION > 0)) && duration_human "$MAX_DURATION" || printf 'unlimited')"
     printf 'backup          : %s%s\n' "$BACKUP" \
         "$([ "$BACKUP" != 'off' ] && printf ' -> %s (keep %s)' "$(backup_dir_of)" "$KEEP_BACKUPS")"
     printf 'maintenance mode: %s\n' "$MAINTENANCE_MODE"

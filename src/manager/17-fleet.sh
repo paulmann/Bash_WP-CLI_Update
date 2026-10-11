@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 ###############################################################################
 # Section 41 - the report buffer
 ###############################################################################
@@ -302,7 +303,7 @@ process_unit() { # INDEX
 emit_unit_record() { # INDEX STATUS
     [ "$JSON_LINES" = 'true' ] || return 0
     local i="$1" sink
-    data_sink
+    data_sink >/dev/null
     sink="$DATA_SINK"
     printf '{"type":"site","path":%s,"label":%s,"owner":%s,"url":%s,"status":%s,"ops_ok":%s,"ops_failed":%s,"elapsed":%s}\n' \
         "$(json_quote "${UNIT_PATH[i]}")" "$(json_quote "${UNIT_LABEL[i]}")" \

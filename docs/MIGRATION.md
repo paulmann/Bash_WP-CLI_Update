@@ -80,6 +80,27 @@ Variable names now equal config keys (`ALLOW_ROOT`, `TIMEOUT`, `BACKUP`,
 greps `--print-config` output, note the table gained a TYPE column and rows are
 `KEY  VALUE  TYPE  FROM  CLI`.
 
+### 7.0.0 → 7.0.1 (patch round)
+
+No key changed meaning; two validations got stricter where 7.0.0 was laxer
+than its own documentation:
+
+- **Relative paths are refused** for `LOG_FILE`, `ERROR_LOG_FILE`,
+  `LOCK_FILE`, `BACKUP_DIR`, `STATE_FILE`, `METRICS_FILE` (type `apath`) and
+  `DISCOVER_SCRIPT` (type `exec`): exit 4 when the value comes from a config
+  file, exit 2 when it comes from a flag. A cron job's working directory is
+  not yours — make the paths absolute. `SITES_FILE` keeps `-` (stdin) and its
+  free-form value; `--log-file ''` / `--error-log-file ''` keep meaning
+  "no file logging" and are now accepted by the parser, as documented.
+- **`CACHE_EXTRA` and `DISCOVER_ROOTS` are validated as `tokens`** (plain
+  command tokens / paths, metacharacters refused) instead of `words`
+  (identifier names). Every realistic value — `litespeed-purge-all`,
+  `/var/www` — passes; only shell metacharacters fail, as before.
+
+Everything else in 7.0.1 is a fix that makes behaviour match the 7.0
+documentation (streams, lock messages, `--user`, `--skip-plugins` position,
+machine output purity) — see `CHANGELOG.md`.
+
 ## What is new (opt-in, nothing to do)
 
 - **WP-CLI version policy**: the floor check runs automatically

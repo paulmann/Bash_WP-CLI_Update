@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 ###############################################################################
 # Section 10 - runtime state
 ###############################################################################
@@ -36,7 +37,10 @@ UNIT_USER=()
 UNIT_URL=()
 UNIT_LABEL=()
 UNIT_COUNT=0
-declare -A SITE_USER=()
+# SITE_USER is the scalar --user config value; the per-unit owner lives in
+# UNIT_USER[i]. It must not be an array: units_reset used to clear the array
+# form and with it the operator's --user before site_user_resolve ever saw it.
+SITE_USER=''
 declare -A UNIT_STATUS=()
 declare -A UNIT_ELAPSED=()
 declare -A UNIT_OPS_OK=()
@@ -124,7 +128,10 @@ lock_acquire() {
             break
         done
         if ((rc != 0)); then
-            exec {LOCK_FD}>&- 2>/dev/null
+            # Grouped like the open above: an ungrouped `exec ... 2>/dev/null`
+            # would redirect THIS shell's stderr permanently and the refusal
+            # below would be printed into /dev/null.
+            { exec {LOCK_FD}>&-; } 2>/dev/null
             LOCK_FD=''
             other="$(head -n 1 -- "$LOCK_FILE" 2>/dev/null)"
             log_error "another ${PROG_NAME} run holds ${LOCK_FILE}${other:+ (pid ${other})}; refusing to run concurrently"
@@ -169,7 +176,7 @@ lock_acquire() {
 # shellcheck disable=SC2329,SC2317  # invoked from tmp_cleanup only
 lock_release() {
     if [ -n "$LOCK_FD" ]; then
-        exec {LOCK_FD}>&- 2>/dev/null
+        { exec {LOCK_FD}>&-; } 2>/dev/null
         LOCK_FD=''
     fi
     if [ "$LOCK_HELD" = 'true' ]; then

@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 ###############################################################################
 # Section 5 - colour policy
 ###############################################################################
@@ -154,7 +155,10 @@ rotate_log() { # FILE
     is_uint "${LOG_MAX_BYTES:-0}" || return 0
     ((LOG_MAX_BYTES > 0)) || return 0
     ((LOG_KEEP >= 1)) || return 0
-    file_size "$f"
+    # file_size prints as well as setting FILE_SIZE; rotate_log runs on every
+    # log line, and a bare call would leak the size into stdout -- the one
+    # stream that must carry data and nothing else.
+    file_size "$f" >/dev/null
     ((FILE_SIZE < LOG_MAX_BYTES)) && return 0
     # Oldest generation falls off the end, then everything shifts up by one.
     rm -f -- "${f}.${LOG_KEEP}" 2>/dev/null
@@ -365,14 +369,14 @@ log_init() {
     # Seed the in-memory size counters once, so rotation happens at the right
     # moment for a log that already existed.
     if [ -n "$LOG_FILE" ]; then
-        file_size "$LOG_FILE"; LOG_FILE_BYTES="$FILE_SIZE"
+        file_size "$LOG_FILE" >/dev/null; LOG_FILE_BYTES="$FILE_SIZE"
         printf -v stamp '%(%a, %d %b %Y %H:%M:%S %z)T' -1
         printf '=== %s %s started at %s (pid %s, mode %s) ===\n' \
             "$PROG_NAME" "$SCRIPT_VERSION" "$stamp" "$$" "${MODE:-none}" \
             >>"$LOG_FILE" 2>/dev/null
     fi
     if [ -n "$ERROR_LOG_FILE" ]; then
-        file_size "$ERROR_LOG_FILE"; ERROR_LOG_BYTES="$FILE_SIZE"
+        file_size "$ERROR_LOG_FILE" >/dev/null; ERROR_LOG_BYTES="$FILE_SIZE"
         [ -n "$stamp" ] || printf -v stamp '%(%a, %d %b %Y %H:%M:%S %z)T' -1
         printf '=== %s %s started at %s (pid %s) ===\n' \
             "$PROG_NAME" "$SCRIPT_VERSION" "$stamp" "$$" \

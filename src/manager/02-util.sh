@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 ###############################################################################
 # Section 3 - small pure helpers
 ###############################################################################
@@ -264,8 +265,12 @@ json_quote() {
 # csv_escape VALUE -> VALUE quoted for CSV when it needs it
 csv_escape() {
     local f="${1-}"
+    # A cell is quoted when it holds a comma, a double quote, or any whitespace
+    # (space, tab, CR, LF). Quoting a space is not required by RFC 4180, but it
+    # is this project's contract: a consumer that splits a naive line on
+    # whitespace must still see one cell, and the quotes cost nothing.
     case "$f" in
-        *[,\"]* | *$'\n'* | *$'\r'*) printf '"%s"' "${f//\"/\"\"}" ;;
+        *[,\"]* | *[[:space:]]*) printf '"%s"' "${f//\"/\"\"}" ;;
         *) printf '%s' "$f" ;;
     esac
 }
@@ -360,6 +365,10 @@ split_words() {
 # able to fork is a helper that fails exactly when the host is already in trouble.
 in_csv_list() {
     local needle="${1-}" csv="${2-}" t saved="$IFS" rc=1
+    # The needle is trimmed like every token of the list: a padded value from a
+    # config file or a TAB-separated line must still find its member.
+    needle="${needle#"${needle%%[![:space:]]*}"}"
+    needle="${needle%"${needle##*[![:space:]]}"}"
     IFS=','
     for t in $csv; do
         IFS="$saved"
@@ -878,7 +887,7 @@ _json_to_tsv_builtin() {
     local data obj val esc rest ch two
     local BSLASH='\'
     local -a keys=("$@")
-    local out='' k
+    local out='' k re re_body='([^"\\]|\\.)*'
 
     IFS= read -r -d '' data || true      # slurp without forking cat(1)
     data="${data#"${data%%[![:space:]]*}"}"
@@ -937,13 +946,23 @@ _json_to_tsv_builtin() {
         out=''
         for k in ${keys[@]+"${keys[@]}"}; do
             val=''
-            if [[ "$obj" =~ \"$k\"[[:space:]]*:[[:space:]]*\"([^\"]*)\" ]]; then
+            # The string-body pattern is built in a variable, not inlined: a
+            # JSON string may contain \" and \\, and "anything but a quote or a
+            # backslash, or a backslash and one character" has to survive both
+            # glibc and MSYS2 regcomp -- which disagree about backslashes
+            # inside bracket expressions written inline.
+            re="\"${k}\"[[:space:]]*:[[:space:]]*\"(${re_body})\""
+            if [[ "$obj" =~ $re ]]; then
                 val="$(_json_unescape "${BASH_REMATCH[1]}")"
-                # A tab or a newline inside a value would invent columns; both
-                # are legal JSON and both are flattened to a space here.
-                val="${val//$'\t'/ }"
-                val="${val//$'\n'/ }"
-                val="${val//$'\r'/ }"
+                # Re-escape exactly the way jq's @tsv does, so the two readers
+                # agree cell for cell on every host, with or without jq: a raw
+                # tab or newline would invent columns and rows, and a backslash
+                # is doubled to stay distinguishable from the escapes just
+                # produced. Order matters: backslashes first.
+                val="${val//\\/\\\\}"
+                val="${val//$'\t'/\\t}"
+                val="${val//$'\n'/\\n}"
+                val="${val//$'\r'/\\r}"
             elif [[ "$obj" =~ \"$k\"[[:space:]]*:[[:space:]]*(true|false|null|-?[0-9.]+) ]]; then
                 val="${BASH_REMATCH[1]}"
             fi
@@ -962,13 +981,18 @@ _json_to_tsv_builtin() {
 # is what makes `plugin list --format=json` survive a chatty plugin instead of
 # reporting "wp did not return JSON".
 json_array_slice() {
-    local body="${1-}" head
+    local body="${1-}" head tail
     case "$body" in
         *'['*']'*) ;;
         *) return 1 ;;
     esac
     head="${body%%\[*}"
     body="${body#"$head"}"
+    # Cut the prose *after* the payload too: the last ']' ends the array, and
+    # anything glued behind it (a deprecation notice on the same merged stream)
+    # would otherwise ride along into the JSON reader.
+    tail="${body##*\]}"
+    body="${body%"$tail"}"
     printf '%s' "$body"
     return 0
 }
@@ -977,9 +1001,12 @@ json_array_slice() {
 # Used for the release API response, where a full parser for one field would be
 # silly and a hard jq dependency would be worse.
 json_scalar() {
-    local key="${1-}" data=''
+    local key="${1-}" data='' re re_body='([^"\\]|\\.)*'
     IFS= read -r -d '' data || true      # slurp without forking cat(1)
-    if [[ "$data" =~ \"$key\"[[:space:]]*:[[:space:]]*\"([^\"]*)\" ]]; then
+    # Same portable string-body pattern as _json_to_tsv_builtin: a value may
+    # carry \" or \\, and the capture has to keep them for _json_unescape.
+    re="\"${key}\"[[:space:]]*:[[:space:]]*\"(${re_body})\""
+    if [[ "$data" =~ $re ]]; then
         printf '%s' "$(_json_unescape "${BASH_REMATCH[1]}")"
         return 0
     fi

@@ -32,11 +32,15 @@ drift:
 	WPU_BUILD_ID="$(BUILD_ID)" bash tools/build.sh --check
 
 ## lint: shellcheck over artifacts, tools and tests (skips gracefully when absent)
+## Counts the error and warning classes only (-S warning), the same policy as
+## tests/test_static.sh and CI: the note class differs between shellcheck
+## releases and must not flip the gate.
 lint:
 	@command -v shellcheck >/dev/null 2>&1 || { echo "shellcheck not installed - skipped"; exit 0; }
-	shellcheck -x $(MANAGER) $(FINDER) tools/build.sh tools/scan-secrets.sh tools/install.sh
+	@shellcheck --version | head -n 2
+	shellcheck -S warning -x $(MANAGER) $(FINDER) tools/build.sh tools/scan-secrets.sh tools/install.sh
 	@for f in src/manager/*.sh src/finder/*.sh tests/*.sh tests/stub/wp; do \
-	    shellcheck -e SC2154 -e SC2034 -e SC2329 -x "$$f" || exit 1; \
+	    shellcheck -S warning -e SC2154 -e SC2034 -e SC2329 -x "$$f" || exit 1; \
 	done
 
 ## test: the nine suites; no root, no WordPress, no WP-CLI, no network

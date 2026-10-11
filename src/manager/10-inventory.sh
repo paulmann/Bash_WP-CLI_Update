@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 ###############################################################################
 # Section 19 - site inventory
 ###############################################################################
@@ -48,11 +49,12 @@ parse_site_line() {
         PARSED_PATH="${line%%"$TAB"*}"
         PARSED_USER="${line#*"$TAB"}"
         # trim sets TRIMMED as well as printing, so this costs no subshell per
-        # field; the site list can hold a few hundred lines.
-        trim "$PARSED_PATH"; PARSED_PATH="$TRIMMED"
+        # field; the site list can hold a few hundred lines. The printed copy is
+        # discarded: this function fills globals, and stdout belongs to data.
+        trim "$PARSED_PATH" >/dev/null; PARSED_PATH="$TRIMMED"
         # Anything after a second TAB is a comment in the operator's own format.
         PARSED_USER="${PARSED_USER%%"$TAB"*}"
-        trim "$PARSED_USER"; PARSED_USER="$TRIMMED"
+        trim "$PARSED_USER" >/dev/null; PARSED_USER="$TRIMMED"
     else
         PARSED_PATH="$line"
     fi
@@ -172,7 +174,6 @@ ensure_site_list() {
 units_reset() {
     UNIT_PATH=() UNIT_USER=() UNIT_URL=() UNIT_LABEL=()
     UNIT_COUNT=0
-    SITE_USER=()
     return 0
 }
 
@@ -182,7 +183,6 @@ units_add() {
     UNIT_USER+=("$2")
     UNIT_URL+=("$3")
     UNIT_LABEL+=("${4:-$1}")
-    SITE_USER["$1"]="$2"
     UNIT_COUNT=$((UNIT_COUNT + 1))
     return 0
 }
@@ -384,7 +384,7 @@ print_site_list() {
         "${C_BOLD}resolved work list${C_RESET}" "$UNIT_COUNT" \
         "$([ -n "$TARGET_SITE" ] && printf -- '--site' || printf '%s' "$SITES_FILE")" >&2
 
-    data_sink
+    data_sink >/dev/null
     sink="$DATA_SINK"
     case "$OUTPUT_FORMAT" in
         json)

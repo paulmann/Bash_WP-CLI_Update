@@ -17,7 +17,7 @@ nothing else. No PHP dependency, no Composer, no daemon, no agent:
 
 | Component | Version | Purpose |
 |---|---|---|
-| `Bash_WP-CLI_Update.sh` | **7.0.0** | run maintenance operations over a site list |
+| `Bash_WP-CLI_Update.sh` | **7.0.1** | run maintenance operations over a site list |
 | `Find_WP_Senior.sh` | **3.0.0** | discover installations, write the site list and a manifest |
 | `tools/scan-secrets.sh` | 1.1.0 | look for credential literals in the repository |
 | `tools/build.sh` | — | build the single-file artifacts from `src/` modules |
@@ -373,7 +373,7 @@ VERBOSE=1 bash tests/run_tests.sh  # keep the fixtures for inspection
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | module map, data flow, the fork discipline, design rules |
 | [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md) | symptoms → causes → fixes |
 | [`docs/MIGRATION.md`](docs/MIGRATION.md) | upgrading from 6.x: what changed and what to check |
-| [`CHANGELOG.md`](CHANGELOG.md) | the full 7.0.0 story |
+| [`CHANGELOG.md`](CHANGELOG.md) | the full 7.0.x story, newest first |
 | [`CONTRIBUTING.md`](CONTRIBUTING.md) | how to add a mode, a setting, a test |
 
 ---

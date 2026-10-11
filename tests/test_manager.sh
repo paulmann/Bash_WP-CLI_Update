@@ -39,10 +39,10 @@ mrun() {
 say '--full runs the WordPress update order, and not db repair'
 mrun --full; rc=$?
 [ "$rc" -eq 0 ] && ok '--full exits 0 on a healthy fleet' || bad '--full exit code' "got $rc; tail: $(tail -n 5 "$ERR")"
-expect_grep_count "$ARGV_LOG" '\[core\] \[update\]' 2 '--full: core update once per site'
+expect_grep_count "$ARGV_LOG" '\[-[^]]*\] \[core\] \[update\]' 2 '--full: core update once per site'
 expect_grep_count "$ARGV_LOG" '\[core\] \[update-db\] \[--skip-plugins\]' 2 '--full: schema update skips plugins'
-expect_grep_count "$ARGV_LOG" '\[plugin\] \[update\] \[--all\]' 2 '--full: plugin update --all'
-expect_grep_count "$ARGV_LOG" '\[theme\] \[update\] \[--all\]' 2 '--full: theme update --all'
+expect_grep_count "$ARGV_LOG" '\[-[^]]*\] \[plugin\] \[update\] \[--all\]' 2 '--full: plugin update --all'
+expect_grep_count "$ARGV_LOG" '\[-[^]]*\] \[theme\] \[update\] \[--all\]' 2 '--full: theme update --all'
 expect_grep_count "$ARGV_LOG" '\[language\] \[core\] \[update\]' 2 '--full: core translations'
 expect_grep_count "$ARGV_LOG" '\[language\] \[plugin\] \[update\] \[--all\]' 2 '--full: plugin translations'
 expect_grep_count "$ARGV_LOG" '\[cron\] \[event\] \[run\] \[--due-now\]' 2 '--full: due cron events'

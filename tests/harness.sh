@@ -148,7 +148,9 @@ SITE_LIST="${WORK}/sites.txt"
 LOG_FILE="${WORK}/manager.log"
 ERR_FILE="${WORK}/errors.log"
 LOCK_FILE="${WORK}/lock"
+# shellcheck disable=SC2034  # consumed by the suites that source this harness
 STATE_FILE="${WORK}/state.json"
+# shellcheck disable=SC2034  # consumed by the suites that source this harness
 METRICS_FILE="${WORK}/metrics.prom"
 WPCLI_VER_FILE="${WORK}/wpcli-version.txt"
 
@@ -166,6 +168,11 @@ make_site() { # DIR [DB_USER] [MARKER]
         chown -R "${SU_USER}:${SU_USER}" "$dir" 2>/dev/null
     fi
     chmod -R a+rX "$dir" 2>/dev/null
+    # The a+rX above makes the fixture traversable and readable for a switched
+    # user; it must not undo the restrictive wp-config mode, because the finder
+    # audit test relies on a well-configured site being 0640 and flips exactly
+    # one site to 0644 on purpose.
+    chmod 640 "${dir}/wp-config.php" 2>/dev/null
 }
 
 build_fixture() {

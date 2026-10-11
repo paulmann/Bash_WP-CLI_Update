@@ -112,8 +112,15 @@ rules now:
 
 1. Hot-path helpers publish **globals** (`trim`→`TRIMMED`, `redact`→`REDACTED`,
    `json_escape`→`JSON_ESCAPED`, `path_base`→`PATH_BASE`, `now_epoch`→
-   `EPOCH_NOW`, `data_sink`→`DATA_SINK`, …) and may additionally print for
-   cold callers.
+   `EPOCH_NOW`, `file_size`→`FILE_SIZE`, `data_sink`→`DATA_SINK`, …) and may
+   additionally print for cold callers. The two halves come with a rule of
+   their own: **a caller that consumes the global must discard the print**
+   (`now_epoch >/dev/null; t="$EPOCH_NOW"`). A bare call leaks the value into
+   stdout — the data stream that `--json-lines` and `--format csv` consumers
+   parse. Three such leaks shipped in 7.0.0 (log sizes from `file_size`,
+   trimmed site paths from `trim`, a worker fragment path from `data_sink`)
+   and prefixed machine output with digits; the suites now assert stdout
+   purity per mode.
 2. Time comes from `printf '%(…)T'` (builtin), never `date`.
 3. Log rotation tracks the file size in memory; `stat` runs at init and after
    a rotation, not per line.
@@ -122,6 +129,10 @@ rules now:
 6. Sinks never use `/dev/stdout` (unportable: ENXIO when fd 1 is a socket,
    absent without /proc): an empty sink string means "no redirection".
 7. The build creates no processes at all.
+8. An `exec` redirection applies to the rest of the process, not to the
+   command: `exec {FD}>&- 2>/dev/null` silences the run's stderr permanently.
+   Group it — `{ exec {FD}>&-; } 2>/dev/null` — wherever the failure of the
+   redirection is the only thing being hidden.
 
 Cold paths (once per run: summaries, reports, status) may fork normally;
 readability wins there.

@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 ###############################################################################
 # Section 23 - maintenance operations
 ###############################################################################
@@ -183,7 +184,7 @@ ids_from_wp() { # SITE USER URL ARGS...
 delete_in_batches() { # SITE USER URL DELETE_CMD... < IDS
     local site="$1" user="$2" url="$3"
     shift 3
-    local -a cmd=("$@") batch=() ids=()
+    local -a cmd=("$@") batch=()
     local line total=0
     while IFS= read -r line; do
         [ -n "$line" ] || continue

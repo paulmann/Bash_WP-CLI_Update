@@ -2,7 +2,7 @@
 # ---------------------------------------------------------------------------
 # GENERATED FILE - DO NOT EDIT.
 #
-# Built by tools/build.sh from the modules in src/manager/ (build dev-20261010192641).
+# Built by tools/build.sh from the modules in src/manager/ (build dev-20261011123342).
 # Edit the modules and rebuild; a change made here is overwritten, and
 # `tools/build.sh --check` reports the drift. The single-file form is kept
 # because copying one file to a host is the whole installation procedure.
@@ -127,11 +127,11 @@ IFS=$' \t\n'
 ###############################################################################
 
 PROG_NAME="${0##*/}"
-SCRIPT_VERSION='7.0.0'
+SCRIPT_VERSION='7.0.1'
 FINDER_VERSION='3.0.0'
 # Filled by tools/build.sh; a source checkout runs unbuilt and says so.
-BUILD_ID='dev-20261010192641'
-BUILD_DATE='2026-10-10T19:26:41Z'
+BUILD_ID='dev-20261011123342'
+BUILD_DATE='2026-10-11T12:33:42Z'
 case "$BUILD_ID" in *'${'*) BUILD_ID='source' ;; esac
 case "$BUILD_DATE" in *'${'*) BUILD_DATE='unbuilt' ;; esac
 
@@ -264,8 +264,8 @@ CONFIG_SPEC=(
 
     # --- site inventory ----------------------------------------------------
     'SITES_FILE|str|@SCRIPT_DIR@/wp-found.txt|site list, one absolute path per line'
-    'DISCOVER_SCRIPT|str|@SCRIPT_DIR@/Find_WP_Senior.sh|discovery script run when the list is missing'
-    'DISCOVER_ROOTS|words||web roots passed to the discovery script'
+    'DISCOVER_SCRIPT|exec|@SCRIPT_DIR@/Find_WP_Senior.sh|discovery script run when the list is missing'
+    'DISCOVER_ROOTS|tokens||web roots passed to the discovery script'
     'AUTO_DISCOVER|bool|true|run discovery when the site list is missing'
     'MAX_SITES|uint|0|process at most N sites (0 = all)'
     'SITE_USER|str||force one system user for every site'
@@ -275,8 +275,8 @@ CONFIG_SPEC=(
     'NO_USER_SWITCH|bool|false|run WP-CLI as the invoking user'
 
     # --- logging -----------------------------------------------------------
-    'LOG_FILE|str|@SCRIPT_DIR@/wp_cli_manager.log|main log file (empty disables)'
-    'ERROR_LOG_FILE|str|@SCRIPT_DIR@/wp_cli_errors.log|detailed error log (empty disables)'
+    'LOG_FILE|apath|@SCRIPT_DIR@/wp_cli_manager.log|main log file (empty disables)'
+    'ERROR_LOG_FILE|apath|@SCRIPT_DIR@/wp_cli_errors.log|detailed error log (empty disables)'
     'LOG_MAX_BYTES|uint|5242880|rotate a log past this size, 0 disables rotation'
     'LOG_KEEP|uint|3|rotated generations to keep'
     'LOG_LEVEL|choice:debug,info,warn,error|info|console and file log level'
@@ -286,7 +286,7 @@ CONFIG_SPEC=(
     'COLOR|choice:auto,always,never|auto|colourise the console'
 
     # --- locking -----------------------------------------------------------
-    'LOCK_FILE|str|@SCRIPT_DIR@/.wp-cli-update.lock|run lock'
+    'LOCK_FILE|apath|@SCRIPT_DIR@/.wp-cli-update.lock|run lock'
     'LOCK_TIMEOUT|uint|0|seconds to wait for the lock, 0 = fail immediately'
     'LOCK_REQUIRED|bool|false|refuse to run when the lock cannot be taken'
 
@@ -322,7 +322,7 @@ CONFIG_SPEC=(
 
     # --- backups and restore -----------------------------------------------
     'BACKUP|choice:off,db,full|off|back up before a site is touched'
-    'BACKUP_DIR|str|@SCRIPT_DIR@/backups|where backups are written'
+    'BACKUP_DIR|apath|@SCRIPT_DIR@/backups|where backups are written'
     'KEEP_BACKUPS|uint|3|backups kept per site and kind, 0 = keep everything'
     'BACKUP_BEFORE_RESTORE|bool|true|dump the database before a restore overwrites it'
 
@@ -334,7 +334,7 @@ CONFIG_SPEC=(
     # --- cache mode --------------------------------------------------------
     'CACHE_TRANSIENTS|choice:expired,all,none|expired|transients removed by --cache'
     'CACHE_REWRITE_FLUSH|bool|true|flush rewrite rules in --cache and --full'
-    'CACHE_EXTRA|words||extra wp subcommands run by --cache (tokens only)'
+    'CACHE_EXTRA|tokens||extra wp subcommands run by --cache (tokens only)'
 
     # --- cleanup mode ------------------------------------------------------
     'CLEANUP_REVISIONS_KEEP|uint|50|revisions kept per post, 0 = delete all'
@@ -364,8 +364,8 @@ CONFIG_SPEC=(
     'SMOKE_ON_FAIL|choice:fail,warn|fail|treat a failed smoke test as a site failure'
 
     # --- reporting ---------------------------------------------------------
-    'STATE_FILE|str||write a JSON state document after every run'
-    'METRICS_FILE|str||write Prometheus textfile metrics after every run'
+    'STATE_FILE|apath||write a JSON state document after every run'
+    'METRICS_FILE|apath||write Prometheus textfile metrics after every run'
     'NOTIFY_ON|choice:never,failure,always|never|when to send a notification'
     'NOTIFY_WEBHOOK_URL|url||POST the run summary to this webhook'
     'NOTIFY_WEBHOOK_FORMAT|choice:generic,slack,discord,telegram|generic|webhook payload shape'
@@ -445,6 +445,7 @@ RESTORE_ACTION='false'
 RESTORE_FROM=''
 RESTORE_FILES='false'
 SHOW_VERSION_DETAIL='false'
+# shellcheck shell=bash
 ###############################################################################
 # Section 3 - small pure helpers
 ###############################################################################
@@ -711,8 +712,12 @@ json_quote() {
 # csv_escape VALUE -> VALUE quoted for CSV when it needs it
 csv_escape() {
     local f="${1-}"
+    # A cell is quoted when it holds a comma, a double quote, or any whitespace
+    # (space, tab, CR, LF). Quoting a space is not required by RFC 4180, but it
+    # is this project's contract: a consumer that splits a naive line on
+    # whitespace must still see one cell, and the quotes cost nothing.
     case "$f" in
-        *[,\"]* | *$'\n'* | *$'\r'*) printf '"%s"' "${f//\"/\"\"}" ;;
+        *[,\"]* | *[[:space:]]*) printf '"%s"' "${f//\"/\"\"}" ;;
         *) printf '%s' "$f" ;;
     esac
 }
@@ -807,6 +812,10 @@ split_words() {
 # able to fork is a helper that fails exactly when the host is already in trouble.
 in_csv_list() {
     local needle="${1-}" csv="${2-}" t saved="$IFS" rc=1
+    # The needle is trimmed like every token of the list: a padded value from a
+    # config file or a TAB-separated line must still find its member.
+    needle="${needle#"${needle%%[![:space:]]*}"}"
+    needle="${needle%"${needle##*[![:space:]]}"}"
     IFS=','
     for t in $csv; do
         IFS="$saved"
@@ -1325,7 +1334,7 @@ _json_to_tsv_builtin() {
     local data obj val esc rest ch two
     local BSLASH='\'
     local -a keys=("$@")
-    local out='' k
+    local out='' k re re_body='([^"\\]|\\.)*'
 
     IFS= read -r -d '' data || true      # slurp without forking cat(1)
     data="${data#"${data%%[![:space:]]*}"}"
@@ -1384,13 +1393,23 @@ _json_to_tsv_builtin() {
         out=''
         for k in ${keys[@]+"${keys[@]}"}; do
             val=''
-            if [[ "$obj" =~ \"$k\"[[:space:]]*:[[:space:]]*\"([^\"]*)\" ]]; then
+            # The string-body pattern is built in a variable, not inlined: a
+            # JSON string may contain \" and \\, and "anything but a quote or a
+            # backslash, or a backslash and one character" has to survive both
+            # glibc and MSYS2 regcomp -- which disagree about backslashes
+            # inside bracket expressions written inline.
+            re="\"${k}\"[[:space:]]*:[[:space:]]*\"(${re_body})\""
+            if [[ "$obj" =~ $re ]]; then
                 val="$(_json_unescape "${BASH_REMATCH[1]}")"
-                # A tab or a newline inside a value would invent columns; both
-                # are legal JSON and both are flattened to a space here.
-                val="${val//$'\t'/ }"
-                val="${val//$'\n'/ }"
-                val="${val//$'\r'/ }"
+                # Re-escape exactly the way jq's @tsv does, so the two readers
+                # agree cell for cell on every host, with or without jq: a raw
+                # tab or newline would invent columns and rows, and a backslash
+                # is doubled to stay distinguishable from the escapes just
+                # produced. Order matters: backslashes first.
+                val="${val//\\/\\\\}"
+                val="${val//$'\t'/\\t}"
+                val="${val//$'\n'/\\n}"
+                val="${val//$'\r'/\\r}"
             elif [[ "$obj" =~ \"$k\"[[:space:]]*:[[:space:]]*(true|false|null|-?[0-9.]+) ]]; then
                 val="${BASH_REMATCH[1]}"
             fi
@@ -1409,13 +1428,18 @@ _json_to_tsv_builtin() {
 # is what makes `plugin list --format=json` survive a chatty plugin instead of
 # reporting "wp did not return JSON".
 json_array_slice() {
-    local body="${1-}" head
+    local body="${1-}" head tail
     case "$body" in
         *'['*']'*) ;;
         *) return 1 ;;
     esac
     head="${body%%\[*}"
     body="${body#"$head"}"
+    # Cut the prose *after* the payload too: the last ']' ends the array, and
+    # anything glued behind it (a deprecation notice on the same merged stream)
+    # would otherwise ride along into the JSON reader.
+    tail="${body##*\]}"
+    body="${body%"$tail"}"
     printf '%s' "$body"
     return 0
 }
@@ -1424,9 +1448,12 @@ json_array_slice() {
 # Used for the release API response, where a full parser for one field would be
 # silly and a hard jq dependency would be worse.
 json_scalar() {
-    local key="${1-}" data=''
+    local key="${1-}" data='' re re_body='([^"\\]|\\.)*'
     IFS= read -r -d '' data || true      # slurp without forking cat(1)
-    if [[ "$data" =~ \"$key\"[[:space:]]*:[[:space:]]*\"([^\"]*)\" ]]; then
+    # Same portable string-body pattern as _json_to_tsv_builtin: a value may
+    # carry \" or \\, and the capture has to keep them for _json_unescape.
+    re="\"${key}\"[[:space:]]*:[[:space:]]*\"(${re_body})\""
+    if [[ "$data" =~ $re ]]; then
         printf '%s' "$(_json_unescape "${BASH_REMATCH[1]}")"
         return 0
     fi
@@ -1437,6 +1464,7 @@ json_scalar() {
     return 1
 }
 
+# shellcheck shell=bash
 ###############################################################################
 # Section 5 - colour policy
 ###############################################################################
@@ -1593,7 +1621,10 @@ rotate_log() { # FILE
     is_uint "${LOG_MAX_BYTES:-0}" || return 0
     ((LOG_MAX_BYTES > 0)) || return 0
     ((LOG_KEEP >= 1)) || return 0
-    file_size "$f"
+    # file_size prints as well as setting FILE_SIZE; rotate_log runs on every
+    # log line, and a bare call would leak the size into stdout -- the one
+    # stream that must carry data and nothing else.
+    file_size "$f" >/dev/null
     ((FILE_SIZE < LOG_MAX_BYTES)) && return 0
     # Oldest generation falls off the end, then everything shifts up by one.
     rm -f -- "${f}.${LOG_KEEP}" 2>/dev/null
@@ -1804,14 +1835,14 @@ log_init() {
     # Seed the in-memory size counters once, so rotation happens at the right
     # moment for a log that already existed.
     if [ -n "$LOG_FILE" ]; then
-        file_size "$LOG_FILE"; LOG_FILE_BYTES="$FILE_SIZE"
+        file_size "$LOG_FILE" >/dev/null; LOG_FILE_BYTES="$FILE_SIZE"
         printf -v stamp '%(%a, %d %b %Y %H:%M:%S %z)T' -1
         printf '=== %s %s started at %s (pid %s, mode %s) ===\n' \
             "$PROG_NAME" "$SCRIPT_VERSION" "$stamp" "$$" "${MODE:-none}" \
             >>"$LOG_FILE" 2>/dev/null
     fi
     if [ -n "$ERROR_LOG_FILE" ]; then
-        file_size "$ERROR_LOG_FILE"; ERROR_LOG_BYTES="$FILE_SIZE"
+        file_size "$ERROR_LOG_FILE" >/dev/null; ERROR_LOG_BYTES="$FILE_SIZE"
         [ -n "$stamp" ] || printf -v stamp '%(%a, %d %b %Y %H:%M:%S %z)T' -1
         printf '=== %s %s started at %s (pid %s) ===\n' \
             "$PROG_NAME" "$SCRIPT_VERSION" "$stamp" "$$" \
@@ -1820,6 +1851,7 @@ log_init() {
     return 0
 }
 
+# shellcheck shell=bash
 ###############################################################################
 # Section 7 - fatal error helpers
 ###############################################################################
@@ -2330,6 +2362,7 @@ init_config() { # [FILE]
     return 0
 }
 
+# shellcheck shell=bash
 ###############################################################################
 # Section 10 - runtime state
 ###############################################################################
@@ -2368,7 +2401,10 @@ UNIT_USER=()
 UNIT_URL=()
 UNIT_LABEL=()
 UNIT_COUNT=0
-declare -A SITE_USER=()
+# SITE_USER is the scalar --user config value; the per-unit owner lives in
+# UNIT_USER[i]. It must not be an array: units_reset used to clear the array
+# form and with it the operator's --user before site_user_resolve ever saw it.
+SITE_USER=''
 declare -A UNIT_STATUS=()
 declare -A UNIT_ELAPSED=()
 declare -A UNIT_OPS_OK=()
@@ -2456,7 +2492,10 @@ lock_acquire() {
             break
         done
         if ((rc != 0)); then
-            exec {LOCK_FD}>&- 2>/dev/null
+            # Grouped like the open above: an ungrouped `exec ... 2>/dev/null`
+            # would redirect THIS shell's stderr permanently and the refusal
+            # below would be printed into /dev/null.
+            { exec {LOCK_FD}>&-; } 2>/dev/null
             LOCK_FD=''
             other="$(head -n 1 -- "$LOCK_FILE" 2>/dev/null)"
             log_error "another ${PROG_NAME} run holds ${LOCK_FILE}${other:+ (pid ${other})}; refusing to run concurrently"
@@ -2501,7 +2540,7 @@ lock_acquire() {
 # shellcheck disable=SC2329,SC2317  # invoked from tmp_cleanup only
 lock_release() {
     if [ -n "$LOCK_FD" ]; then
-        exec {LOCK_FD}>&- 2>/dev/null
+        { exec {LOCK_FD}>&-; } 2>/dev/null
         LOCK_FD=''
     fi
     if [ "$LOCK_HELD" = 'true' ]; then
@@ -2578,6 +2617,7 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 trap 'exit 131' HUP
 
+# shellcheck shell=bash
 ###############################################################################
 # Section 12 - secrets: resolution, redaction, hand-off
 ###############################################################################
@@ -2600,6 +2640,11 @@ trap 'exit 131' HUP
 # process, for the duration of one call, owned by the site user. Everything this
 # tool controls is closed.
 
+# Runtime state of the secret. LICENCE_VALUE is initialised here -- globally,
+# next to its companions -- because `set -u` is active: startup_checks(),
+# mode_full() and the audit summary all read it before licence_resolve() has
+# ever run, and an unset variable under `set -u` aborts the whole script.
+LICENCE_VALUE=''
 LICENCE_FILE=''
 LICENCE_SOURCE=''
 
@@ -2773,6 +2818,7 @@ child_argv() { # VAR PROGRAM [ARGS...]
     return 0
 }
 
+# shellcheck shell=bash
 ###############################################################################
 # Section 13 - user switching
 ###############################################################################
@@ -3064,6 +3110,7 @@ privilege_preflight() {
     return 0
 }
 
+# shellcheck shell=bash
 ###############################################################################
 # Section 15 - WP-CLI resolution
 ###############################################################################
@@ -3817,6 +3864,7 @@ mode_wpcli_rollback() {
     return 0
 }
 
+# shellcheck shell=bash
 ###############################################################################
 # Section 18 - WP-CLI invocation
 ###############################################################################
@@ -4063,7 +4111,7 @@ wp_is_readonly() {
             ;;
         db)
             case "$sub" in
-                size | tables | columns | prefix | check | tables) return 0 ;;
+                size | tables | columns | prefix | check) return 0 ;;
                 query)
                     # `db query` can do anything, so it is read-only only when the
                     # statement is unmistakably a read. This is the one place the
@@ -4126,10 +4174,13 @@ wp_exec() { # SITE USER URL ARGS...
     fi
     ar="$(allow_root_flag)"
     [ -n "$ar" ] && argv+=("$ar")
+    argv+=("$@")
+    # --skip-plugins lands after the subcommand and its arguments: WP-CLI
+    # accepts its global flags in any position, and this is the argv shape the
+    # contract tests assert and the operators see in the logs.
     if [ -n "$SKIP_PLUGINS" ] && skip_plugins_applies_to "${1:-}" "${2:-}"; then
         argv+=("--skip-plugins=$SKIP_PLUGINS")
     fi
-    argv+=("$@")
 
     if [ "$DRY_RUN" = 'true' ] && ! wp_is_readonly "$@"; then
         display="$(argv_display "${argv[@]}")"
@@ -4228,10 +4279,13 @@ wp_exec_portable() { # SITE USER URL ARGS...
     fi
     ar="$(allow_root_flag)"
     [ -n "$ar" ] && argv+=("$ar")
+    argv+=("$@")
+    # --skip-plugins lands after the subcommand and its arguments: WP-CLI
+    # accepts its global flags in any position, and this is the argv shape the
+    # contract tests assert and the operators see in the logs.
     if [ -n "$SKIP_PLUGINS" ] && skip_plugins_applies_to "${1:-}" "${2:-}"; then
         argv+=("--skip-plugins=$SKIP_PLUGINS")
     fi
-    argv+=("$@")
 
     if [ "$DRY_RUN" = 'true' ] && ! wp_is_readonly "$@"; then
         log_info "[dry-run] (${user}@$(path_base "$site")) would run: $(argv_display "${argv[@]}")"
@@ -4438,6 +4492,7 @@ wp_supported() { # SITE USER SUB...
     return 1
 }
 
+# shellcheck shell=bash
 ###############################################################################
 # Section 19 - site inventory
 ###############################################################################
@@ -4488,11 +4543,12 @@ parse_site_line() {
         PARSED_PATH="${line%%"$TAB"*}"
         PARSED_USER="${line#*"$TAB"}"
         # trim sets TRIMMED as well as printing, so this costs no subshell per
-        # field; the site list can hold a few hundred lines.
-        trim "$PARSED_PATH"; PARSED_PATH="$TRIMMED"
+        # field; the site list can hold a few hundred lines. The printed copy is
+        # discarded: this function fills globals, and stdout belongs to data.
+        trim "$PARSED_PATH" >/dev/null; PARSED_PATH="$TRIMMED"
         # Anything after a second TAB is a comment in the operator's own format.
         PARSED_USER="${PARSED_USER%%"$TAB"*}"
-        trim "$PARSED_USER"; PARSED_USER="$TRIMMED"
+        trim "$PARSED_USER" >/dev/null; PARSED_USER="$TRIMMED"
     else
         PARSED_PATH="$line"
     fi
@@ -4612,7 +4668,6 @@ ensure_site_list() {
 units_reset() {
     UNIT_PATH=() UNIT_USER=() UNIT_URL=() UNIT_LABEL=()
     UNIT_COUNT=0
-    SITE_USER=()
     return 0
 }
 
@@ -4622,7 +4677,6 @@ units_add() {
     UNIT_USER+=("$2")
     UNIT_URL+=("$3")
     UNIT_LABEL+=("${4:-$1}")
-    SITE_USER["$1"]="$2"
     UNIT_COUNT=$((UNIT_COUNT + 1))
     return 0
 }
@@ -4824,7 +4878,7 @@ print_site_list() {
         "${C_BOLD}resolved work list${C_RESET}" "$UNIT_COUNT" \
         "$([ -n "$TARGET_SITE" ] && printf -- '--site' || printf '%s' "$SITES_FILE")" >&2
 
-    data_sink
+    data_sink >/dev/null
     sink="$DATA_SINK"
     case "$OUTPUT_FORMAT" in
         json)
@@ -4856,6 +4910,7 @@ print_site_list() {
     return 0
 }
 
+# shellcheck shell=bash
 ###############################################################################
 # Section 21 - backups
 ###############################################################################
@@ -5321,7 +5376,8 @@ restore_database() { # SITE USER FILE
 }
 
 restore_tree() { # SITE USER ARCHIVE [DEST_DIR]
-    local site="$1" user="$2" file="$3" dest="${4:-$(path_dir "$site")}"
+    local site="$1" user="$2" file="$3" dest="${4-}"
+    [ -n "$dest" ] || dest="$(path_dir "$site")"
     if ! have tar; then
         log_error 'tar(1) is required to restore an archive and was not found'
         return 1
@@ -5345,6 +5401,7 @@ restore_tree() { # SITE USER ARCHIVE [DEST_DIR]
     return 1
 }
 
+# shellcheck shell=bash
 ###############################################################################
 # Section 23 - maintenance operations
 ###############################################################################
@@ -5530,7 +5587,7 @@ ids_from_wp() { # SITE USER URL ARGS...
 delete_in_batches() { # SITE USER URL DELETE_CMD... < IDS
     local site="$1" user="$2" url="$3"
     shift 3
-    local -a cmd=("$@") batch=() ids=()
+    local -a cmd=("$@") batch=()
     local line total=0
     while IFS= read -r line; do
         [ -n "$line" ] || continue
@@ -5816,6 +5873,7 @@ mode_full() { # SITE USER URL
     return "$rc"
 }
 
+# shellcheck shell=bash
 ###############################################################################
 # Section 28 - plugin inventory and management
 ###############################################################################
@@ -6070,6 +6128,7 @@ mode_list_plugins() { # SITE USER URL
     plugin_list_site "$1" "$2" "$3"
 }
 
+# shellcheck shell=bash
 ###############################################################################
 # Section 29 - health report (--report)
 ###############################################################################
@@ -6132,7 +6191,8 @@ REPORT_HEADERS='SITE	OWNER	WP	PHP	HOME	MULTISITE	PLUGINS	PLUGIN_UPDATES	THEMES	T
 
 # report_unit INDEX -> one TSV row for one work unit
 report_unit() { # INDEX
-    local i="$1" site="${UNIT_PATH[i]}" user="${UNIT_USER[i]}" url="${UNIT_URL[i]}"
+    local i="$1"
+    local site="${UNIT_PATH[i]}" user="${UNIT_USER[i]}" url="${UNIT_URL[i]}"
     local wpver='' home='' multi='no' dbb='' upl='' cron='?' coreupd='no'
     local plugins=0 pupd=0 themes=0 tupd=0 users=0 admins=0 phpv='' phpbin='' cliv=''
 
@@ -6574,7 +6634,7 @@ mode_security() { # SITE USER URL
     done
 
     local sink
-    data_sink
+    data_sink >/dev/null
     sink="$DATA_SINK"
     if [ "$JSON_LINES" = 'true' ] || [ "$OUTPUT_FORMAT" = 'json' ]; then
         {
@@ -6776,7 +6836,7 @@ check_environment() {
     printf 'jobs            : %s\n' "$JOBS"
     printf 'retry           : %s\n' "$RETRY"
     printf 'stagger         : %ss\n' "$STAGGER"
-    printf 'run budget      : %s\n' "$(((MAX_DURATION > 0)) && duration_human "$MAX_DURATION" || printf 'unlimited')"
+    printf 'run budget      : %s\n' "$( ((MAX_DURATION > 0)) && duration_human "$MAX_DURATION" || printf 'unlimited')"
     printf 'backup          : %s%s\n' "$BACKUP" \
         "$([ "$BACKUP" != 'off' ] && printf ' -> %s (keep %s)' "$(backup_dir_of)" "$KEEP_BACKUPS")"
     printf 'maintenance mode: %s\n' "$MAINTENANCE_MODE"
@@ -6886,6 +6946,7 @@ status_report() {
     return "$rc"
 }
 
+# shellcheck shell=bash
 ###############################################################################
 # Section 32 - fleet report streams
 ###############################################################################
@@ -7322,6 +7383,7 @@ finish_run() { # EXIT_HINT
     exit "$code"
 }
 
+# shellcheck shell=bash
 ###############################################################################
 # Section 36 - the mode table
 ###############################################################################
@@ -7618,7 +7680,10 @@ version_detail() {
         installed="$(wpcli_version_local 2>/dev/null)" || installed='<unknown>'
         printf 'wp-cli version   : %s (minimum %s)\n' "$installed" "${WP_CLI_MIN_VERSION:-none}"
     else
-        printf 'wp-cli           : not found\n'
+        # The floor is a property of this script, not of the host: report it
+        # even when no wp binary is installed, so --version-detail does not
+        # depend on the environment for a line the contract promises.
+        printf 'wp-cli           : not found (minimum %s)\n' "${WP_CLI_MIN_VERSION:-none}"
     fi
     printf 'php              : %s\n' "$(command -v "${PHP_BIN:-php}" 2>/dev/null || printf 'not found')"
     printf 'flock            : %s\n' "$(have flock && printf yes || printf 'no (pid-file locking)')"
@@ -7737,7 +7802,7 @@ LONG_OPTIONS=(
     --wp --wpcli-min-version --wpcli-latest-check --wpcli-channel --wpcli-scope
     --wpcli-version --wpcli-no-verify --wpcli-insecure --php
     --state-file --metrics-file --notify --webhook --webhook-format
-    --notify-command --smoke-test --smoke-timeout --smoke-expect
+    --notify-command --smoke-test --no-smoke-test --smoke-timeout --smoke-expect
     --config --log-file --error-log-file --log-level --log-format --syslog
     --lock-file --user-env --astra-key --astra-slug
     --help --version --version-detail
@@ -7938,8 +8003,13 @@ parse_args() {
             --smoke-expect) need_value "$arg" "${2:-}"; SMOKE_EXPECT="$OPT_VALUE"; shift; CLI_SET[SMOKE_EXPECT]=1 ;;
             # ---- configuration ----------------------------------------------
             --config) need_value "$arg" "${2:-}"; CONFIG_REQUESTED="$OPT_VALUE"; shift ;;
-            --log-file) need_value "$arg" "${2:-}"; LOG_FILE="$OPT_VALUE"; shift; CLI_SET[LOG_FILE]=1 ;;
-            --error-log-file) need_value "$arg" "${2:-}"; ERROR_LOG_FILE="$OPT_VALUE"; shift; CLI_SET[ERROR_LOG_FILE]=1 ;;
+            # LOG_FILE and ERROR_LOG_FILE are the two options where an empty
+            # value is meaningful: it disables file logging (see the schema in
+            # 01-bootstrap.sh and docs/CONFIGURATION.md). A *missing* argument
+            # is still a usage error, which is what distinguishes an explicit
+            # `--log-file ''` from `--log-file` at the end of argv.
+            --log-file) (($# >= 2)) || usage_error "${arg} requires a value"; LOG_FILE="$2"; shift; CLI_SET[LOG_FILE]=1 ;;
+            --error-log-file) (($# >= 2)) || usage_error "${arg} requires a value"; ERROR_LOG_FILE="$2"; shift; CLI_SET[ERROR_LOG_FILE]=1 ;;
             --log-level) need_value "$arg" "${2:-}"; LOG_LEVEL="${OPT_VALUE,,}"; shift; CLI_SET[LOG_LEVEL]=1 ;;
             --log-format) need_value "$arg" "${2:-}"; LOG_FORMAT="${OPT_VALUE,,}"; shift; CLI_SET[LOG_FORMAT]=1 ;;
             --syslog) SYSLOG='true'; CLI_SET[SYSLOG]=1 ;;
@@ -8173,6 +8243,7 @@ config_flag_of() {
     return 0
 }
 
+# shellcheck shell=bash
 ###############################################################################
 # Section 41 - the report buffer
 ###############################################################################
@@ -8477,7 +8548,7 @@ process_unit() { # INDEX
 emit_unit_record() { # INDEX STATUS
     [ "$JSON_LINES" = 'true' ] || return 0
     local i="$1" sink
-    data_sink
+    data_sink >/dev/null
     sink="$DATA_SINK"
     printf '{"type":"site","path":%s,"label":%s,"owner":%s,"url":%s,"status":%s,"ops_ok":%s,"ops_failed":%s,"elapsed":%s}\n' \
         "$(json_quote "${UNIT_PATH[i]}")" "$(json_quote "${UNIT_LABEL[i]}")" \
@@ -8785,6 +8856,7 @@ run_check_mode() {
     return "$rc"
 }
 
+# shellcheck shell=bash
 ###############################################################################
 # Section 46 - startup checks
 ###############################################################################
@@ -9027,7 +9099,7 @@ main() {
     log_info "${PROG_NAME} ${SCRIPT_VERSION} starting (mode=${MODE}, dry_run=${DRY_RUN})"
     log_debug "script directory: ${SCRIPT_DIR}"
     log_debug "config file used: ${CONFIG_FILE_USED:-<none>}"
-    log_debug "build: dev-20261010192641 (2026-10-10T19:26:41Z)"
+    log_debug "build: dev-20261011123342 (2026-10-11T12:33:42Z)"
 
     if [ "$MODE" = 'status' ]; then
         local src=0

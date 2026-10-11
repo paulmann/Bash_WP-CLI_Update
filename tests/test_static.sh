@@ -48,12 +48,29 @@ else
     for f in "${ALL_SCRIPTS[@]}"; do
         [ -f "$f" ] || continue
         case "$f" in
-            */src/*) excl='-e,SC2154,-e,SC2034,-e,SC2329' ;;
+            */src/*) excl='-e SC2154,SC2034,SC2329' ;;
             *) excl='' ;;
         esac
+        # $excl is a fixed word list: `-e CODES` must reach shellcheck as two
+        # arguments. The old one-word form `-e,SC2154,-e,...` was rejected as
+        # "Invalid number" (exit 3), and the exit code went unchecked, so the
+        # src modules were silently never linted at all.
         # shellcheck disable=SC2086  # $excl is a fixed word list
-        out="$("$SHELLCHECK" -f gcc $excl -- "$f" 2>&1)" || true
+        out="$("$SHELLCHECK" -S warning -f gcc $excl -- "$f" 2>&1)"
+        sc_rc=$?
+        # A crashed linter (OOM on a big artifact, unusable build) must never
+        # read as "clean": shellcheck exits 0 when clean and 1 when it has
+        # findings; anything else means it did not lint the file at all.
+        if ((sc_rc != 0)) && ((sc_rc != 1)); then
+            skip "shellcheck (errors/warnings): ${f#"$repo"/}" \
+                "shellcheck exited ${sc_rc} without linting; findings not evaluated"
+            continue
+        fi
         case "$out" in
+            *'internal error'*)
+            skip "shellcheck (errors/warnings): ${f#"$repo"/}" \
+                "shellcheck crashed: $(printf '%s' "$out" | head -1)"
+            ;;
             *': error:'* | *': warning:'*)
                 bad "shellcheck findings in ${f#"$repo"/}" "$(printf '%s' "$out" | head -5)"
                 ;;
@@ -103,8 +120,14 @@ done
 
 say 'no command substitution with backticks, no eval of config data'
 for f in "${PRODUCT_SCRIPTS[@]}" "${repo}/tools/scan-secrets.sh"; do
-    if grep -n '`' "$f" | grep -v '140' | grep -v '^\s*#' | grep -qv '\\`'; then
-        bad "backtick found in ${f#"$repo"/}" "$(grep -n '`' "$f" | head -3)"
+    # grep -n prefixes every line with "N:", so the comment filter has to
+    # expect that prefix -- a bare '^\s*#' never matched and every backtick in
+    # a documentation comment was reported as a substitution. Escaped
+    # backticks (\`) are literal text inside heredocs and are skipped too.
+    # What remains is a raw backtick on a non-comment line: a real finding.
+    if grep -n '`' "$f" | grep -v '\\`' | grep -qvE '^[0-9]+:[[:space:]]*#'; then
+        bad "backtick found in ${f#"$repo"/}" \
+            "$(grep -n '`' "$f" | grep -v '\\`' | grep -vE '^[0-9]+:[[:space:]]*#' | head -3)"
     else
         ok "no backticks: ${f#"$repo"/}"
     fi

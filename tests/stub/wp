@@ -46,7 +46,7 @@ fi
     printf ' | LICENCE=%s\n' "$LIC_STATE"
 } >>"$LOG"
 
-fmt='table' fields='' url=''
+fmt='table' fields=''
 positional=()
 for a in "$@"; do
     case "$a" in
@@ -54,7 +54,7 @@ for a in "$@"; do
         --format=*) fmt="${a#--format=}" ;;
         --fields=*) fields="${a#--fields=}" ;;
         --path=*) SITE_PATH="${a#--path=}" ;;
-        --url=*) url="${a#--url=}" ;;
+        --url=*) ;;                   # consumed: the stub dispatches on positionals
         --*) ;;                       # any other global flag: ignore
         *) positional+=("$a") ;;
     esac
@@ -83,7 +83,7 @@ THEMES=(
 _want_fields() { # default...
     local -a want=()
     if [ -n "$fields" ]; then
-        local saved="$IFS"; IFS=','; want=($fields); IFS="$saved"
+        IFS=',' read -r -a want <<<"$fields"
     else
         want=("$@")
     fi
@@ -346,11 +346,12 @@ case "$cmd $sub" in
             *) printf 'comment_ID\n201\n202\n' ;;
         esac ;;
     'comment delete') echo 'Success: Deleted 2 comments.' ;;
-    'maintenance-mode')
-        case "$third" in
+    'maintenance-mode '*)
+        case "$sub" in
             activate) echo 'Success: Maintenance mode enabled.' ;;
             deactivate) echo 'Success: Maintenance mode disabled.' ;;
             status) echo 'Success: Maintenance mode is turned off.' ;;
+            *) echo 'Success: maintenance-mode ok' ;;
         esac ;;
     'site list')
         if [ -z "${WP_MULTISITE:-}" ]; then
@@ -418,18 +419,20 @@ INFO
             exit 1
         fi
         echo "Success: licence accepted (${LIC_STATE})" ;;
-    'help')
+    'help '*)
         # `wp help <cmd>` answers non-zero for a command that does not exist,
-        # which is how the manager probes for feature support.
-        case "$third" in
+        # which is how the manager probes for feature support. The queried
+        # command is $sub: the case word is "$cmd $sub", and a bare `wp help`
+        # arrives as the word "help " with an empty $sub.
+        case "$sub" in
             '' | cli | core | plugin | theme | db | cron | option | user | post | comment | \
                 cache | rewrite | transient | language | site | config | maintenance-mode | \
                 search-replace | eval | package | super-admin | network | role | cap | menu | \
                 widget | sidebar | media | import | export | find)
-                printf 'usage: wp %s <subcommand>\n' "${third}"
+                printf 'usage: wp %s <subcommand>\n' "${sub}"
                 ;;
             *)
-                printf "Error: '%s' is not a registered command.\n" "${third}" >&2
+                printf "Error: '%s' is not a registered command.\n" "${sub}" >&2
                 exit 1
                 ;;
         esac ;;

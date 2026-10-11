@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 ###############################################################################
 # Section 18 - WP-CLI invocation
 ###############################################################################
@@ -244,7 +245,7 @@ wp_is_readonly() {
             ;;
         db)
             case "$sub" in
-                size | tables | columns | prefix | check | tables) return 0 ;;
+                size | tables | columns | prefix | check) return 0 ;;
                 query)
                     # `db query` can do anything, so it is read-only only when the
                     # statement is unmistakably a read. This is the one place the
@@ -307,10 +308,13 @@ wp_exec() { # SITE USER URL ARGS...
     fi
     ar="$(allow_root_flag)"
     [ -n "$ar" ] && argv+=("$ar")
+    argv+=("$@")
+    # --skip-plugins lands after the subcommand and its arguments: WP-CLI
+    # accepts its global flags in any position, and this is the argv shape the
+    # contract tests assert and the operators see in the logs.
     if [ -n "$SKIP_PLUGINS" ] && skip_plugins_applies_to "${1:-}" "${2:-}"; then
         argv+=("--skip-plugins=$SKIP_PLUGINS")
     fi
-    argv+=("$@")
 
     if [ "$DRY_RUN" = 'true' ] && ! wp_is_readonly "$@"; then
         display="$(argv_display "${argv[@]}")"
@@ -409,10 +413,13 @@ wp_exec_portable() { # SITE USER URL ARGS...
     fi
     ar="$(allow_root_flag)"
     [ -n "$ar" ] && argv+=("$ar")
+    argv+=("$@")
+    # --skip-plugins lands after the subcommand and its arguments: WP-CLI
+    # accepts its global flags in any position, and this is the argv shape the
+    # contract tests assert and the operators see in the logs.
     if [ -n "$SKIP_PLUGINS" ] && skip_plugins_applies_to "${1:-}" "${2:-}"; then
         argv+=("--skip-plugins=$SKIP_PLUGINS")
     fi
-    argv+=("$@")
 
     if [ "$DRY_RUN" = 'true' ] && ! wp_is_readonly "$@"; then
         log_info "[dry-run] (${user}@$(path_base "$site")) would run: $(argv_display "${argv[@]}")"

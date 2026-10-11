@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 ###############################################################################
 # Section 36 - the mode table
 ###############################################################################
@@ -294,7 +295,10 @@ version_detail() {
         installed="$(wpcli_version_local 2>/dev/null)" || installed='<unknown>'
         printf 'wp-cli version   : %s (minimum %s)\n' "$installed" "${WP_CLI_MIN_VERSION:-none}"
     else
-        printf 'wp-cli           : not found\n'
+        # The floor is a property of this script, not of the host: report it
+        # even when no wp binary is installed, so --version-detail does not
+        # depend on the environment for a line the contract promises.
+        printf 'wp-cli           : not found (minimum %s)\n' "${WP_CLI_MIN_VERSION:-none}"
     fi
     printf 'php              : %s\n' "$(command -v "${PHP_BIN:-php}" 2>/dev/null || printf 'not found')"
     printf 'flock            : %s\n' "$(have flock && printf yes || printf 'no (pid-file locking)')"
@@ -413,7 +417,7 @@ LONG_OPTIONS=(
     --wp --wpcli-min-version --wpcli-latest-check --wpcli-channel --wpcli-scope
     --wpcli-version --wpcli-no-verify --wpcli-insecure --php
     --state-file --metrics-file --notify --webhook --webhook-format
-    --notify-command --smoke-test --smoke-timeout --smoke-expect
+    --notify-command --smoke-test --no-smoke-test --smoke-timeout --smoke-expect
     --config --log-file --error-log-file --log-level --log-format --syslog
     --lock-file --user-env --astra-key --astra-slug
     --help --version --version-detail
@@ -614,8 +618,13 @@ parse_args() {
             --smoke-expect) need_value "$arg" "${2:-}"; SMOKE_EXPECT="$OPT_VALUE"; shift; CLI_SET[SMOKE_EXPECT]=1 ;;
             # ---- configuration ----------------------------------------------
             --config) need_value "$arg" "${2:-}"; CONFIG_REQUESTED="$OPT_VALUE"; shift ;;
-            --log-file) need_value "$arg" "${2:-}"; LOG_FILE="$OPT_VALUE"; shift; CLI_SET[LOG_FILE]=1 ;;
-            --error-log-file) need_value "$arg" "${2:-}"; ERROR_LOG_FILE="$OPT_VALUE"; shift; CLI_SET[ERROR_LOG_FILE]=1 ;;
+            # LOG_FILE and ERROR_LOG_FILE are the two options where an empty
+            # value is meaningful: it disables file logging (see the schema in
+            # 01-bootstrap.sh and docs/CONFIGURATION.md). A *missing* argument
+            # is still a usage error, which is what distinguishes an explicit
+            # `--log-file ''` from `--log-file` at the end of argv.
+            --log-file) (($# >= 2)) || usage_error "${arg} requires a value"; LOG_FILE="$2"; shift; CLI_SET[LOG_FILE]=1 ;;
+            --error-log-file) (($# >= 2)) || usage_error "${arg} requires a value"; ERROR_LOG_FILE="$2"; shift; CLI_SET[ERROR_LOG_FILE]=1 ;;
             --log-level) need_value "$arg" "${2:-}"; LOG_LEVEL="${OPT_VALUE,,}"; shift; CLI_SET[LOG_LEVEL]=1 ;;
             --log-format) need_value "$arg" "${2:-}"; LOG_FORMAT="${OPT_VALUE,,}"; shift; CLI_SET[LOG_FORMAT]=1 ;;
             --syslog) SYSLOG='true'; CLI_SET[SYSLOG]=1 ;;

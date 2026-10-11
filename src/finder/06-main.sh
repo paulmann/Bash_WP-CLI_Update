@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # _audit_each < NUL list : run the audit over the discovered set.
 _audit_each() {
     local site

@@ -187,7 +187,10 @@ say '--backup db writes a per-site dump before the update'
 mrun --core --backup db
 rc=$?
 [ "$rc" -eq 0 ] && ok '--backup db run exits 0' || bad '--backup db exit code' "got $rc"
-dumps="$(ls "${BACKUPS}"/*/db-*.sql 2>/dev/null | grep -c '' 2>/dev/null)" || dumps=0
+dumps=0
+for _dump in "${BACKUPS}"/*/db-*.sql; do
+    [ -e "$_dump" ] && dumps=$((dumps + 1))
+done
 [ "${dumps:-0}" -ge 2 ] && ok "one dump per site (${dumps})" || bad 'dump count' "got ${dumps:-0}, want 2"
 if tail -c 4096 "${BACKUPS}"/example.com/db-*.sql 2>/dev/null | grep -q 'Dump completed'; then
     ok 'the dump carries the completion marker'

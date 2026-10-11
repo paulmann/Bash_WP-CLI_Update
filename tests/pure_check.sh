@@ -126,20 +126,20 @@ _p_eq 'false' "$(normalise_bool '')" 'normalise_bool empty'
 _p_eq 'false' "$(normalise_bool nonsense)" 'normalise_bool nonsense'
 
 # ------------------------------------------------------------- string helpers
-trim '   padded   '
+trim '   padded   ' >/dev/null
 _p_eq 'padded' "$TRIMMED" 'trim strips both ends'
-trim ''
+trim '' >/dev/null
 _p_eq '' "$TRIMMED" 'trim of empty'
-trim $'\t x \n'
+trim $'\t x \n' >/dev/null
 _p_eq 'x' "$TRIMMED" 'trim strips tabs and newlines'
 
-path_base '/var/www/example.com'
+path_base '/var/www/example.com' >/dev/null
 _p_eq 'example.com' "$PATH_BASE" 'path_base'
-path_base '/var/www/example.com/'
+path_base '/var/www/example.com/' >/dev/null
 _p_eq 'example.com' "$PATH_BASE" 'path_base ignores a trailing slash'
-path_dir '/var/www/example.com'
+path_dir '/var/www/example.com' >/dev/null
 _p_eq '/var/www' "$PATH_DIR" 'path_dir'
-path_dir 'solo'
+path_dir 'solo' >/dev/null
 _p_eq '.' "$PATH_DIR" 'path_dir of a bare name is .'
 
 _p_eq 'my_site__prod_' "$(safe_name 'my site (prod)')" 'safe_name replaces unsafe bytes'
@@ -152,15 +152,15 @@ json_escape 'back\slash'
 _p_eq 'back\\slash' "$JSON_ESCAPED" 'json_escape escapes a backslash'
 json_escape "$(printf 'line1\nline2')"
 _p_eq 'line1\nline2' "$JSON_ESCAPED" 'json_escape escapes a newline'
-json_quote 'q"q'
+json_quote 'q"q' >/dev/null
 _p_eq '"q\"q"' "$JSON_QUOTED" 'json_quote wraps in quotes'
 
-csv_escape 'plain'
+csv_escape 'plain' >/dev/null
 _p_eq 'plain' "$(csv_escape 'plain')" 'csv_escape leaves plain text alone'
 _p_eq '"a,b"' "$(csv_escape 'a,b')" 'csv_escape quotes a comma'
 _p_eq '"say ""hi"""' "$(csv_escape 'say "hi"')" 'csv_escape doubles inner quotes'
 
-sh_quote "it's"
+sh_quote "it's" >/dev/null
 _p_eq "'it'\\''s'" "$(sh_quote "it's")" 'sh_quote POSIX-escapes a single quote'
 _p_eq "''" "$(sh_quote '')" 'sh_quote of empty is two quotes'
 _p_eq '/var/www/x' "$(sh_quote '/var/www/x')" 'sh_quote leaves a safe path bare'
@@ -195,7 +195,15 @@ _p_eq '3' "${#SPLIT_RESULT[@]}" 'fill_words splits on whitespace'
 _p_eq '3' "$(count_id_words <<<"1 2
 3")" 'count_id_words across batches'
 _p_eq '2' "$(printf '1\nx\n2\n' | numeric_lines | count_lines)" 'numeric_lines drops non-integers'
-_p_eq '2 3' "$(printf '1\n2\n3\n4\n5\n' | chunk_lines 2 | tail -n 1)" 'chunk_lines groups by size'
+# The contract: contiguous batches of SIZE tokens, one batch per output line,
+# a short tail when the input does not divide evenly, blank lines skipped. The
+# batches feed `wp post delete` verbatim, so every input line must appear
+# exactly once, in order -- the whole output is compared, not just its tail.
+_p_eq "$(printf '1 2\n3 4\n5')" "$(printf '1\n2\n3\n4\n5\n' | chunk_lines 2)" \
+    'chunk_lines groups by size, the tail batch may be short'
+_p_eq "$(printf '1 2 3\n4 5 6')" "$(printf '1\n2\n3\n4\n5\n6\n' | chunk_lines 3)" \
+    'chunk_lines fills whole batches exactly'
+_p_eq '1 3' "$(printf '1\n\n   \n3\n' | chunk_lines 5)" 'chunk_lines skips blank lines'
 
 glob_match '/var/www/*' '/var/www/example.com'; _p_true $? 'glob_match matches a prefix pattern'
 glob_match '/var/www/*staging*' '/var/www/a-staging-b'; _p_true $? 'glob_match matches an inner pattern'
@@ -239,13 +247,23 @@ _out="$(printf 'x\n' | table_render 1)"
 _p_eq '2' "$(printf '%s\n' "$_out" | count_lines)" 'table_render honours MAX_ROWS'
 
 # --------------------------------------------------------------- sinks
-DATA_SINK=''; PARALLEL='false'; WORKER_DIR=''
+DATA_SINK=''
+# shellcheck disable=SC2034  # read by data_sink(), sourced from src/manager
+PARALLEL='false'
+# shellcheck disable=SC2034  # read by data_sink(), sourced from src/manager
+WORKER_DIR=''
 data_sink >/dev/null
 _p_eq '' "$DATA_SINK" 'data_sink is empty (stdout) outside a worker'
-PARALLEL='true'; WORKER_DIR='/tmp/w1'
+# shellcheck disable=SC2034  # read by data_sink(), sourced from src/manager
+PARALLEL='true'
+# shellcheck disable=SC2034  # read by data_sink(), sourced from src/manager
+WORKER_DIR='/tmp/w1'
 data_sink >/dev/null
 _p_eq '/tmp/w1/data' "$DATA_SINK" 'data_sink points into the worker fragment inside a worker'
-PARALLEL='false'; WORKER_DIR=''
+# shellcheck disable=SC2034  # read by data_sink(), sourced from src/manager
+PARALLEL='false'
+# shellcheck disable=SC2034  # read by data_sink(), sourced from src/manager
+WORKER_DIR=''
 
 sink_write '' <<<"to stdout" >/tmp/.pure_sink_out
 _p_eq 'to stdout' "$(< /tmp/.pure_sink_out)" 'sink_write with an empty sink reaches the terminal stream'
@@ -308,6 +326,13 @@ _p_eq '0' "$_drift" 'every advertised long option is parsed'
 # cannot be tab-completed and does not appear in the generated documentation.
 # Extracted from the case arms of parse_args rather than maintained by hand,
 # because a hand-maintained list is exactly what drifts.
+#
+# Two rules keep the extraction honest:
+#   1. comments are skipped -- the section dividers inside the case statement
+#      (# ---- selection ----) and the prose inside the arms are not options,
+#      and scanning them reports junk like "----" as undocumented;
+#   2. only the part of the line before the first ')' can declare options;
+#      everything after it is the arm body (strings, error messages, prose).
 _undocumented=0
 _in_parse='false'
 while IFS= read -r _line; do
@@ -318,20 +343,31 @@ while IFS= read -r _line; do
     case "$_line" in
         '}') break ;;
     esac
-    _rest="$_line"
+    _stripped="${_line#"${_line%%[![:space:]]*}"}"
+    case "$_stripped" in
+        '' | '#'*) continue ;;
+    esac
+    _rest=" ${_line%%)*}"
     while :; do
         case "$_rest" in
             *' --'*)
                 _rest="${_rest#* --}"
                 _name="--${_rest%%[) |]*}"
+                # The bare `--` is the POSIX end-of-options marker, not an
+                # option; anything with characters outside [A-Za-z0-9-] after
+                # the dashes is a fragment, not a flag.
+                [ "$_name" = '--' ] && continue
+                case "$_name" in
+                    -- | --*[!A-Za-z0-9-]*) continue ;;
+                esac
                 case " ${LONG_OPTIONS[*]} " in
                     *" ${_name} "*) : ;;
                     *)
-                        # Compatibility aliases and internal arms are allowed to be
-                        # undocumented, but only the ones listed here.
+                        # Compatibility aliases are allowed to be undocumented,
+                        # but only the ones listed here.
                         case "$_name" in
-                            --sites-file | --include-sites | --exclude-sites | --max-depth | \
-                            --wp-cli | --health | --audit | --json | --no-smoke-test | --follow)
+                            --sites-file | --include-sites | --exclude-sites | \
+                            --wp-cli | --health | --audit)
                                 : ;;
                             *)
                                 _undocumented=$((_undocumented + 1))
@@ -378,6 +414,7 @@ _p_eq '1.5 MiB' "$(human_bytes 1572864)" 'human_bytes MiB'
 _p_eq '512 B' "$(human_bytes 512)" 'human_bytes bytes'
 
 # ------------------------------------------------------------------- redaction
+# shellcheck disable=SC2034  # read by redact()/redact_register(), sourced from src/manager
 REDACT_VALUES=()
 redact_register 'SUPERSECRETVALUE'
 redact 'the key is SUPERSECRETVALUE here'

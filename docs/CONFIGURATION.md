@@ -1,6 +1,6 @@
 # Configuration reference
 
-Every setting of `Bash_WP-CLI_Update.sh` 7.0.0, generated from the same
+Every setting of `Bash_WP-CLI_Update.sh` 7.0.1, generated from the same
 `CONFIG_SPEC` table in `src/manager/01-bootstrap.sh` that drives the defaults,
 the config-file whitelist, validation, `--print-config` and `--init-config`.
 If this document and `--init-config` disagree, `--init-config` is right and
@@ -23,8 +23,16 @@ script lives in (symlinks resolved).
 **Types.** `uint` non-negative integer · `pint` positive integer · `sec`
 seconds · `mib` mebibytes · `bool` · `choice:…` · `str` any string · `apath`
 absolute path or empty · `exec` absolute path to an executable or empty ·
-`url` http(s) or empty · `csv` comma-separated · `words` space-separated ·
-`globs` comma-separated path patterns (bash globs, never regexes, never code).
+`url` http(s) or empty · `csv` comma-separated · `words` space-separated
+variable **names** (identifiers only; used by `USER_ENV`) · `tokens`
+space-separated plain command tokens (`[A-Za-z0-9._:/+-]+`; used by
+`CACHE_EXTRA` and `DISCOVER_ROOTS`) · `globs` comma-separated path patterns
+(bash globs, never regexes, never code).
+
+A relative path is refused (exit 4 from a config file, exit 2 from a flag) for
+every `apath`/`exec` setting: a cron job's working directory is not yours, and
+a lock or a log that lands somewhere else is worse than none. `SITES_FILE` is
+the deliberate exception: `-` means "read the list from stdin".
 
 ## Executables and WP-CLI policy
 
@@ -52,8 +60,8 @@ absolute path or empty · `exec` absolute path to an executable or empty ·
 | Key | Type | Default | Flag | Meaning |
 |---|---|---|---|---|
 | `SITES_FILE` | str | `@SCRIPT_DIR@/wp-found.txt` | `--sites` (`-` = stdin) | one absolute path per line; a TAB-separated second column forces the owner |
-| `DISCOVER_SCRIPT` | str | `@SCRIPT_DIR@/Find_WP_Senior.sh` | — | run when the list is *missing* (never when it is empty) |
-| `DISCOVER_ROOTS` | words | *(empty)* | — | web roots passed to the discovery script |
+| `DISCOVER_SCRIPT` | exec | `@SCRIPT_DIR@/Find_WP_Senior.sh` | — | run when the list is *missing* (never when it is empty) |
+| `DISCOVER_ROOTS` | tokens | *(empty)* | — | web roots passed to the discovery script |
 | `AUTO_DISCOVER` | bool | `true` | `--no-discover` (inverts) | discover when the list is missing |
 | `MAX_SITES` | uint | `0` | `--max-sites` | cap per run, 0 = all |
 | `SITE_USER` | str | *(empty)* | `--user` | force one system user for every site |
@@ -67,8 +75,8 @@ absolute path or empty · `exec` absolute path to an executable or empty ·
 
 | Key | Type | Default | Flag | Meaning |
 |---|---|---|---|---|
-| `LOG_FILE` | str | `@SCRIPT_DIR@/wp_cli_manager.log` | `--log-file` | empty disables file logging |
-| `ERROR_LOG_FILE` | str | `@SCRIPT_DIR@/wp_cli_errors.log` | `--error-log-file` | full text of every failed command |
+| `LOG_FILE` | apath | `@SCRIPT_DIR@/wp_cli_manager.log` | `--log-file` | empty disables file logging |
+| `ERROR_LOG_FILE` | apath | `@SCRIPT_DIR@/wp_cli_errors.log` | `--error-log-file` | full text of every failed command |
 | `LOG_MAX_BYTES` | uint | `5242880` | — | rotate above this size, 0 disables |
 | `LOG_KEEP` | uint | `3` | — | rotated generations kept |
 | `LOG_LEVEL` | choice:debug,info,warn,error | `info` | `--log-level`, `-D` | console and file level |
@@ -81,7 +89,7 @@ absolute path or empty · `exec` absolute path to an executable or empty ·
 
 | Key | Type | Default | Flag | Meaning |
 |---|---|---|---|---|
-| `LOCK_FILE` | str | `@SCRIPT_DIR@/.wp-cli-update.lock` | `--lock-file` | flock when available, pid file otherwise |
+| `LOCK_FILE` | apath | `@SCRIPT_DIR@/.wp-cli-update.lock` | `--lock-file` | flock when available, pid file otherwise |
 | `LOCK_TIMEOUT` | uint | `0` | `--lock-timeout` | wait this long for a held lock, 0 = fail now (exit 3) |
 | `LOCK_REQUIRED` | bool | `false` | `--lock-required` | refuse to run when the lock cannot be taken at all |
 | — | | | `--no-lock` | skip locking (nested/manual runs only) |
@@ -127,7 +135,7 @@ absolute path or empty · `exec` absolute path to an executable or empty ·
 | Key | Type | Default | Flag | Meaning |
 |---|---|---|---|---|
 | `BACKUP` | choice:off,db,full | `off` | `-b`, `--backup`, `--no-backup` | before a site is touched; a failed backup skips the site |
-| `BACKUP_DIR` | str | `@SCRIPT_DIR@/backups` | `-B`, `--backup-dir` | one subdirectory per site |
+| `BACKUP_DIR` | apath | `@SCRIPT_DIR@/backups` | `-B`, `--backup-dir` | one subdirectory per site |
 | `KEEP_BACKUPS` | uint | `3` | `--keep-backups` | per site and kind, 0 = keep all |
 | `BACKUP_BEFORE_RESTORE` | bool | `true` | — | dump before `--restore` overwrites the database |
 
@@ -140,7 +148,7 @@ absolute path or empty · `exec` absolute path to an executable or empty ·
 | `FULL_LANGUAGES` | bool | `true` | — | translation updates inside `--full` |
 | `CACHE_TRANSIENTS` | choice:expired,all,none | `expired` | — | transients removed by `--cache`/`--full` |
 | `CACHE_REWRITE_FLUSH` | bool | `true` | — | `rewrite flush` in `--cache`/`--full` |
-| `CACHE_EXTRA` | words | *(empty)* | — | extra wp subcommands for `--cache`, e.g. `litespeed-purge-all` |
+| `CACHE_EXTRA` | tokens | *(empty)* | — | extra wp subcommands for `--cache`, e.g. `litespeed-purge-all` |
 | `CLEANUP_REVISIONS_KEEP` | uint | `50` | — | revisions kept **per post**, 0 = delete all |
 | `CLEANUP_TRASH` | bool | `false` | — | empty the trash |
 | `CLEANUP_SPAM` | bool | `true` | — | delete spam and trashed comments |
@@ -180,8 +188,8 @@ absolute path or empty · `exec` absolute path to an executable or empty ·
 
 | Key | Type | Default | Flag | Meaning |
 |---|---|---|---|---|
-| `STATE_FILE` | str | *(empty)* | `--state-file` | atomic JSON run document after every run |
-| `METRICS_FILE` | str | *(empty)* | `--metrics-file` | Prometheus textfile metrics |
+| `STATE_FILE` | apath | *(empty)* | `--state-file` | atomic JSON run document after every run |
+| `METRICS_FILE` | apath | *(empty)* | `--metrics-file` | Prometheus textfile metrics |
 | `NOTIFY_ON` | choice:never,failure,always | `never` | `--notify` | when to notify |
 | `NOTIFY_WEBHOOK_URL` | url | *(empty)* | `--webhook` | JSON POST target |
 | `NOTIFY_WEBHOOK_FORMAT` | choice:generic,slack,discord,telegram | `generic` | `--webhook-format` | payload shape |

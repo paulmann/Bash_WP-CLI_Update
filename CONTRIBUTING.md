@@ -52,6 +52,18 @@ If the mode contains mutating commands, extend `wp_is_readonly` — it is an
 allowlist, so a *new* command is treated as mutating until you say otherwise.
 That default is the point.
 
+## Linting
+
+`make lint` and the static suite count shellcheck findings of the **error** and
+**warning** classes only; the `note` class differs between shellcheck releases
+(0.11.0 split and renumbered several checks), so a note-class finding must
+never fail the gate. Verified with shellcheck **0.9.0** (Debian 12) and
+**0.11.0** (winget); CI prints `shellcheck --version` before linting so a
+runner-image update is visible in the log instead of silently changing the
+finding list. Deliberate constructs (`A && ok || bad` in the harness, `$?`
+probing in the pure checks) carry narrow `# shellcheck disable=` comments with
+a reason — follow that pattern instead of widening the exclusion set.
+
 ## Testing
 
 ```bash
@@ -75,7 +87,14 @@ wording, wherever both are possible: argv is the contract, wording is not.
 - No `set -e` in the products (a fleet tool handles errors by hand); `set -uo
   pipefail` stays.
 - Hot-path helpers publish a global **and** may print; see the fork discipline
-  in `docs/ARCHITECTURE.md` before adding a `$(…)` to a per-site path.
+  in `docs/ARCHITECTURE.md` before adding a `$(…)` to a per-site path. When you
+  consume the *global*, the call must discard the print: `now_epoch >/dev/null`,
+  `file_size "$f" >/dev/null`, `data_sink >/dev/null`. A bare call leaks the
+  value into stdout — and stdout is the data stream (`--json-lines`, `--format
+  csv`) that consumers parse. The suites assert stdout purity; the 7.0.1
+  release exists partly because three such bare calls shipped in 7.0.0.
+- `exec FD>&- 2>/dev/null` redirects the *whole shell's* stderr for the rest of
+  the run. Always group it: `{ exec {FD}>&-; } 2>/dev/null`.
 - Log messages are sentences an operator can act on at 3 a.m.: what happened,
   to which site, and what to do next.
 - LF only (`.gitattributes` enforces); the static suite checks.
@@ -95,6 +114,11 @@ wording, wherever both are possible: argv is the contract, wording is not.
    `SCRIPT_VERSION` (+ `FINDER_VERSION` reference).
 2. `CHANGELOG.md` entry; README version table; `docs/MIGRATION.md` when the
    contract moved.
-3. `WPU_BUILD_ID=vX.Y.Z make build && make check`.
+3. `WPU_BUILD_ID=vX.Y.Z make build && make check`. The build is idempotent:
+   rebuilding with the same `WPU_BUILD_ID` reuses the stamped date, so the
+   artifact is byte-identical and `git status` stays clean. Pin both
+   `WPU_BUILD_ID` and `WPU_BUILD_DATE` for a reproducible release build.
+   `tools/build.sh --check` never writes — it compares the committed artifact
+   with an in-memory build.
 4. Commit sources **and** rebuilt artifacts together (the drift check binds
    them). Tag `vX.Y.Z`.

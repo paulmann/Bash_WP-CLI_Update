@@ -92,6 +92,36 @@ plain_run --completion fish
 expect_contains "$OUT" 'bash' '--completion fish explains the supported shells'
 [ "$rc" -eq 2 ] && ok '--completion fish exits 2' || bad '--completion fish exit code' "got $rc"
 
+say 'an empty --log-file value means "no file logging"'
+# The documented contract (docs/CONFIGURATION.md, Logging): an empty value
+# disables file logging. It must be accepted, must not create a file, and must
+# not disturb the exit code of the command it accompanies.
+expect_rc 0 '--log-file "" with --print-config exits 0' \
+    bash "$MANAGER" --color never --log-file '' --error-log-file '' --print-config
+nolog="${WORK}/nolog"
+rm -rf -- "$nolog"
+mkdir -p -- "$nolog"
+printf '%s\n' "$SITES" >"${WORK}/nolog-list.txt"
+FAKE_WP_LOG="$ARGV_LOG" bash "$MANAGER" --color never \
+    --wp "$STUB_WP" --sites "${WORK}/nolog-list.txt" --no-discover \
+    --log-file '' --error-log-file '' --lock-file "${nolog}/l.lock" \
+    --no-user-switch --user-env FAKE_WP_LOG --core --dry-run >"$OUT" 2>&1
+rc=$?
+[ "$rc" -eq 0 ] && ok '--log-file "" runs a mode and exits 0' \
+    || bad '--log-file "" exit code' "got $rc; output: $(head -n 3 "$OUT")"
+if find "$nolog" -type f ! -name 'l.lock' | grep -q .; then
+    bad '--log-file "" creates no log file' "found: $(find "$nolog" -type f | tr '\n' ' ')"
+else
+    ok '--log-file "" creates no log file'
+fi
+# A *missing* argument stays a usage error: `--log-file ''` and a trailing
+# `--log-file` are different things.
+bash "$MANAGER" --color never --log-file >"$OUT" 2>&1
+rc=$?
+[ "$rc" -eq 2 ] && ok '--log-file with no argument at all exits 2' \
+    || bad '--log-file with no argument' "got $rc"
+expect_contains "$OUT" 'requires a value' 'the missing value is reported'
+
 say 'suggestions for near-miss spellings'
 plain_run --time 5 --full
 expect_contains "$OUT" 'did you mean --timeout' 'a prefix-typo option gets a suggestion'

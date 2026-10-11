@@ -2,7 +2,7 @@
 # ---------------------------------------------------------------------------
 # GENERATED FILE - DO NOT EDIT.
 #
-# Built by tools/build.sh from the modules in src/finder/ (build dev-20261010192641).
+# Built by tools/build.sh from the modules in src/finder/ (build dev-20261011123342).
 # Edit the modules and rebuild; a change made here is overwritten, and
 # `tools/build.sh --check` reports the drift. The single-file form is kept
 # because copying one file to a host is the whole installation procedure.
@@ -68,8 +68,8 @@ shopt -s inherit_errexit 2>/dev/null || true
 PROG_NAME="${0##*/}"
 SCRIPT_VERSION='3.0.0'
 # Filled by tools/build.sh; a source checkout runs unbuilt and says so.
-BUILD_ID='dev-20261010192641'
-BUILD_DATE='2026-10-10T19:26:41Z'
+BUILD_ID='dev-20261011123342'
+BUILD_DATE='2026-10-11T12:33:42Z'
 case "$BUILD_ID" in *'${'*) BUILD_ID='source' ;; esac
 case "$BUILD_DATE" in *'${'*) BUILD_DATE='unbuilt' ;; esac
 
@@ -179,6 +179,7 @@ SKIPPED_UNREADABLE=0
 START_TIME=0
 
 C_RESET='' C_RED='' C_GREEN='' C_YELLOW='' C_BLUE='' C_BOLD='' C_DIM=''
+# shellcheck shell=bash
 ###############################################################################
 # 3. Logging and colour
 ###############################################################################
@@ -269,6 +270,7 @@ make_tmp() { # LABEL
     return 0
 }
 
+# shellcheck shell=bash
 ###############################################################################
 # 5. Classification helpers
 ###############################################################################
@@ -487,6 +489,7 @@ collect_results() {
     return 0
 }
 
+# shellcheck shell=bash
 ###############################################################################
 # 7. Rendering
 ###############################################################################
@@ -972,6 +975,7 @@ verify_list() { # FILE
     return 0
 }
 
+# shellcheck shell=bash
 ###############################################################################
 # 9. Help
 ###############################################################################
@@ -1259,6 +1263,7 @@ report_skipped() {
 # 11. main
 ###############################################################################
 
+# shellcheck shell=bash
 # _audit_each < NUL list : run the audit over the discovered set.
 _audit_each() {
     local site

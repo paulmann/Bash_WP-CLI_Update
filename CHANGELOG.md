@@ -2,8 +2,119 @@
 
 All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project uses
-semantic versions for the two shipped scripts (manager `7.0.0`, finder
+semantic versions for the two shipped scripts (manager `7.0.1`, finder
 `3.0.0`).
+
+## 7.0.1 — manager
+
+A defect-fix release: everything here was found by running the 7.0.0 tree
+against its own nine test suites on Debian 12 (bash 5.2) and fixing the cause,
+not the symptom. No configuration key changed meaning; the type column in
+`docs/CONFIGURATION.md` now states what the validator always enforced or what
+7.0.1 makes it enforce.
+
+### Fixed — blockers
+
+- **Every mode aborted before doing anything** (`LICENCE_VALUE: unbound
+  variable` under `set -u`): the global initialisation of `LICENCE_VALUE` was
+  lost when the code moved into modules, and `startup_checks()` reads it before
+  any licence resolution. The variable is declared next to `LICENCE_FILE` /
+  `LICENCE_SOURCE` again; every read path works with no licence configured.
+- **`--log-file ''` / `--error-log-file ''` were rejected** as "requires a
+  value" even though an empty value is the documented way to disable file
+  logging. An explicit empty argument is now accepted (and creates no file); a
+  *missing* argument is still a usage error (exit 2).
+- **`tools/build.sh --check` could never pass and rewrote the artifact while
+  "checking"**. The check now builds in memory and never writes; the comparison
+  rebuilds with the artifact's own stamp and falls back to a stamp-insensitive
+  one; a build with an explicit `WPU_BUILD_ID` reuses the stamped date (or
+  takes `WPU_BUILD_DATE`), so rebuilding the same commit is byte-identical and
+  `git status` stays clean. Artifacts end with exactly one newline.
+
+### Fixed — runtime behaviour
+
+- **Numbers leaked into stdout**, breaking `--json-lines`, `--format csv|tsv`
+  and every "stdout is data" promise: `file_size`, `trim` and `data_sink` print
+  their result *and* set a global, and three call sites used the global without
+  discarding the print (log rotation leaked the log size on every line, the log
+  initialisation leaked both file sizes, the site-list parser leaked trimmed
+  paths). The stdout of a prose-mode run is empty again.
+- **The lock refusal was printed into /dev/null**: `exec {LOCK_FD}>&-
+  2>/dev/null` redirected the *whole shell's* stderr permanently — the message
+  naming the lock holder (and everything after it) vanished. Grouped as
+  `{ exec …; } 2>/dev/null`, the same way the lock *open* already was.
+- **`--user` was erased before it was used**: `units_reset()` cleared
+  `SITE_USER`, which is the scalar `--user` config value, not the per-unit
+  owner table (that is `UNIT_USER`). A fleet run with `--user` fell back to
+  ownership detection per site. `SITE_USER` is a plain scalar again.
+- **`--skip-plugins` landed before the subcommand** in the wp argv
+  (`wp --skip-plugins=… plugin update --all`); it now lands after the
+  subcommand and its arguments, the shape the contract tests assert. WP-CLI
+  accepts its global flags in any position, so both forms worked, but logs and
+  docs now show one canonical order.
+- **`--full` never ran operations twice** — the test patterns `\[core\]
+  \[update\]` also matched the `[language] [core] [update]` translation lines.
+  The patterns are anchored to the preceding global flag now; the product
+  sequence was verified call by call against the stub's argv log.
+
+### Fixed — pure functions (visible with one command, no wp, no root)
+
+- `json_array_slice` cut the prose *before* the payload but not after it; a
+  chatty plugin's trailing notice rode along into the JSON reader.
+- `csv_escape` (hence `--format csv`) did not quote cells containing spaces;
+  any whitespace now triggers quoting, per the documented contract.
+- `in_csv_list` trimmed the list's tokens but not the needle.
+- The built-in JSON reader (hosts without jq) mis-decoded `\"` — the
+  string-body regex meant different things to glibc and MSYS2 regcomp. The
+  pattern is built portably, and the builtin now re-escapes tab/newline/
+  backslash exactly like jq's `@tsv`, so both readers agree cell for cell on
+  every platform.
+- `--version-detail` prints the WP-CLI floor even when no wp binary is
+  installed: the floor is a property of the script, not of the host.
+
+### Fixed — configuration contract
+
+- `CACHE_EXTRA` and `DISCOVER_ROOTS` are validated as `tokens` (command
+  tokens / paths), not as `words` (variable *names*): `CACHE_EXTRA=litespeed-purge-all`
+  was rejected as not an identifier.
+- `LOG_FILE`, `ERROR_LOG_FILE`, `LOCK_FILE`, `BACKUP_DIR`, `STATE_FILE`,
+  `METRICS_FILE` are `apath` and `DISCOVER_SCRIPT` is `exec`: a relative path
+  in a config file is a configuration error (exit 4), from a flag a usage error
+  (exit 2). Empty still means "disabled" where documented. `SITES_FILE` stays
+  `str` because `-` (stdin) is a legal value.
+
+### Fixed — quality gates
+
+- **shellcheck**: the `SC1102` error (`"$(((…)))"`) is gone; a duplicated
+  `tables` case pattern (`SC2221/2222`), two `local a=1 b=$a` reuses
+  (`SC2318`), an unused array local colliding with a scalar name
+  (`SC2178/2128`) and the real findings in the test harness (`SC2034`,
+  `SC2206`, `SC2010`, `SC2195` — two dead arms in the stub wp: `help` and
+  `maintenance-mode` could never match the two-word case) are fixed. Every
+  `src/` fragment now carries `# shellcheck shell=bash`, so the CI loop over
+  modules does not trip `SC2148`. Gates count `error` and `warning` classes
+  only; the version in use is echoed in CI (findings of the `note` class vary
+  between shellcheck releases).
+- **The backtick check** filtered comments with `^\s*#` against `grep -n`
+  output (`N:#…`), so it flagged documentation backticks and never saw real
+  code. The comment filter now accounts for the line-number prefix and escaped
+  backticks; the shipped tree passes with zero findings.
+- **The secret scanner** reports 0 findings on the shipped tree: the
+  `${LICENCE_HANDOFF:-stdin}` expansions, the parser's `LICENCE="$OPT_VALUE"`
+  variable plumbing and the two test fixtures are reviewed allowlist entries,
+  and the `CHANGELOG.md` line reads `LICENCE_HANDOFF` is `stdin` instead of the
+  assignment shape. Two allowlist globs that could never match (`03-color-log.sh`,
+  `01-bootstrap.sh` without the `*` prefix) were corrected.
+- **The test harness** no longer undoes its own `chmod 640 wp-config.php` with
+  the blanket `chmod -R a+rX` that followed it, so the finder audit test sees a
+  well-configured fixture and flips exactly one site to 0644 on purpose.
+
+### Tests
+
+- New contract guards: `--log-file ''` runs a mode, exits 0 and creates no
+  file; `--log-file` with no argument at all still exits 2; `chunk_lines` is
+  asserted on its whole output (contiguous batches, short tail, blank lines
+  skipped) instead of one ambiguous tail line.
 
 ## 7.0.0 — manager / 3.0.0 — finder
 
@@ -150,7 +261,8 @@ cleanup, audits, restore), and the monitoring surface a scheduled tool needs
 - **Streams**: all prose (logs, warnings, summaries, error boxes) now goes to
   stderr in *every* format, including tables; stdout carries only data.
   `--report > r.tsv` and `--list-plugins --format csv | …` now behave.
-- **Secret handoff defaults to stdin** (`LICENCE_HANDOFF=stdin`): the value is
+- **Secret handoff defaults to stdin** (`LICENCE_HANDOFF` is `stdin` out of the
+  box): the value is
   piped to the child shell and never touches the filesystem; `file` remains
   for wrappers that consume stdin.
 - **Dry-run is truthful**: read-only commands (queries, enumerations, reports)

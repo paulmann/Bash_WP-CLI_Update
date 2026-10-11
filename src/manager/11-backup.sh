@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 ###############################################################################
 # Section 21 - backups
 ###############################################################################
@@ -463,7 +464,8 @@ restore_database() { # SITE USER FILE
 }
 
 restore_tree() { # SITE USER ARCHIVE [DEST_DIR]
-    local site="$1" user="$2" file="$3" dest="${4:-$(path_dir "$site")}"
+    local site="$1" user="$2" file="$3" dest="${4-}"
+    [ -n "$dest" ] || dest="$(path_dir "$site")"
     if ! have tar; then
         log_error 'tar(1) is required to restore an archive and was not found'
         return 1

@@ -119,7 +119,7 @@ IFS=$' \t\n'
 ###############################################################################
 
 PROG_NAME="${0##*/}"
-SCRIPT_VERSION='7.0.0'
+SCRIPT_VERSION='7.0.1'
 FINDER_VERSION='3.0.0'
 # Filled by tools/build.sh; a source checkout runs unbuilt and says so.
 BUILD_ID='${BUILD_ID}'
@@ -256,8 +256,8 @@ CONFIG_SPEC=(
 
     # --- site inventory ----------------------------------------------------
     'SITES_FILE|str|@SCRIPT_DIR@/wp-found.txt|site list, one absolute path per line'
-    'DISCOVER_SCRIPT|str|@SCRIPT_DIR@/Find_WP_Senior.sh|discovery script run when the list is missing'
-    'DISCOVER_ROOTS|words||web roots passed to the discovery script'
+    'DISCOVER_SCRIPT|exec|@SCRIPT_DIR@/Find_WP_Senior.sh|discovery script run when the list is missing'
+    'DISCOVER_ROOTS|tokens||web roots passed to the discovery script'
     'AUTO_DISCOVER|bool|true|run discovery when the site list is missing'
     'MAX_SITES|uint|0|process at most N sites (0 = all)'
     'SITE_USER|str||force one system user for every site'
@@ -267,8 +267,8 @@ CONFIG_SPEC=(
     'NO_USER_SWITCH|bool|false|run WP-CLI as the invoking user'
 
     # --- logging -----------------------------------------------------------
-    'LOG_FILE|str|@SCRIPT_DIR@/wp_cli_manager.log|main log file (empty disables)'
-    'ERROR_LOG_FILE|str|@SCRIPT_DIR@/wp_cli_errors.log|detailed error log (empty disables)'
+    'LOG_FILE|apath|@SCRIPT_DIR@/wp_cli_manager.log|main log file (empty disables)'
+    'ERROR_LOG_FILE|apath|@SCRIPT_DIR@/wp_cli_errors.log|detailed error log (empty disables)'
     'LOG_MAX_BYTES|uint|5242880|rotate a log past this size, 0 disables rotation'
     'LOG_KEEP|uint|3|rotated generations to keep'
     'LOG_LEVEL|choice:debug,info,warn,error|info|console and file log level'
@@ -278,7 +278,7 @@ CONFIG_SPEC=(
     'COLOR|choice:auto,always,never|auto|colourise the console'
 
     # --- locking -----------------------------------------------------------
-    'LOCK_FILE|str|@SCRIPT_DIR@/.wp-cli-update.lock|run lock'
+    'LOCK_FILE|apath|@SCRIPT_DIR@/.wp-cli-update.lock|run lock'
     'LOCK_TIMEOUT|uint|0|seconds to wait for the lock, 0 = fail immediately'
     'LOCK_REQUIRED|bool|false|refuse to run when the lock cannot be taken'
 
@@ -314,7 +314,7 @@ CONFIG_SPEC=(
 
     # --- backups and restore -----------------------------------------------
     'BACKUP|choice:off,db,full|off|back up before a site is touched'
-    'BACKUP_DIR|str|@SCRIPT_DIR@/backups|where backups are written'
+    'BACKUP_DIR|apath|@SCRIPT_DIR@/backups|where backups are written'
     'KEEP_BACKUPS|uint|3|backups kept per site and kind, 0 = keep everything'
     'BACKUP_BEFORE_RESTORE|bool|true|dump the database before a restore overwrites it'
 
@@ -326,7 +326,7 @@ CONFIG_SPEC=(
     # --- cache mode --------------------------------------------------------
     'CACHE_TRANSIENTS|choice:expired,all,none|expired|transients removed by --cache'
     'CACHE_REWRITE_FLUSH|bool|true|flush rewrite rules in --cache and --full'
-    'CACHE_EXTRA|words||extra wp subcommands run by --cache (tokens only)'
+    'CACHE_EXTRA|tokens||extra wp subcommands run by --cache (tokens only)'
 
     # --- cleanup mode ------------------------------------------------------
     'CLEANUP_REVISIONS_KEEP|uint|50|revisions kept per post, 0 = delete all'
@@ -356,8 +356,8 @@ CONFIG_SPEC=(
     'SMOKE_ON_FAIL|choice:fail,warn|fail|treat a failed smoke test as a site failure'
 
     # --- reporting ---------------------------------------------------------
-    'STATE_FILE|str||write a JSON state document after every run'
-    'METRICS_FILE|str||write Prometheus textfile metrics after every run'
+    'STATE_FILE|apath||write a JSON state document after every run'
+    'METRICS_FILE|apath||write Prometheus textfile metrics after every run'
     'NOTIFY_ON|choice:never,failure,always|never|when to send a notification'
     'NOTIFY_WEBHOOK_URL|url||POST the run summary to this webhook'
     'NOTIFY_WEBHOOK_FORMAT|choice:generic,slack,discord,telegram|generic|webhook payload shape'

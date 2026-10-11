@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 ###############################################################################
 # Section 12 - secrets: resolution, redaction, hand-off
 ###############################################################################
@@ -20,6 +21,11 @@
 # process, for the duration of one call, owned by the site user. Everything this
 # tool controls is closed.
 
+# Runtime state of the secret. LICENCE_VALUE is initialised here -- globally,
+# next to its companions -- because `set -u` is active: startup_checks(),
+# mode_full() and the audit summary all read it before licence_resolve() has
+# ever run, and an unset variable under `set -u` aborts the whole script.
+LICENCE_VALUE=''
 LICENCE_FILE=''
 LICENCE_SOURCE=''
 
