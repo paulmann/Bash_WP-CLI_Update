@@ -457,6 +457,31 @@ fi
 expect_rc 2 '--json-log with --completion bash is still a usage error' bash "$M" --json-log
 expect_rc 0 '--list-backups exits 0' bash "$M" --wp "$STUB_WP" --list-backups --sites "$SITE_LIST" --no-user-switch --no-discover --no-lock --backup-dir "$BACKUPS"
 
+# --- mode-restricted keys in a configuration file ---------------------------------
+# The recommended production profile sets SKIP_IF_NO_UPDATES=1, EXCLUDE_THEMES and
+# HOLD_PLUGINS. Those keys only mean something for the update modes; validating them
+# unconditionally turned --doctor, --check and --health into usage errors on a host
+# configured exactly as the documentation says. An explicit flag with the wrong mode
+# must still be refused, because that is a mistake in the command line.
+say 'mode-restricted keys in a config file do not break read-only modes'
+readonly_conf="${WORK}/readonly.conf"
+printf '%s\n' 'SKIP_IF_NO_UPDATES=1' 'EXCLUDE_THEMES=twentytwentyfour' 'HOLD_PLUGINS=akismet' >"$readonly_conf"
+chmod 600 "$readonly_conf"
+ec="$(bash "$M" --config "$readonly_conf" --doctor 2>&1)"; rc=$?
+if [ "$rc" -eq 2 ]; then
+    bad '--doctor fails on the recommended production profile' "$(printf '%s' "$ec" | head -1)"
+else
+    ok '--doctor accepts them from the config'
+fi
+ec="$(bash "$M" --config "$readonly_conf" --list-modes 2>&1)"; rc=$?
+if [ "$rc" -eq 0 ]; then
+    ok '--list-modes accepts them from the config'
+else
+    bad '--list-modes fails on the config' "$(printf '%s' "$ec" | head -1)"
+fi
+expect_rc 2 'an explicit --skip-if-no-updates with --db-optimize is still refused' bash "$M" --db-optimize --skip-if-no-updates
+expect_rc 2 'an explicit --hold-plugins with --health is still refused' bash "$M" --health --hold-plugins akismet
+
 report 'v7'
 
 

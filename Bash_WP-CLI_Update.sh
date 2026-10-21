@@ -15,15 +15,15 @@
 # Project:     Bash WP-CLI Update
 # Repository:  https://github.com/paulmann/Bash_WP-CLI_Update
 # License:     PolyForm Noncommercial 1.0.0 (see LICENSE)
-# Version:     8.0.1
+# Version:     8.0.2
 #
 # Purpose
 #   Run WP-CLI maintenance operations (core, plugins, themes, database, cron,
 #   Astra Pro licence) over every WordPress installation listed in a site file,
 #   each one as the system user that owns it.
 #
-# What the 8.0 line adds on top of the 6.x hybrids (8.0.1 is a documentation and
-# licensing patch on 8.0.0 and changes no behaviour)
+# What the 8.0 line adds on top of the 6.x hybrids (8.0.x patches are fixes, not
+# features: see CHANGELOG.md for what each one changed)
 #   - read-only modes: --health (inventory: versions, pending updates, sizes),
 #     --secrets (masked scan of wp-config.php), --doctor (host diagnostics);
 #   - a restore path for the backups this tool creates: --list-backups and
@@ -103,7 +103,7 @@ shopt -s inherit_errexit 2>/dev/null || true
 ###############################################################################
 
 PROG_NAME="${0##*/}"
-SCRIPT_VERSION='8.0.1'
+SCRIPT_VERSION='8.0.2'
 
 # A literal backtick, spelled by code point: the config parser has to reject it,
 # and writing the character directly would make this file fail the project's own
@@ -3835,19 +3835,25 @@ validate_args() {
     if [ -n "$DEFAULT_USER" ] && ! id -u "$DEFAULT_USER" >/dev/null 2>&1; then
         usage_error "--default-user ${DEFAULT_USER}: no such system user"
     fi
-    if [ "$ONLY_ACTIVE" = 'true' ] || [ -n "$EXCLUDE_PLUGINS" ] || [ -n "$HOLD_PLUGINS" ]; then
+    # Mode-restricted options. An explicit flag with the wrong mode is a mistake in the
+    # command line and is reported; the same value arriving from a configuration file is
+    # inert for this mode and is ignored. The distinction matters: the recommended
+    # production profile sets SKIP_IF_NO_UPDATES=1, and validating it unconditionally
+    # made --doctor, --check, --health and --status fail with a usage error on a host
+    # that was configured exactly as the documentation says.
+    if [ "${CLI_SET[ONLY_ACTIVE]-}" = 1 ] || [ "${CLI_SET[EXCLUDE_PLUGINS]-}" = 1 ] || [ "${CLI_SET[HOLD_PLUGINS]-}" = 1 ]; then
         case "$MODE" in
             plugins | full) ;;
             *) usage_error '--only-active, --exclude-plugins and --hold-plugins only apply to --plugins and --full' ;;
         esac
     fi
-    if [ -n "$EXCLUDE_THEMES" ] || [ -n "$HOLD_THEMES" ]; then
+    if [ "${CLI_SET[EXCLUDE_THEMES]-}" = 1 ] || [ "${CLI_SET[HOLD_THEMES]-}" = 1 ]; then
         case "$MODE" in
             themes | full) ;;
             *) usage_error '--exclude-themes and --hold-themes only apply to --themes and --full' ;;
         esac
     fi
-    if [ "$SKIP_IF_NO_UPDATES" = 'true' ]; then
+    if [ "${CLI_SET[SKIP_IF_NO_UPDATES]-}" = 1 ]; then
         case "$MODE" in
             core | plugins | themes | full) ;;
             *) usage_error '--skip-if-no-updates only applies to --core, --plugins, --themes and --full' ;;

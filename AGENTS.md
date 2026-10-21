@@ -1,4 +1,4 @@
-# AGENTS.md — install and configure Bash WP-CLI Update 8.0.1
+# AGENTS.md — install and configure Bash WP-CLI Update 8.0.2
 
 Instructions for an LLM agent (or a careful human) who has to install, configure and
 verify this tool on a Linux host. Read the whole file before running anything: this

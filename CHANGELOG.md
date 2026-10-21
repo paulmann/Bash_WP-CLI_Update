@@ -35,6 +35,26 @@ different architecture, not an earlier draft of 8.0.0: it is preserved as its ow
 release and is not a superset of it (it has no restore path, no disk guard and no
 circuit breaker; 8.0.0 has no modular `src/` tree).
 
+## [8.0.2 / 2.1.0] - 2026-10-21
+
+Patch release. Found while installing 8.0.1 on a production host with the configuration
+section §11 of the README recommends.
+
+### Fixed
+
+- **A mode-restricted key in a config file broke every read-only mode.** With
+  `SKIP_IF_NO_UPDATES=1` — which the recommended production profile sets — `--doctor`,
+  `--check`, `--health`, `--status` and `--list-backups` exited 2 with
+  “only applies to --core, --plugins, --themes and --full”, because `validate_args`
+  checked the three mode-restricted keys without asking where the value came from. On a
+  host configured exactly as documented, the tool could not even diagnose itself. The
+  check now fires only when the flag was typed on the command line (`CLI_SET`); a value
+  from a file is inert for modes that do not use it. `--db-optimize
+  --skip-if-no-updates` is still a usage error, because that is a real mistake.
+- Regression test added to `tests/test_v7.sh`: a config file carrying all three keys
+  must not break `--doctor` or `--list-modes`, and an explicit flag with the wrong mode
+  must still exit 2.
+
 ## [8.0.1 / 2.1.0] - 2026-10-21
 
 Patch release. No behaviour change: the manager, the finder and every mode are exactly
