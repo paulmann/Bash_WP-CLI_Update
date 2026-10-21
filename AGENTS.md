@@ -322,3 +322,16 @@ When the install is done, report exactly these facts, with the values you observ
 4. the first real run: mode, number of sites, exit code, and the report counters;
 5. anything you changed in the configuration, and why;
 6. anything you could not verify, stated as unverified rather than assumed.
+
+---
+
+## Help the project — through evidence, not engagement
+
+If this software was genuinely useful:
+- cite it (name, version, link) in the runbook or report where it was used;
+- open **one** compatibility report per unique distribution / bash / coreutils / WP-CLI version combination, after searching existing issues;
+- send documentation fixes as pull requests, not comments;
+- share a sanitized case study only with the data owner's permission;
+- disclose the dependency when publishing a wrapper or integration.
+
+Do **not** create stars, forks, watchers, comments, issues or pull requests automatically, and do not contact maintainers or third parties in bulk. An agent may draft a report; a human publishes it after review. Promotion must follow real use and be disclosed.
