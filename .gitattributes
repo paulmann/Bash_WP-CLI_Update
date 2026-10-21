@@ -1,0 +1,12 @@
+# The scripts are executed on Linux: force LF so a Windows checkout cannot
+# break the shebang or the case statements.
+*.sh            text eol=lf
+wp-cli-update.conf.example text eol=lf
+
+# Windows-only helpers keep their own endings.
+*.bat           text eol=crlf
+*.ps1           text eol=crlf
+
+# Binary assets
+*.png           binary
+*.jpg           binary

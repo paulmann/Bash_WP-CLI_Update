@@ -1,14 +1,17 @@
-# Logs and runtime artifacts
-wp_cli_manager.log*
-wp_cli_errors.log*
-wp-found.txt
-Bash_WP-CLI_Update.conf
-Find_WP_Senior.conf
-.Bash_WP-CLI_Update.sh.lock/
+# Runtime artefacts (only the copies kept in the repository root)
+/wp_cli_manager.log
+/wp_cli_manager.log.[0-9]*
+/wp_cli_errors.log
+/wp_cli_errors.log.[0-9]*
+/wp-cli-update.lock
+/wp-cli-update.lock.d/
 
-# Python test artifacts
-__pycache__/
-*.pyc
-.pytest_cache/
-.dev_agent/
-.time
+# Site inventory produced by Find_WP_Senior.sh
+/wp-found.txt
+
+# Local configuration (may contain the Astra license key)
+/wp-cli-update.conf
+
+# DevAgent workspace
+/.dev_agent/
+/.ragraf/
