@@ -11,7 +11,7 @@ JSON report, a change log and a restore path.
 Bash_WP-CLI_Update.sh --full --backup db --jobs 4 --report /var/log/wp/report.json
 ```
 
-* Version: **8.0.2**
+* Version: **8.0.3**
 * Requires: `bash >= 4.2`, GNU coreutils/findutils, WP-CLI, `root` (to switch into
   site owners), one of `runuser` / `sudo` / `su`
 * Optional: `flock`, `timeout` (or `perl`), `tar`, `gzip`, `nice`, `ionice`, `curl`,

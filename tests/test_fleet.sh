@@ -270,42 +270,39 @@ else
 fi
 expect_contains "${WORK}/bk.txt" 'database backup' 'the backup is reported'
 
-say 'backups: the directory is writable by the site owner, not only by root'
-# The manager creates the backup directory, but `wp db export` writes into it as
-# the site owner after the user switch. A plain mkdir gives it the manager's
-# umask -- 0755 root -- and every export then dies with "Permission denied",
-# which the operator reads as "the database backup failed". The directory is
-# therefore 0777 with the sticky bit, exactly like /tmp.
+say 'backups: the tree stays root-only and the dump is still produced'
+# The export runs as the site owner after the switch, so it happens in a private
+# directory that owner can write, and the dump is moved into place as root. An earlier
+# design made the backup tree 1777 so the owner could write into it directly; that broke
+# the moment an operator created the backup root 0700 — the owner could not traverse
+# into it, the export died with "Permission denied", and every site was skipped with
+# "backup failed; skipping the site rather than updating it unprotected".
 rm -rf "${WORK}/perm"
+mkdir -p "${WORK}/perm" && chmod 700 "${WORK}/perm"   # what a careful operator does
 lk="$(next_lock)"; lg="$(next_log)"
 FLEET_BACKUP_DIR="${WORK}/perm" \
     fleet_run "$STUB_WP" "$SITES" "$lk" "$lg" --plugins --backup db -S "$SITES" >/dev/null 2>&1
 d="${WORK}/perm/$(basename -- "$SITES")"
 if [ -d "$d" ]; then
     perm="$(stat -c '%a' "$d" 2>/dev/null)"
-    if [ "$perm" = '1777' ]; then
-        ok "the per-site backup directory is 1777 (sticky, world-writable), got ${perm}"
+    if [ "$perm" = '700' ]; then
+        ok "the per-site backup directory stays root-only (700)"
     else
-        bad 'the backup directory is not writable by the site owner' "mode ${perm:-?}; a non-root site user could not write a dump"
-    fi
-    if [ -w "$d" ]; then
-        ok 'the directory accepts writes'
-    else
-        bad 'the directory is not writable' ''
+        bad 'the backup directory is not root-only' "mode ${perm:-?}"
     fi
 else
     bad 'no per-site backup directory was created' "$d"
 fi
-dump="$(find "${WORK}/perm" -name 'db-*.sql' 2>/dev/null | head -1)"
+dump="$(find "${WORK}/perm" -name 'db-*.sql*' 2>/dev/null | head -1)"
 if [ -n "$dump" ]; then
+    ok 'a dump was produced even though the backup root was 0700'
     dperm="$(stat -c '%a' "$dump" 2>/dev/null)"
-    if [ "$dperm" = '640' ]; then
-        ok "the dump itself is 0640, not world-readable (got ${dperm})"
-    else
-        bad 'the dump permissions are looser than intended' "mode ${dperm:-?}"
-    fi
+    case "$dperm" in
+        640 | 600) ok "the dump itself is ${dperm}, not world-readable" ;;
+        *) bad 'the dump permissions are looser than intended' "mode ${dperm:-?}" ;;
+    esac
 else
-    bad 'no dump to check permissions on' ''
+    bad 'no dump was produced with a 0700 backup root' 'the export must not depend on the backup tree being writable by the site owner'
 fi
 
 say 'backups: a failed backup is not swallowed'

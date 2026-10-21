@@ -15,7 +15,7 @@
 # Project:     Bash WP-CLI Update
 # Repository:  https://github.com/paulmann/Bash_WP-CLI_Update
 # License:     PolyForm Noncommercial 1.0.0 (see LICENSE)
-# Version:     8.0.2
+# Version:     8.0.3
 #
 # Purpose
 #   Run WP-CLI maintenance operations (core, plugins, themes, database, cron,
@@ -103,7 +103,7 @@ shopt -s inherit_errexit 2>/dev/null || true
 ###############################################################################
 
 PROG_NAME="${0##*/}"
-SCRIPT_VERSION='8.0.2'
+SCRIPT_VERSION='8.0.3'
 
 # A literal backtick, spelled by code point: the config parser has to reject it,
 # and writing the character directly would make this file fail the project's own
@@ -2049,25 +2049,22 @@ site_backup_dir() { # SITE
     printf '%s/%s' "$(backup_dir_of)" "$name"
 }
 
-# The manager creates this directory, but `wp db export` writes into it as the
-# site owner after the user switch. A plain mkdir gives it the manager's umask --
-# 0755 root -- and the export then dies with "Permission denied", which reads as
-# "the database backup failed" and hides the real cause. This is the same class of
-# bug as an opt-out marker file that only root can write.
-#
-# The directory is therefore 0777 with the sticky bit, exactly like /tmp: any
-# local user may create a file inside, and the sticky bit stops one user from
-# deleting or renaming another user's dump. Backups of a multi-tenant host
-# inevitably live in a place more than one uid touches; pretending otherwise is
-# what produced the failure. The dump files themselves are chmod 640 afterwards,
-# and the log prints the full path so an operator can audit ownership.
+# The manager creates this directory and it stays root-only: a database dump is a
+# complete copy of a customer's data, and a multi-tenant host has no business letting
+# any uid write into the backup tree. That was the earlier design (0777 + sticky, like
+# /tmp) and it failed in the field the moment the backup root itself was 0700 -- the
+# site owner could not traverse into its own subdirectory, `wp db export` died with
+# "Permission denied", and every site was then skipped as "backup failed". The export
+# now happens in a private directory owned by the site owner and the dump is moved into
+# place as root, so the permissions of the backup tree stop mattering.
 backup_ensure_dir() { # DIR
     local dir="${1:-}"
     [ -n "$dir" ] || return 1
     if ! mkdir -p -- "$dir" 2>/dev/null; then
+        [ -d "$dir" ] && [ -w "$dir" ] && return 0
         return 1
     fi
-    chmod 1777 "$dir" 2>/dev/null
+    chmod 700 "$dir" 2>/dev/null
     return 0
 }
 
@@ -2127,7 +2124,7 @@ prune_backups() { # DIR
 # longer than a plugin update, and a truncated dump is worse than no dump because
 # it looks like a backup.
 backup_database() { # SITE USER
-    local site="$1" user="$2" dir file stamp rc=0
+    local site="$1" user="$2" dir file stamp rc=0 tmpdir tfile moved='false'
     local saved="$WP_COMMAND_TIMEOUT"
     if [ "$DRY_RUN" = 'true' ]; then
         log_info "[dry-run] would export the database of ${site}"
@@ -2141,16 +2138,36 @@ backup_database() { # SITE USER
     require_free_space "$dir" 'export the database' || return 1
     stamp="$(date '+%Y%m%d-%H%M%S')-$$"
     file="${dir}/db-${stamp}.sql"
+    # wp runs as the site owner and the backup tree is root-only, so the dump is
+    # written where that owner can write and moved into place afterwards.
+    tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/${PROG_NAME}.dump.XXXXXX" 2>/dev/null)" || {
+        log_warn "cannot create a temporary directory for the dump of ${site}; continuing without a backup"
+        return 1
+    }
+    chmod 700 "$tmpdir" 2>/dev/null
+    if [ "$user" != "$(id -un 2>/dev/null)" ]; then
+        chown "$user" "$tmpdir" 2>/dev/null
+    fi
+    tfile="${tmpdir}/db.sql"
     WP_COMMAND_TIMEOUT=0
-    info_wp "$site" "$user" db export "$file"
+    info_wp "$site" "$user" db export "$tfile"
     rc="$WP_STATUS"
     WP_COMMAND_TIMEOUT="$saved"
-    if ((rc != 0)) || [ ! -s "$file" ]; then
+    if ((rc != 0)) || [ ! -s "$tfile" ]; then
         log_warn "database backup failed for ${site} (wp exit ${rc}); the site is still going to be updated"
-        rm -f -- "$file" 2>/dev/null
+        rm -rf -- "$tmpdir" 2>/dev/null
         return 1
     fi
-    chmod 640 "$file" 2>/dev/null
+    if mv -f -- "$tfile" "$file" 2>/dev/null; then
+        moved='true'
+        chown root:root "$file" 2>/dev/null
+        chmod 640 "$file" 2>/dev/null
+        rm -rf -- "$tmpdir" 2>/dev/null
+    else
+        # Nothing is thrown away because a directory could not be written to.
+        log_warn "cannot place the dump in ${dir}; it stays at ${tfile}"
+        file="$tfile"
+    fi
     if [ "$BACKUP_COMPRESS" = 'true' ]; then
         if have gzip && gzip -f -- "$file" 2>/dev/null; then
             file="${file}.gz"
@@ -2159,7 +2176,7 @@ backup_database() { # SITE USER
         fi
     fi
     log_ok "database backup: ${file} ($(stat -c '%s' "$file" 2>/dev/null || printf '?') bytes)"
-    prune_backups "$dir"
+    [ "$moved" = 'true' ] && prune_backups "$dir"
     return 0
 }
 

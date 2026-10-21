@@ -35,6 +35,35 @@ different architecture, not an earlier draft of 8.0.0: it is preserved as its ow
 release and is not a superset of it (it has no restore path, no disk guard and no
 circuit breaker; 8.0.0 has no modular `src/` tree).
 
+## [8.0.3 / 2.1.0] - 2026-10-21
+
+Found by installing 8.0.2 on the production host and running one site for real. This one
+would have made the nightly job useless while reporting nothing worse than a warning.
+
+### Fixed
+
+- **`--backup db` failed on every site whose owner is not root, and the run then skipped
+  the site.** The dump was written by `wp db export` — which runs as the site owner after
+  the user switch — directly into the backup tree. The earlier design made the per-site
+  directory `1777` so that would work, but the *parent* backup directory is `0700`
+  (as `install.sh`, the README and any careful operator create it), so the owner could
+  not even traverse into it: `wp db export` exited 1, the manager correctly refused to
+  update an unprotected site, and with `BACKUP=db` in the recommended profile every site
+  in the fleet would have been skipped every night.
+- The dump is now written into a private temporary directory owned by the site owner and
+  moved into the backup tree by root, which then sets `root:root 0640`. The permissions
+  of the backup tree no longer matter, and the tree stays root-only instead of
+  world-writable. If the move cannot be done, the dump is left where it is and the full
+  path is logged — nothing is deleted.
+- `backup_ensure_dir` creates `0700` and tightens an existing directory instead of
+  widening it to `1777`.
+- The fleet test that asserted `1777` now asserts the new contract: the tree is root-only
+  **and** a dump is still produced when the backup root is `0700`.
+
+Verified on the host: one site updated end to end (7 operations, dump `db-…sql.gz`
+`root:root 0640`, exit 0), and the licence is read from
+`/etc/wp-cli-update/astra.key` and redacted in the log as `<licence>`.
+
 ## [8.0.2 / 2.1.0] - 2026-10-21
 
 Patch release. Found while installing 8.0.1 on a production host with the configuration
