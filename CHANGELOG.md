@@ -35,6 +35,37 @@ different architecture, not an earlier draft of 8.0.0: it is preserved as its ow
 release and is not a superset of it (it has no restore path, no disk guard and no
 circuit breaker; 8.0.0 has no modular `src/` tree).
 
+## [8.0.1 / 2.1.0] - 2026-10-21
+
+Patch release. No behaviour change: the manager, the finder and every mode are exactly
+what 8.0.0 shipped.
+
+### Fixed
+
+- **`tests/test_static.sh` failed at random.** The new “every option is documented”
+  check compared `printf ... | grep -q` under `set -o pipefail`: `grep` exits at the
+  first match, `printf` then dies of SIGPIPE, and the pipeline status becomes 141 — so a
+  successful search was reported as “option undocumented”, in 0 to 7 checks depending on
+  where in the help text the match happened. The comparison is now a shell pattern
+  match, with no subprocess and no pipe. Eight consecutive runs are clean.
+- **`LICENSE` was the GNU GPL v3 text.** Every other file — the manager header, the
+  README, `PROJECT_MAP.md` and the release notes — said PolyForm Noncommercial 1.0.0,
+  and the repository history said the licence had been changed to it, but the file
+  itself had never been replaced. It now carries the canonical PolyForm Noncommercial
+  1.0.0 text, a copyright line and the SPDX identifier. This matters for anyone who
+  took 8.0.0: the archive's `LICENSE` contradicted its own README.
+
+### Changed
+
+- `.gitattributes` covers the file types 8.0.0 introduced: `*.service`, `*.timer`,
+  `*.yml`, `Makefile`, `.editorconfig`, `LICENSE`, `*.example`, plus `*.tar.gz`
+  marked binary. A CR byte in a systemd `[Timer]` section is an error an operator sees
+  only at enable time, which is why the unit files are listed explicitly.
+- `legacy/README.md` now names the release (`v5.0.0`) and the blob each original is
+  frozen at, and explains why the directory stays even though every earlier line of
+  work is a release plus an `llm/<branch>` tag. It also pointed at `REFACTORING.md`
+  for the line-number citations, while the citations live in `ANALYSIS.md`.
+
 ## [8.0.0 / 2.1.0] - 2026-10-21
 
 One product built from three lines of work: `main` (the 5.x monolith), `QWEN_Hybrid`

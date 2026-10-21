@@ -15,14 +15,15 @@
 # Project:     Bash WP-CLI Update
 # Repository:  https://github.com/paulmann/Bash_WP-CLI_Update
 # License:     PolyForm Noncommercial 1.0.0 (see LICENSE)
-# Version:     8.0.0
+# Version:     8.0.1
 #
 # Purpose
 #   Run WP-CLI maintenance operations (core, plugins, themes, database, cron,
 #   Astra Pro licence) over every WordPress installation listed in a site file,
 #   each one as the system user that owns it.
 #
-# What 8.0.0 adds on top of the 6.x hybrids
+# What the 8.0 line adds on top of the 6.x hybrids (8.0.1 is a documentation and
+# licensing patch on 8.0.0 and changes no behaviour)
 #   - read-only modes: --health (inventory: versions, pending updates, sizes),
 #     --secrets (masked scan of wp-config.php), --doctor (host diagnostics);
 #   - a restore path for the backups this tool creates: --list-backups and
@@ -102,7 +103,7 @@ shopt -s inherit_errexit 2>/dev/null || true
 ###############################################################################
 
 PROG_NAME="${0##*/}"
-SCRIPT_VERSION='8.0.0'
+SCRIPT_VERSION='8.0.1'
 
 # A literal backtick, spelled by code point: the config parser has to reject it,
 # and writing the character directly would make this file fail the project's own

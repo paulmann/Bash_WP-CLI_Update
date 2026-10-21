@@ -233,18 +233,34 @@ parser_src="${WORK}/parse.txt"
 sed -n '/^parse_args() {/,/^}$/p' "${repo}/Bash_WP-CLI_Update.sh" |
     grep -vE '^[[:space:]]*#' | sed -E 's/[[:space:]]+#.*$//' >"$parser_src"
 grep -oE -- '--[a-z][a-z0-9-]*' "$parser_src" | sort -u >"${WORK}/opts.txt"
+# Substring test, not `printf ... | grep -q`: grep exits at the first match, printf then
+# dies of SIGPIPE, and `pipefail` turns a successful search into status 141, so the
+# check failed at random depending on whether the match was early in the text. The
+# pattern case is a builtin: no subprocess, no pipe, no race.
 while IFS= read -r opt; do
-    printf '%s' "$help_out" | grep -Fq -- "$opt" || bad "option undocumented in --help: ${opt}" ''
+    case "$help_out" in
+        *"$opt"*) ;;
+        *) bad "option undocumented in --help: ${opt}" '' ;;
+    esac
 done <"${WORK}/opts.txt"
 ok 'checked every long option against --help'
 while IFS= read -r opt; do
-    printf '%s' "$comp_out" | grep -Fq -- "$opt" || bad "option missing from --completion bash: ${opt}" ''
+    case "$comp_out" in
+        *"$opt"*) ;;
+        *) bad "option missing from --completion bash: ${opt}" '' ;;
+    esac
 done <"${WORK}/opts.txt"
 ok 'checked every long option against the bash completion'
 while IFS= read -r mode; do
     [ -n "$mode" ] || continue
-    printf '%s' "$help_out" | grep -Fq -- "--${mode}" || bad "mode undocumented in --help: ${mode}" ''
-    printf '%s' "$comp_out" | grep -Fq -- "${mode}" || bad "mode missing from --completion bash: ${mode}" ''
+    case "$help_out" in
+        *"--${mode}"*) ;;
+        *) bad "mode undocumented in --help: ${mode}" '' ;;
+    esac
+    case "$comp_out" in
+        *"${mode}"*) ;;
+        *) bad "mode missing from --completion bash: ${mode}" '' ;;
+    esac
 done < <(printf '%s\n' "$modes_out")
 ok 'checked every mode against --help and the completion'
 

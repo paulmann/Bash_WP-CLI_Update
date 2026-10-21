@@ -11,7 +11,7 @@ JSON report, a change log and a restore path.
 Bash_WP-CLI_Update.sh --full --backup db --jobs 4 --report /var/log/wp/report.json
 ```
 
-* Version: **8.0.0**
+* Version: **8.0.1**
 * Requires: `bash >= 4.2`, GNU coreutils/findutils, WP-CLI, `root` (to switch into
   site owners), one of `runuser` / `sudo` / `su`
 * Optional: `flock`, `timeout` (or `perl`), `tar`, `gzip`, `nice`, `ionice`, `curl`,
@@ -21,6 +21,13 @@ Bash_WP-CLI_Update.sh --full --backup db --jobs 4 --report /var/log/wp/report.js
 ---
 
 ## 1. What changed in 8.0.0
+
+> **8.0.1 is a patch on this release and changes no behaviour.** It replaces the
+> `LICENSE` file — which still contained the GNU GPL v3 text while the README and the
+> scripts said PolyForm Noncommercial 1.0.0 — with the actual PolyForm Noncommercial
+> 1.0.0 text and a copyright line, extends `.gitattributes` to the file types 8.0.0
+> introduced, and rewrites `legacy/README.md` so it names the release and the tag each
+> original is frozen at. Upgrading is a file copy, as always.
 
 8.0.0 is the merge of the 5.x/6.x lines of work: the 5.0 monolith in `main`, the
 `QWEN_Hybrid` refactor (6.2.0) and the `DeepSeek_Hybrid` refactor (6.1.0). The

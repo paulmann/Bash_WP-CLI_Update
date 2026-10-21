@@ -20,7 +20,7 @@ same commit.
 
 | File | Version | Purpose | Depends on |
 |---|---|---|---|
-| `Bash_WP-CLI_Update.sh` | 8.0.0 | Runs WP-CLI maintenance over every site in the list, each as its owner. Modes (mutating, read-only and diagnostic), configuration layers, locking, logging, timeouts, licence handoff, backups and restore, retries and the circuit breaker, JSON reports and notifications, rendering. | `Find_WP_Senior.sh` (only when the site list is missing and `AUTO_DISCOVER` is on) · `wp` · `runuser`/`sudo`/`su` · `flock`, `timeout` or `perl` (optional) · `gzip`, 
+| `Bash_WP-CLI_Update.sh` | 8.0.1 | Runs WP-CLI maintenance over every site in the list, each as its owner. Modes (mutating, read-only and diagnostic), configuration layers, locking, logging, timeouts, licence handoff, backups and restore, retries and the circuit breaker, JSON reports and notifications, rendering. | `Find_WP_Senior.sh` (only when the site list is missing and `AUTO_DISCOVER` is on) · `wp` · `runuser`/`sudo`/`su` · `flock`, `timeout` or `perl` (optional) · `gzip`, 
 ice`, `ionice`, `curl`, `mail` (optional) |
 | `Find_WP_Senior.sh` | 2.1.0 | Scans named web roots for WordPress installations, honours `.no_wp_cli` and exclusions, deduplicates, enriches with metadata, writes the list atomically. | `find`, `sort`, `stat`, `mktemp` |
 | `wp-cli-update.conf.example` | — | Every manager setting with its default and the reason it exists. Copy to `/etc/wp-cli-update.conf` or next to the script. | read by `Bash_WP-CLI_Update.sh` |
