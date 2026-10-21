@@ -1,0 +1,80 @@
+# Configuration example for Bash_WP-CLI_Update.sh v6.0.0
+#
+# Copy to one of these places and edit:
+#   /etc/wp-cli-update.conf            global, read by every user
+#   <script dir>/wp-cli-update.conf    per installation
+#
+# The file is DATA, not shell: only plain KEY=VALUE lines are read, the file is
+# never sourced, and a line containing a backtick, a subshell, a pipe, a
+# semicolon or a redirection makes the whole file be refused with an error.
+# Precedence: defaults < global file < local file < environment < command line.
+#
+# Paths: absolute. Relative paths are resolved against the current directory of
+# the process, which is why the defaults are absolute.
+
+# ---------------------------------------------------------------- executables
+# Where the wp binary lives. Do not rely on PATH: the manager switches users and
+# the login shell of the site owner usually has a different PATH.
+WP_CLI_PATH=/usr/local/bin/wp
+
+# ------------------------------------------------------------------- site list
+SITES_FILE=/var/lib/wp-cli-update/wp-found.txt
+DISCOVER_SCRIPT=/opt/wp-cli-update/Find_WP_Senior.sh
+
+# ----------------------------------------------------------------------- logs
+LOG_FILE=/var/log/wp-cli-update/manager.log
+ERROR_LOG_FILE=/var/log/wp-cli-update/errors.log
+LOCK_FILE=/var/run/wp-cli-update.lock
+
+# Rotate when the log exceeds 5 MiB, keep three generations.
+LOG_MAX_BYTES=5242880
+LOG_KEEP=3
+
+# debug | info | success | warning | error
+LOG_LEVEL=info
+
+# ------------------------------------------------------------- wp-cli behaviour
+# Plugins to skip during updates. Keeping a known-broken plugin out of the load
+# set is what makes 'plugin update --all' finish. Empty value disables skipping.
+# Note how the list is skipped entirely for listing commands unless requested:
+# SKIP_PLUGINS_FOR_LISTING off.
+PLUGIN_SKIP_LIST=saphali-woocommerce-lite,jet-compare-wishlist,jet-data-importer
+SKIP_PLUGINS_FOR_LISTING=off
+
+# Per-command timeout in seconds; 0 disables it. A hung plugin update used to
+# hold the whole run forever.
+WP_COMMAND_TIMEOUT=900
+
+# Rows per page in the table view; 0 prints everything.
+PAGE_LIMIT=0
+
+# Also export HOME for the site owner, so wp-cli's cache lands in the right place.
+EXPORT_USER_HOME=yes
+
+# Variables exported into the child shell for each site. Only these names are
+# understood: DOCUMENT_URI, HTTP_HOST (both the site directory name),
+# DOCUMENT_ROOT (the site path), HOMEDIR (two levels up).
+USER_ENV_PREFIX=DOCUMENT_URI DOCUMENT_ROOT HOMEDIR HTTP_HOST
+
+# auto  = add --allow-root only when the manager itself runs as root (default)
+# always = always add it (not recommended)
+# never  = never add it; wp fails when root needs it
+ALLOW_ROOT_FLAG=auto
+
+# ------------------------------------------------------------------- Astra
+# The add-on slug and the licence command, separated by a colon.
+ASTRA_SLUG=astra-addon
+ASTRA_LICENSE_COMMAND=brainstormforce license activate
+
+# Do NOT write the licence key into this file. Put it in the environment of the
+# service account instead, for example in a systemd unit:
+#   Environment=WP_CLI_UPDATE_LICENCE=<key>
+# or in a root-only file that the caller sources before starting the manager.
+# The manager reads the value from the environment and never logs it.
+
+# ---------------------------------------------------------------- user interface
+# table | json | csv | tsv
+OUTPUT_FORMAT=table
+
+# Temporary directory for the per-site files and the JSON reader.
+TMPDIR=/var/tmp

@@ -1,0 +1,25 @@
+# Files that must never be committed or tracked.
+# Generated run-time state of the manager and the discovery tool.
+
+# Site list produced by Find_WP_Senior.sh and read by Bash_WP-CLI_Update.sh.
+wp-found.txt
+
+# Logs, including rotated generations.
+*.log
+*.log.[0-9]*
+
+# Local configuration: paths and, on some hosts, credentials.
+wp-cli-update.conf
+wp-cli-update.local.conf
+
+# Runtime state.
+*.lock
+*.pid
+
+# Tool and editor leftovers.
+.ragraf/
+.dev_agent/
+*~
+*.swp
+*.orig
+*.rej
