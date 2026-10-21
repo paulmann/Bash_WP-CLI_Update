@@ -1,43 +1,73 @@
 # Bash WP-CLI Update
 
-WordPress maintenance automation for a fleet of installations, in two standalone
-Bash scripts and nothing else. No PHP dependency, no Composer, no daemon, no
-agent: `Bash_WP-CLI_Update.sh` runs WP-CLI operations over every site in a list,
-each one as the system user that owns it, and `Find_WP_Senior.sh` builds that
-list by scanning web roots.
+WordPress fleet maintenance automation in two standalone Bash scripts and
+nothing else. No PHP dependency, no Composer, no daemon, no agent:
+
+- **`Bash_WP-CLI_Update.sh`** runs WP-CLI maintenance operations over every
+  site in a list, each one as the system user that owns it, and reports the
+  result in a form a human, a cron job and a monitoring system can all consume.
+- **`Find_WP_Senior.sh`** builds that list by scanning web roots, enriches it
+  into an inventory manifest, and audits the permission hygiene of what it finds.
+
+![Bash](https://img.shields.io/badge/Bash-4.2%2B-blue.svg)
+![WP-CLI](https://img.shields.io/badge/WP--CLI-2.8%2B-green.svg)
+![WordPress](https://img.shields.io/badge/WordPress-3.7%2B-0073aa?logo=wordpress&logoColor=white)
+![License](https://img.shields.io/badge/License-MIT-yellow.svg)
+![Platform](https://img.shields.io/badge/Platform-Linux-lightgrey.svg)
 
 | Component | Version | Purpose |
 |---|---|---|
-| `Bash_WP-CLI_Update.sh` | **6.2.0** | Run maintenance operations over a site list |
-| `Find_WP_Senior.sh` | **2.1.0** | Discover WordPress installations and write the site list |
-| `tools/scan-secrets.sh` | 1.1.0 | Look for credential literals in the repository |
+| `Bash_WP-CLI_Update.sh` | **7.0.1** | run maintenance operations over a site list |
+| `Find_WP_Senior.sh` | **3.0.0** | discover installations, write the site list and a manifest |
+| `tools/scan-secrets.sh` | 1.1.0 | look for credential literals in the repository |
+| `tools/build.sh` | — | build the single-file artifacts from `src/` modules |
 
-Requirements: **bash 4.2+** (CentOS 7 / RHEL 7 or newer, Debian, Ubuntu), GNU
-coreutils and findutils, [WP-CLI](https://wp-cli.org/), root (to switch into
-site owners), and one of `runuser` / `sudo` / `su`. `flock` and `timeout` are
-used when present and degrade with a warning when they are not.
+Requirements: **bash 4.2+** (CentOS/RHEL 7 or newer, Debian, Ubuntu), GNU
+coreutils and findutils, [WP-CLI](https://wp-cli.org/) 2.x, and root to switch
+into site owners (an unprivileged run is supported when the caller already owns
+every site). Optional and probed at run time — each degrades with a warning
+instead of failing: `flock`, `timeout` (or `perl`), `jq`, `curl`/`wget`, `tar`,
+`gpg`, `logger`.
+
+---
+
+## Table of contents
+
+1. [Quick start](#quick-start)
+2. [What it does](#what-it-does) — [modes](#modes) · [fleet options](#fleet-wide-options) · [exit codes](#exit-codes)
+3. [WP-CLI version policy and self-update](#wp-cli-version-policy-and-self-update)
+4. [Configuration](#configuration)
+5. [Monitoring: state, metrics, notifications](#monitoring-state-metrics-notifications)
+6. [Backups and restore](#backups-and-restore)
+7. [Scheduling](#scheduling)
+8. [Security model](#security-model)
+9. [Development: sources, build, tests](#development-sources-build-tests)
+10. [Documentation map](#documentation-map)
+11. [Troubleshooting](#troubleshooting)
+12. [License](#license)
 
 ---
 
 ## Quick start
 
 ```bash
-# 1. put both scripts somewhere stable
+# 1. put both scripts somewhere stable (they are single files by design)
 sudo install -d /opt/wp-cli-update
 sudo install -m 755 Bash_WP-CLI_Update.sh Find_WP_Senior.sh /opt/wp-cli-update/
 
 # 2. configure (optional but recommended)
-sudo cp wp-cli-update.conf.example /etc/wp-cli-update.conf
-sudo chmod 600 /etc/wp-cli-update.conf
-sudo "$EDITOR" /etc/wp-cli-update.conf
+sudo /opt/wp-cli-update/Bash_WP-CLI_Update.sh --init-config /etc/wp-cli-update.conf
+sudo "$EDITOR" /etc/wp-cli-update.conf        # already mode 0600
 
-# 3. look before you leap -- this changes nothing
+# 3. look before you leap -- these change nothing
+sudo /opt/wp-cli-update/Bash_WP-CLI_Update.sh --wpcli-check
 sudo /opt/wp-cli-update/Bash_WP-CLI_Update.sh --check
+sudo /opt/wp-cli-update/Bash_WP-CLI_Update.sh --report
 sudo /opt/wp-cli-update/Bash_WP-CLI_Update.sh --full --dry-run
 
-# 4. discover the sites and run
+# 4. discover the sites, then run
 sudo /opt/wp-cli-update/Find_WP_Senior.sh --output /var/lib/wp-cli-update/wp-found.txt /var/www
-sudo /opt/wp-cli-update/Bash_WP-CLI_Update.sh --full
+sudo /opt/wp-cli-update/Bash_WP-CLI_Update.sh --full --backup db
 ```
 
 ---
@@ -46,60 +76,75 @@ sudo /opt/wp-cli-update/Bash_WP-CLI_Update.sh --full
 
 ### Modes
 
-Exactly one mode per run. `--list-modes` prints them for shell completion.
+Exactly one mode per run. `--list-modes` prints them for shell completion;
+`--completion bash|zsh` prints a completion script generated from the same
+table the parser and the help use, so the three cannot drift apart.
+`[ro]` marks the read-only modes — safe to schedule as often as you like.
 
-| Mode | Short | WP-CLI operations |
+| Mode | Short | What runs |
 |---|---|---|
-| `--full` | `-f` | `core update`, `plugin update --all`, `theme update --all`, `core update-db --skip-plugins`, `db optimize`, `db repair`, `cron event run --due-now`, plus the Astra step when a licence is configured |
+| `--full` | `-f` | core files → schema (`update-db --skip-plugins`) → plugins → themes → translations → cron → caches + rewrite flush → `db optimize` (+ the Astra step when a licence resolves) |
 | `--core` | `-c` | `core update`, `core update-db --skip-plugins` |
-| `--plugins` | `-p` | `plugin update --all` |
+| `--plugins` | `-p` | `plugin update --all`, or an enumerated set with `--only-active` / `--exclude-plugins` |
 | `--themes` | `-t` | `theme update --all` |
-| `--db-optimize` | `-d` | `db optimize`, `db repair` |
-| `--db-fix` | `-x` | `db repair` |
+| `--languages` | `-L` | core/plugin/theme translation updates (probed: needs WP-CLI 2.2+) |
+| `--cache` | `-C` | `cache flush`, transient cleanup, `rewrite flush`, plus your page-cache plugin's commands via `CACHE_EXTRA` |
+| `--cleanup` | `-X` | revisions (keep N **per post**), trash, spam, auto-drafts, expired transients — enumerates and reports first; deletes only with `--yes` |
+| `--db-optimize` | `-d` | `db optimize` + `db repair` |
+| `--db-fix` | `-x` | `db repair` only |
 | `--cron` | `-r` | `cron event run --due-now` |
-| `--astra` | `-s` | `plugin update <slug>`, then `brainstormforce license activate` and a retry if that failed |
-| `--list-plugins` | `-l` | `plugin list --format=json`, rendered as table / json / csv / tsv |
-| `--plugin-manage` | `-m` | resolve `--name` to one slug, deactivate it, back it up, then `plugin delete` |
-| `--verify` | | read-only `core verify-checksums` + `plugin verify-checksums --all` |
-| `--check` | | validate the environment and every listed site, change nothing |
-| `--status` | | print the recorded summary of the last run and the log sizes |
-| `--list-sites` | | print the resolved site list with owners and exit |
+| `--astra` | `-s` | update the Astra add-on, activating the licence when the update fails |
+| `--verify` | `[ro]` | core + plugin checksum verification against the WordPress.org manifest |
+| `--report` | `[ro]` | fleet health inventory: WP/PHP/WP-CLI versions, pending updates, plugin/theme/user counts, DB size, WP-Cron reachability, free disk — as table, JSON, CSV or TSV |
+| `--security` | `[ro]` | hardening & integrity audit with a 0–100 score per site: wp-config permissions, WP_DEBUG, DISALLOW_FILE_EDIT, pending **security** (minor) releases, checksums, PHP in uploads, world-writable files, admin accounts, HTTP-vs-HTTPS, secret scanner |
+| `--secrets` | `[ro]` | scan a site tree for credential-looking values |
+| `--list-plugins` | `-l` `[ro]` | plugin inventory in table/json/csv/tsv, `--fields`, `--name` filter, `--page-limit` |
+| `--plugin-manage` | `-m` | `--action install\|activate\|deactivate\|update\|delete\|status --name X`; a delete is archived first and deactivated before removal |
+| `--restore` | | list a site's backups, or restore one (`--from N\|path`, `--yes`; a pre-restore dump is taken unless you forbid it) |
+| `--check` | `[ro]` | validate the host and every listed site, change nothing |
+| `--status` | `[ro]` | last run (state file or log), log sizes, backup inventory |
+| `--list-sites` | `[ro]` | the resolved work list — owners, filters, multisite expansion — without processing it |
+| `--wpcli-check` | `[ro]` | WP-CLI version report: installed vs. required minimum vs. newest release, install kind, self-update capability |
+| `--wpcli-update` | | update the `wp` binary itself (see [below](#wp-cli-version-policy-and-self-update)) |
+| `--wpcli-install` | | install WP-CLI when it is missing (verified download) |
+| `--wpcli-rollback` | | put a previous `wp` binary back |
 
 A failing site never aborts the run: it is counted, reported, and the loop goes
-on to the next site.
+on — unless you ask for `--fail-fast`.
 
 ### Fleet-wide options
 
 | Option | What it does |
 |---|---|
 | `-j, --jobs N` | process N sites in parallel batches (default 1 = sequential) |
-| `-b, --backup db\|full` | `wp db export`, or a tar.gz of the whole tree, before the site is touched |
-| `-B, --backup-dir DIR`, `--keep-backups N` | where backups go and how many generations survive |
-| `--only-active` | update only plugins that are active **and** have an update available |
-| `-e, --exclude-plugins LIST` | leave these slugs out of `--plugins` / `--full` |
-| `-U, --url URL` | pass `--url` to WP-CLI on every call (multisite) |
-| `-J, --json` / `--json-lines` | fleet report as JSON Lines: one object per site plus a summary |
-| `--strict` | exit non-zero when anything was warned about, not only when something failed |
-| `--no-user-switch` | run WP-CLI as the invoking user instead of switching into the site owner |
+| `-b, --backup db\|full` | `wp db export`, or a tar.gz of the whole tree, **before** the site is touched |
+| `-B, --backup-dir DIR`, `--keep-backups N`, `--min-free-space MIB` | where backups go, how many survive, and when to refuse for lack of space |
+| `--include GLOB` / `--exclude GLOB` | filter the fleet by path pattern (repeatable; exclude wins) |
+| `--multisite all` | expand every multisite into one work unit per subsite, each with its own `--url` |
+| `--only-active`, `-e, --exclude-plugins LIST` | enumerated plugin updates instead of `--all` |
+| `--stagger SEC`, `--retry N`, `--fail-fast`, `--max-duration SEC` | pacing, resilience and a hard stop for the maintenance window |
+| `--maintenance-mode` | put each site into WordPress maintenance mode while it is updated, and take it out afterwards — unconditionally |
+| `--smoke-test` | fetch the site URL after the change; "wp exited 0" is not "the site works" |
+| `--state-file`, `--metrics-file`, `--notify`, `--webhook`, `--notify-command` | machine-readable run record, Prometheus textfile metrics, chat/webhook and command notifications |
+| `-J, --json` / `--json-lines` | fleet report as JSON Lines: one object per site plus a summary object |
+| `--strict` | exit non-zero when anything was **warned** about, not only when something failed |
+| `--no-user-switch` | run WP-CLI as the invoking user (single-site hosts, containers, test suites) |
+| `--timeout SEC --signal SIG --kill-after SEC` | per-command bound, enforced with `timeout(1)` or a perl supervisor |
+| `--lock-timeout SEC`, `--lock-required`, `--no-lock` | concurrency policy for the run lock |
+| `-n, --dry-run` | print the real argv of every **mutating** command; read-only queries still run, so enumeration and reports stay truthful |
+
+**Streams.** stdout is data (tables, JSON, CSV, the `--check`/`--status`
+reports); stderr is prose (logs, warnings, the summary). Every format —
+including the human table — follows that rule, so `--report > report.tsv` and
+`--full 2>> maintenance.err` both do what they look like.
 
 **Parallelism is a batch barrier, not a continuous pool.** Bash 4.2 has no
 `wait -n`, so the next batch starts when the slowest site of the current one
-finishes. Per-site console output and log lines are buffered and replayed in site
-order at the barrier, so neither interleaves — which means `tail -f` on the log
-looks stalled until the batch lands. That is deliberate: three sites writing into
-one file at once is unreadable. Choose N from the slowest shared resource, which
-is normally the database server, not the CPU; 4–8 is a sane range for one MySQL
-instance on one host.
-
-**Backups are off by default**, because a dump per site per run fills disks that
-nobody monitors. `--backup db` costs seconds and covers everything these modes
-change; `--backup full` is complete and can be tens of gigabytes, so the script
-reports the tree size before archiving. A plugin deletion is the exception: it is
-always archived first unless `--no-backup` was given explicitly, and the operator
-is warned in the log when that happens. If a backup fails, the site is **skipped
-rather than updated unprotected**, unless `--fail-on never` says otherwise. `wp core check-update` is deliberately not counted as an
-operation, because it exits 1 when the site is already up to date and would cry
-wolf on every healthy run.
+finishes. Per-site console output and log lines are buffered and replayed in
+site order at the barrier, so neither interleaves — `tail -f` on the log looks
+stalled until the batch lands, deliberately. Choose N from the slowest shared
+resource (normally the database server, not the CPU); 4–8 is sane for one MySQL
+instance.
 
 ### Exit codes
 
@@ -110,192 +155,247 @@ The codes are a contract and the scripts honour it — including for `--help`.
 | `0` | success (with `--fail-on=any`: every operation on every site succeeded) |
 | `1` | operational error — at least one WP-CLI operation failed |
 | `2` | usage error — bad command line |
-| `3` | environment error — not root, bash too old, WP-CLI missing, lock held |
+| `3` | environment error — not privileged enough, bash too old, WP-CLI missing **or older than `WP_CLI_MIN_VERSION`**, lock held |
 | `4` | configuration error — unreadable, unsafe or invalid config file |
-| `5` | *(finder only)* no installation found — not a failure of the tool |
+| `5` | nothing to act on (no installation found / empty resolved list) |
+| `6` | stopped early — `--fail-fast` or `--max-duration`; the summary is still printed and still accurate for what did run |
+
+The finder adds its own `5` (nothing found), which `--fail-empty` turns into 1.
 
 `--fail-on any|all|never` moves the `0`/`1` boundary: `any` is right for cron
 alerting, `all` for best-effort jobs, `never` when you parse the log instead.
 
 ---
 
+## WP-CLI version policy and self-update
+
+The tool drives `wp` across a fleet, and the difference between WP-CLI 1.5 and
+2.11 is not cosmetic — `language` did not exist, `maintenance-mode` did not
+exist, and old builds parse `--format=json` differently. So:
+
+**A floor, checked at startup.** Every fleet run resolves the installed version
+(`wp cli version`, without loading any WordPress, so it works even when every
+site is broken) and refuses with exit 3 below `WP_CLI_MIN_VERSION` (default
+**2.8.0**), naming `--wpcli-update` as the fix. An unparsable answer warns and
+continues: a gate that cannot read the answer must not brick the host.
+
+**A currency check, opt-in.** `WP_CLI_LATEST_CHECK=1` (or `--wpcli-check`,
+which always checks) asks `wp cli check-update` — WP-CLI's own answer, channel
+aware — and falls back to the GitHub releases API when that fails, honouring
+`GITHUB_TOKEN` for the rate limit. Being behind the newest release is a
+**warning**, never a failure: an offline fleet host must still run maintenance.
+With `--strict` it becomes exit 1, which is what you want in CI.
+
+```text
+$ Bash_WP-CLI_Update.sh --wpcli-check
+
+== wp-cli ==
+  binary:            /usr/local/bin/wp
+  resolved:          /usr/local/share/wp-cli.phar
+  install kind:      phar
+  version:           2.10.0
+  php:               8.2.14
+  writable:          yes
+  minimum:           2.8.0
+  gate:              PASS 2.10.0 satisfies 2.8.0
+  newest release:    2.11.0
+  currency:          OUTDATED run: Bash_WP-CLI_Update.sh --wpcli-update
+  self-update:       ok
+```
+
+**The update itself** (`--wpcli-update`) picks the right mechanism:
+
+- *channel update* (default) — `wp cli update --yes` with
+  `--stable/--nightly` and `--patch/--minor/--major` from `WP_CLI_UPDATE_SCOPE`
+  (`auto` = newest within the current major, WP-CLI's own safe default);
+- *pinned version* (`--wpcli-version 2.11.0`) or a non-phar install — a direct
+  download of the release phar, **verified before it replaces anything**:
+  GPG signature against the published WP-CLI release key (fingerprint checked,
+  `63AF 7AA1 …BC06`), SHA-512 as a fallback, and the check **fails closed** —
+  if verification was asked for and no method is available, nothing is
+  installed;
+- either way the phar is smoke-tested (`cli version` must run) before the swap,
+  the swap is an atomic rename with the previous binary kept as
+  `<name>.bak-<timestamp>` (plus WP-CLI's own `.old`), and
+  **`--wpcli-rollback`** puts a previous binary back — listing every candidate,
+  newest first.
+
+These four modes need no site list, no root and no healthy WordPress: they are
+exactly what you reach for on a host that is already in trouble.
+
+---
+
 ## Configuration
 
-Precedence, lowest to highest:
+One table in the source (`CONFIG_SPEC`) defines every setting; it drives the
+defaults, the config-file whitelist, the environment layer, validation,
+`--print-config`, `--init-config` and the docs, so they cannot disagree.
 
-```
-built-in defaults  <  /etc/wp-cli-update.conf  <  ./wp-cli-update.conf
-                   <  WP_CLI_UPDATE_<KEY> environment  <  command line
-```
-
-`Bash_WP-CLI_Update.sh --print-config` prints the effective value of every
-setting, the layer that produced it, and whether the command line overrode it.
-That is the first thing to run when a host behaves differently from another.
-
-**The config file is data, not shell.** Only `KEY=VALUE` lines are read and the
-file is never sourced. A line containing a backtick, `$(`, `|`, `;`, `&`, `<` or
-`>` makes the whole file be rejected with exit code 4. A configuration file that
-can execute code is a privilege escalation waiting for one loose permission bit,
-and this tool runs as root.
-
-See [`wp-cli-update.conf.example`](wp-cli-update.conf.example) for every setting
-with its default and the reason it exists.
-
-### The Astra licence
-
-The licence value is **never an argument of any process**. It is written to a
-temporary file and the child shell reads it at run time:
-
-```
-runuser -u siteuser -- /bin/sh -c 'exec env WP_CLI_LICENCE="$(cat -- /tmp/…XXXXXX)" … wp brainstormforce license activate astra-addon "$WP_CLI_LICENCE"' sh
-```
-
-so the value appears neither in `ps` output, nor in a log line, nor in a dry-run
-listing, nor in an error box. Sources, in order: `--astra-key`,
-`WP_CLI_UPDATE_LICENCE`, `ASTRA_KEY`, `ASTRA_LICENSE_KEY`, then the first
-readable file among `./astra.key`, `/etc/wp-cli-update/astra.key`,
-`$HOME/.astra.key`. The file must be readable by the site owner for the
-duration of the call; `licence_open()` documents that trade-off and every
-alternative that was rejected.
+- Files: `/etc/wp-cli-update.conf` → `<script dir>/wp-cli-update.conf` →
+  `WP_CLI_UPDATE_<KEY>` environment → command line (highest).
+- The file is **parsed as data, never sourced**. A shell metacharacter, an
+  unknown key with a bad value, or a **group/world-writable file** rejects it
+  with exit 4. Unknown keys warn with a "did you mean" suggestion.
+- `--print-config` prints every effective value with the layer that produced it.
+- Full annotated reference: [`wp-cli-update.conf.example`](wp-cli-update.conf.example)
+  and [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md).
 
 ---
 
-## Site discovery
+## Monitoring: state, metrics, notifications
 
 ```bash
-Find_WP_Senior.sh [options] [SEARCH_ROOT ...]
+Bash_WP-CLI_Update.sh --full \
+    --state-file   /var/lib/wp-cli-update/state.json \
+    --metrics-file /var/lib/wp-cli-update/prometheus/wpu.prom \
+    --notify failure --webhook "$SLACK_WEBHOOK" --webhook-format slack
 ```
 
-* **Only the roots you name are scanned.** With no argument, a short list of
-  conventional web roots is used (`/var/www`, `/srv/www`, `/usr/share/nginx/html`,
-  `/srv`, `/home`). `/` is never a default and never injected: an earlier
-  revision expanded an empty array with `"${arr[@]:-}"`, which in bash 4.4+
-  yields one empty element, and a later `[[ -n $r ]] || r='/'` turned that into a
-  full filesystem scan that silently added unrelated sites to the list.
-* A directory is a WordPress root when it holds `wp-config.php` **and** one of
-  `wp-load.php` or `wp-includes/version.php`. A stray config file is not a site.
-* A directory containing `.no_wp_cli` is always skipped. That is how one site
-  opts out of automated maintenance without being removed from the inventory.
-* `find` output is read with `-print0` / `read -d ''`, so a path with a space, a
-  quote or a newline survives the whole pipeline.
-* The write is atomic (temporary file + `mv`) and preserves the permissions of an
-  existing list, so a reader never sees a half-written file and a cron job
-  reading the list as another user keeps working.
-* Prose goes to stderr, data to stdout. `--output -` writes the list to stdout,
-  so `Find_WP_Senior.sh --format json -o - /var/www | jq -r '.[].path'` works.
+- **State file** — the complete run document (one JSON object: counters,
+  per-site status, durations, versions), written atomically after every run,
+  *including an interrupted one*, so a dashboard never shows yesterday's numbers.
+- **Metrics file** — Prometheus textfile-collector format: `wpu_up`,
+  `wpu_exit_code`, `wpu_sites_*`, `wpu_ops_*`, `wpu_findings*`,
+  `wpu_unit_status{path=…}`, `wpu_unit_elapsed_seconds{…}`, …
+- **Notifications** — `never|failure|always`; a generic JSON POST or a
+  Slack/Discord/Telegram-shaped one; and/or a `NOTIFY_COMMAND` executable that
+  receives the summary in argv *and* in `WPU_*` environment variables. It is
+  never passed through a shell. A failing notification warns; it never fails
+  the run — paging somebody because the pager is down would hide the real event.
+- **JSON Lines** (`--json-lines`) — one object per site as it lands plus a
+  final summary object; a killed run still leaves a parseable prefix.
 
-Formats: `paths` (default, one absolute path per line — what the manager
-consumes), `tsv`, `csv`, `json` (with `owner`, `group`, `modified`,
-`wp_version`, `db_name`).
+See [`docs/OPERATIONS.md`](docs/OPERATIONS.md) for cron/systemd/logrotate
+units and alerting recipes.
 
 ---
 
-## Safety features
+## Backups and restore
 
-| Feature | Flags / settings |
-|---|---|
-| Dry run | `-n, --dry-run` — prints the exact command per site, executes nothing |
-| Inspection | `--check`, `--status`, `--print-config`, `--list-modes` |
-| Concurrency | `flock` on `--lock-file`, pid-file fallback, stale locks from dead pids are removed, `--no-lock` to bypass |
-| Runaway commands | `--timeout SEC`, `--signal SIG`, `--kill-after SEC` |
-| Privilege | `--allow-root auto\|always\|never` |
-| Destructive actions | `plugin delete` refuses without a terminal or `--yes`/`--force` |
-| Colour | `--color auto\|always\|never`, `--no-color`, `NO_COLOR` |
-| Log growth | `LOG_MAX_BYTES` + `LOG_KEEP` rotation of both logs |
-| Secrets | value never in argv; `redact()` scrubs registered secrets from every message; `tools/scan-secrets.sh` |
-| Interrupts | `trap` on EXIT/INT/TERM/HUP prints a partial summary, so a half-finished fleet run still reports how far it got |
-
----
-
-## Tests
-
-```bash
-bash tests/run_tests.sh            # everything
-bash tests/run_tests.sh manager    # one suite
-VERBOSE=1 bash tests/run_tests.sh  # keep the working directories
-```
-
-No root, no WordPress, no WP-CLI and no network are needed. A stub `wp` records
-its own argv, working directory, user and environment, so every assertion is
-about what would really be executed. Checks that need something the machine may
-not have (`runuser`, `flock`, `timeout`, `node`, `python3`, a switchable
-account) report **SKIP** with the reason instead of failing.
-
-| Suite | What it protects |
-|---|---|
-| `test_static.sh` | `bash -n`, ShellCheck clean, LF endings, executable bits, and the absence of the constructs that broke this project before: `eval`, backticks, `"${arr[@]:-}"`, `printf %q`, `su -c` without `-s`, sourcing a config file, personal data in code |
-| `test_base_contract.sh` | **the public surface of the original scripts**: every mode and short form, every documented option, the exit-code contract, the `.no_wp_cli` marker, paths with spaces, the `DOCUMENT_ROOT`/`HTTP_HOST`/`HOMEDIR`/`DOCUMENT_URI` environment contract, CRLF site lists, and that no scan ever exceeds the requested roots |
-| `test_finder.sh` | detection rule, exclusions, depth, deduplication, all four output formats (JSON and CSV validated with a real parser), atomic write and permission preservation, `--status`, `--skip-existing`, empty-result exit code |
-| `test_fleet.sh` | the fleet-wide surface: `--no-user-switch`, `-j N` measured against a sleeping stub (sequential ≥ 4 s vs `-j 5` ≈ 1 s), counters identical at `-j 1/2/3/5`, console order and log contiguity, a failing site inside a batch, `--backup db\|full`, rotation with `--keep-backups`, a backup destination that cannot be created, deletion backup and deactivation, `--verify` issues no mutation, `--only-active` and `--exclude-plugins` selection, `--strict`, JSON Lines shape and ordering, `--list-sites`, `--url`, the configuration layers for the new keys, every shell metacharacter in a config file, a killed worker, leaked worker directories |
-| `test_manager.sh` | per-mode argv, `--skip-plugins` policy, `--allow-root` policy, dry run, all four list formats, `--fields`, `--name` filtering, slug resolution, ambiguity refusal, delete confirmation, injection attempts through `--name` and through a site path, the licence never reaching argv or a log, `--check`, `--status`, failure counting, `--fail-on`, timeouts, concurrent runs, stale locks, config precedence, config-file rejection, log rotation, colour policy |
-| `test_secretguard.sh` | the guard finds planted values in five name conventions, masks them by default, exits 1 under `--strict`, honours the allowlist, finds a value that was committed and later removed (`--history`), and stays quiet on placeholders, paths, expansions and settings |
-
-Run `bash tools/scan-secrets.sh --strict` before committing; it must exit 0.
+- `--backup db` (seconds) or `full` (complete, big — the tree size is reported
+  before archiving). Off by default: a silent dump per site per run fills disks
+  nobody monitors.
+- **A failed backup skips its site** rather than updating it unprotected
+  (unless `--fail-on never`), and `--min-free-space` refuses to dump onto a
+  full volume. Dumps are checked for the `Dump completed` marker.
+- Per-site directories are chowned to the site user with mode 0750 when
+  running as root; dumps are 0640.
+- Deleting a plugin always archives it first (unless `--no-backup` was explicit).
+- `--restore -S /path [--from N|file] [--restore-files] --yes` lists and
+  restores; a pre-restore dump is taken unless you forbid it, and a file that
+  does not look like a SQL dump is refused. Automatic rollback after a failed
+  update is deliberately **not** offered — restoring a database whose core
+  files were already replaced creates a state that never existed.
 
 ---
 
-## Design rules
-
-[`AGENT.md`](AGENT.md) holds the binding rules for anyone — human or model —
-changing these scripts. The four that matter most:
-
-1. **No command is built by string concatenation.** Every WP-CLI call is a bash
-   array that becomes argv. The only string handed to a shell is the user switch,
-   and there the arguments travel as *positional parameters*, so no escaping is
-   needed at all.
-2. **`printf %q` is bash-only.** Never use it to build a string for `sh -c` or
-   `su -c` without `-s`. `/bin/sh` is dash on Debian, `\&\&` is a literal there,
-   and the failure mode is `cd: too many arguments` on *every* site.
-3. **Never expand a possibly-empty array as `"${arr[@]:-}"`.** In bash 4.4+ that
-   is one empty element, not zero elements. Use `${arr[@]+"${arr[@]}"}`.
-4. **A configuration file is data.** Parse it; do not source it.
-
----
-
-## Cron
+## Scheduling
 
 ```cron
-# Maintenance at 03:20: four sites at a time, a database dump first, two
-# generations kept, and --strict so that a warning also pages somebody.
-20 3 * * *  root  /opt/wp-cli-update/Bash_WP-CLI_Update.sh --full -j 4 --backup db \
-                  --keep-backups 2 --timeout 900 --strict --quiet \
-                  >> /var/log/wp-cli-update/cron.log 2>&1
-
-# Nightly integrity check, machine-readable, only the sites that are not OK.
-40 4 * * *  root  /opt/wp-cli-update/Bash_WP-CLI_Update.sh --verify -j 8 --json-lines \
-                  | grep -v '"status":"OK"' >> /var/log/wp-cli-update/verify.log
-
-# Refresh the inventory on Sundays, keeping the list even when it comes back empty.
-0 4 * * 0   root  /opt/wp-cli-update/Find_WP_Senior.sh --output /var/lib/wp-cli-update/wp-found.txt /var/www >> /var/log/wp-cli-update/cron.log 2>&1
+# /etc/cron.d/wp-cli-update
+15 3 * * 2   root  /opt/wp-cli-update/Bash_WP-CLI_Update.sh --report --state-file /var/lib/wp-cli-update/state.json >/dev/null
+30 3 * * *   root  /opt/wp-cli-update/Bash_WP-CLI_Update.sh --full -j 4 --backup db --keep-backups 2 --smoke-test --notify failure --webhook https://hooks.example/xyz >/dev/null
+0  6 * * 1   root  /opt/wp-cli-update/Bash_WP-CLI_Update.sh --security --strict --notify failure >/dev/null
 ```
 
-The lock makes an overlap harmless: the second run exits 3 with
-`refusing to run concurrently` instead of updating the same databases twice.
+Ready-made systemd service+timer units, a logrotate snippet and alerting
+recipes: [`docs/ops/`](docs/ops/) and [`docs/OPERATIONS.md`](docs/OPERATIONS.md).
 
 ---
 
-## Repository layout
+## Security model
 
+The short version — the long one is [`docs/SECURITY.md`](docs/SECURITY.md):
+
+- **No command is ever built by string concatenation.** Every WP-CLI call is a
+  bash array that becomes argv; the user switch passes arguments as positional
+  parameters, so a site path containing quotes, spaces or `;` cannot inject
+  anything. `printf %q` is banned where `/bin/sh` parses the result.
+- **Secrets never touch this process's argv** — the Astra licence travels over
+  **stdin** (default) or a short-lived file, is redacted from every log, report,
+  error box and state file, and `tools/scan-secrets.sh` keeps the repository
+  itself clean (CI-enforced).
+- **Configuration is data.** Parsed KEY=VALUE against a whitelist; never
+  sourced; group/world-writable files are refused (the manager runs as root).
+- **Privileges:** each site runs as its owner (`runuser` → `sudo -n` → `su`);
+  `--allow-root` only when actually root; an unprivileged run is allowed only
+  when the caller owns every site.
+- **Destructive work is opt-in and evidenced:** backups before change, `--yes`
+  for deletions, enumerated-and-validated integer ids before any
+  `post/comment delete`, and a dry-run that prints the real argv.
+- `umask 077`, a predictable `PATH` (cron-proof), `LC_ALL=C`, per-command
+  timeouts, a run lock, and stdin closed for every `wp` call (nothing can hang
+  on a prompt nobody will answer).
+
+---
+
+## Development: sources, build, tests
+
+The artifacts at the repository root are **generated**. The sources are the
+modules in `src/manager/` and `src/finder/`, concatenated in numeric order by
+`tools/build.sh` — a build that creates no processes at all (no `cat`, `sed`,
+`mktemp`, not even a subshell), so it runs even on a host that is out of
+resources. `tools/build.sh --check` proves the committed artifacts match the
+sources; CI enforces it.
+
+```bash
+make build      # rebuild both artifacts from src/
+make lint       # shellcheck (artifacts, tools, tests)
+make test       # the whole suite: no root, no WordPress, no WP-CLI, no network
+make check      # build --check + tests (what CI runs)
+make install    # install to PREFIX (default /opt/wp-cli-update) + completion
 ```
-Bash_WP-CLI_Update.sh          the manager (6.2.0)
-Find_WP_Senior.sh              the discovery tool (2.1.0)
-wp-cli-update.conf.example     every setting, documented
-tools/scan-secrets.sh          secret guard (1.1.0)
-tools/secret-allowlist.txt     known-benign lines, each with a reason
-tests/run_tests.sh             suite runner, non-zero on any failure
-tests/test_fleet.sh            parallelism, backups, fleet-wide reporting
-tests/harness.sh               shared fixtures and counters
-tests/stub/wp                  recording stub of WP-CLI
-tests/test_*.sh                five suites
-legacy/                        byte-exact archive of the original main scripts
-ANALYSIS.md                    audit of the original code, with the PoC
-REFACTORING.md                 what this tree took from each of the five revisions
-AGENT.md                       binding rules for changes
-PROJECT_MAP.md                 file-by-file map with dependencies
-CHANGELOG.md                   Keep a Changelog
-LICENSE                        MIT
+
+The test bench drives a **stub `wp`** that records its own argv over a synthetic
+site tree, so every assertion is about the real command line the product built.
+Nine suites: static checks (syntax, lint, CRLF, versions, artifact drift), pure
+logic (validators, JSON readers, version comparison, the read-only
+classification behind `--dry-run`), CLI contract, configuration layers and the
+licence, mode behaviour and ordering, fleet features (parallel counters,
+filters, budgets, state/metrics/notifications, locking, multisite), the WP-CLI
+version policy and self-update, the finder, and the secret guard.
+
+```bash
+bash tests/run_tests.sh            # everything (~500 checks)
+bash tests/run_tests.sh manager    # one suite
+VERBOSE=1 bash tests/run_tests.sh  # keep the fixtures for inspection
 ```
+
+---
+
+## Documentation map
+
+| Document | Contents |
+|---|---|
+| [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) | every setting: type, default, layer, flag |
+| [`docs/OPERATIONS.md`](docs/OPERATIONS.md) | cron, systemd timers, logrotate, Prometheus, alerting, runbooks |
+| [`docs/SECURITY.md`](docs/SECURITY.md) | threat model and the mechanism behind each guarantee |
+| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | module map, data flow, the fork discipline, design rules |
+| [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md) | symptoms → causes → fixes |
+| [`docs/MIGRATION.md`](docs/MIGRATION.md) | upgrading from 6.x: what changed and what to check |
+| [`CHANGELOG.md`](CHANGELOG.md) | the full 7.0.x story, newest first |
+| [`CONTRIBUTING.md`](CONTRIBUTING.md) | how to add a mode, a setting, a test |
+
+---
+
+## Troubleshooting
+
+The full table lives in [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md).
+The three that cover most of it:
+
+1. **Read `--check` first.** It validates the host, the WP-CLI version policy,
+   the config layers and every site — and changes nothing.
+2. **`--dry-run` prints the real argv** of everything it would execute, so
+   "what will it do to *this* site" is always one command away.
+3. **The error log holds the full text** of every failed command
+   (`ERROR_LOG_FILE`); the console box is the pointer, not the payload.
+
+---
 
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+Credits: this project is the merged, audited outcome of several independent
+revision lines (QWEN Hybrid, DeepSeek Hybrid, AutoClaw GLM/RAGRAF, SagaAI);
+`docs/MIGRATION.md` and `CHANGELOG.md` record what was taken from where and why.

@@ -53,3 +53,10 @@ tests/tmp/
 coverage/
 *.pyc
 __pycache__/
+
+# --- machine-local index and agent scratch space ---------------------------
+# .ragraf holds the RAGRAF index (index, revisions, drift journal, code graph):
+# derived, machine-specific data that is rebuilt automatically and must never be
+# committed. It is excluded from the RAGRAF scan itself as well as from git.
+.ragraf/
+.zwork/

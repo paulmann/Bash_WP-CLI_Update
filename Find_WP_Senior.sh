@@ -1,4 +1,12 @@
 #!/usr/bin/env bash
+# ---------------------------------------------------------------------------
+# GENERATED FILE - DO NOT EDIT.
+#
+# Built by tools/build.sh from the modules in src/finder/ (build dev-20261011123342).
+# Edit the modules and rebuild; a change made here is overwritten, and
+# `tools/build.sh --check` reports the drift. The single-file form is kept
+# because copying one file to a host is the whole installation procedure.
+# ---------------------------------------------------------------------------
 # shellcheck shell=bash
 ###############################################################################
 # WordPress installation discovery
@@ -7,7 +15,7 @@
 # Project:     Bash WP-CLI Update
 # Repository:  https://github.com/paulmann/Bash_WP-CLI_Update
 # License:     MIT
-# Version:     2.1.0
+# Version:     3.0.0
 #
 # Purpose
 #   Scan one or more web roots for WordPress installations (a directory holding
@@ -58,7 +66,12 @@ set -uo pipefail
 shopt -s inherit_errexit 2>/dev/null || true
 
 PROG_NAME="${0##*/}"
-SCRIPT_VERSION='2.1.0'
+SCRIPT_VERSION='3.0.0'
+# Filled by tools/build.sh; a source checkout runs unbuilt and says so.
+BUILD_ID='dev-20261011123342'
+BUILD_DATE='2026-10-11T12:33:42Z'
+case "$BUILD_ID" in *'${'*) BUILD_ID='source' ;; esac
+case "$BUILD_DATE" in *'${'*) BUILD_DATE='unbuilt' ;; esac
 
 EXIT_OK=0
 EXIT_ERROR=1
@@ -112,6 +125,7 @@ DEFAULT_EXCLUDE_NAMES=(
 )
 
 DEFAULT_MAX_DEPTH=8
+DEFAULT_MIN_DEPTH=1
 HARD_MAX_DEPTH=32
 DEFAULT_OUTPUT_FILE="${SCRIPT_DIR}/wp-found.txt"
 OPT_OUT_MARKER='.no_wp_cli'
@@ -120,9 +134,27 @@ OPT_OUT_MARKER='.no_wp_cli'
 # 2. Runtime state
 ###############################################################################
 
+# A predictable environment: the same reasoning as in the manager. `sort -z` and
+# the stat(1) format strings below are byte-oriented, and cron starts with a PATH
+# that has no /usr/sbin.
+PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin${PATH:+:$PATH}"
+export PATH
+export LC_ALL=C
+umask 077
+
 OUTPUT_FILE="$DEFAULT_OUTPUT_FILE"
+MANIFEST_FILE=''
 MAX_DEPTH="$DEFAULT_MAX_DEPTH"
+MIN_DEPTH="$DEFAULT_MIN_DEPTH"
+FOLLOW_SYMLINKS='false'
+PRINT_NUL='false'
+AUDIT='false'
+VERIFY_LIST=''
 OUTPUT_FORMAT='paths'          # paths | tsv | csv | json
+MANIFEST_FORMAT='tsv'          # tsv | csv | json
+FIELD_LIST=''
+INCLUDE_NAMES=()
+AUDIT_FINDINGS=0
 DELIMITER=''                   # empty = tab for tsv, comma for csv
 QUIET='false'
 VERBOSE='false'
@@ -147,7 +179,7 @@ SKIPPED_UNREADABLE=0
 START_TIME=0
 
 C_RESET='' C_RED='' C_GREEN='' C_YELLOW='' C_BLUE='' C_BOLD='' C_DIM=''
-
+# shellcheck shell=bash
 ###############################################################################
 # 3. Logging and colour
 ###############################################################################
@@ -238,6 +270,7 @@ make_tmp() { # LABEL
     return 0
 }
 
+# shellcheck shell=bash
 ###############################################################################
 # 5. Classification helpers
 ###############################################################################
@@ -249,6 +282,39 @@ is_valid_wp() { # DIR
     [ -f "${dir}/wp-config.php" ] || return 1
     [ -f "${dir}/wp-load.php" ] && return 0
     [ -f "${dir}/wp-includes/version.php" ] && return 0
+    return 1
+}
+
+# name_is_included NAME -> 0 when no --include-name was given, or when one matches.
+# Inclusion is opt-in and empty means "everything", so that adding an include
+# pattern narrows the scan and removing it restores the previous behaviour.
+name_is_included() { # NAME
+    local name="${1:-}" pat
+    ((${#INCLUDE_NAMES[@]} == 0)) && return 0
+    for pat in ${INCLUDE_NAMES[@]+"${INCLUDE_NAMES[@]}"}; do
+        [ -n "$pat" ] || continue
+        # shellcheck disable=SC2254  # the pattern is the point: globs are wanted
+        case "$name" in $pat) return 0 ;; esac
+    done
+    return 1
+}
+
+# is_multisite DIR -> 0 when wp-config.php enables the multisite.
+# Read from the config rather than by asking WordPress: discovery must work on a
+# host where the database server is down, which is exactly when an inventory is
+# most useful.
+is_multisite() { # DIR
+    local f="${1:-}/wp-config.php" line
+    [ -r "$f" ] || return 1
+    while IFS= read -r line || [ -n "$line" ]; do
+        case "$line" in
+            *WP_ALLOW_MULTISITE* | *MULTISITE* | *subdomain_install*)
+                case "$line" in
+                    *true* | *,1\)* | *'1'*) return 0 ;;
+                esac
+                ;;
+        esac
+    done <"$f"
     return 1
 }
 
@@ -315,7 +381,14 @@ db_name_of() { # DIR
 # every file it meets.
 build_find_args() { # ROOT
     local root="$1" pat first
+    # Order is not cosmetic here: `-L` is a global option and GNU find rejects it
+    # after the starting point, while -mindepth/-maxdepth are ordinary tests and
+    # belong with the expression.
+    if [ "$FOLLOW_SYMLINKS" = 'true' ]; then
+        printf '%s\n' -L
+    fi
     printf '%s\n' "$root"
+    printf '%s\n' -mindepth "$MIN_DEPTH"
     printf '%s\n' -maxdepth "$MAX_DEPTH"
     # The shape below is the only one of the four plausible variants that works,
     # and the reason is worth writing down because every alternative fails
@@ -384,6 +457,11 @@ scan_root() { # ROOT
             log_debug "excluded, skipped: ${site}"
             continue
         fi
+        if ! name_is_included "$base"; then
+            SKIPPED_EXCLUDED=$((SKIPPED_EXCLUDED + 1))
+            log_debug "not matched by --include-name, skipped: ${site}"
+            continue
+        fi
         if ! is_valid_wp "$site"; then
             SKIPPED_INVALID=$((SKIPPED_INVALID + 1))
             log_debug "not a WordPress root, skipped: ${site}"
@@ -411,6 +489,7 @@ collect_results() {
     return 0
 }
 
+# shellcheck shell=bash
 ###############################################################################
 # 7. Rendering
 ###############################################################################
@@ -469,7 +548,15 @@ emit_result() { # < NUL-separated sorted list
         dbname="$(db_name_of "$site")" || dbname=''
         case "$OUTPUT_FORMAT" in
             paths)
-                printf '%s\n' "$site"
+                # --print0 exists for the next program in the pipeline: a site
+                # path may legally contain a newline, and a line-oriented list
+                # silently drops that site, which for a maintenance tool means
+                # "this one is never updated and nothing says so".
+                if [ "$PRINT_NUL" = 'true' ]; then
+                    printf '%s\0' "$site"
+                else
+                    printf '%s\n' "$site"
+                fi
                 ;;
             json)
                 ((first)) || printf ','
@@ -601,6 +688,295 @@ status_report() {
 }
 
 ###############################################################################
+# 8b. NUL-separated output, manifest, audit, list verification
+###############################################################################
+
+# emit_paths_nul < NUL-separated sorted list
+#
+# For the next program in a pipeline. A site path may legally contain a newline,
+# and a list that cannot represent one is a list that silently drops a site --
+# which for a maintenance tool means "this one never gets updated, and nothing
+# says so".
+emit_paths_nul() {
+    local site
+    while IFS= read -r -d '' site; do
+        [ -n "$site" ] || continue
+        printf '%s\0' "$site"
+    done
+    return 0
+}
+
+# manifest_headers -> the column list, honouring --fields
+MANIFEST_ALL_FIELDS='path owner group mode config_mode wp_version db_name multisite opt_out modified'
+manifest_headers() {
+    local list="${FIELD_LIST:-$MANIFEST_ALL_FIELDS}"
+    printf '%s' "${list//,/ }"
+}
+
+# manifest_value FIELD SITE -> one cell
+manifest_value() { # FIELD SITE
+    local field="$1" site="$2" cfg v
+    case "$field" in
+        path) printf '%s' "$site" ;;
+        owner) stat -c '%U' -- "$site" 2>/dev/null || printf '?' ;;
+        group) stat -c '%G' -- "$site" 2>/dev/null || printf '?' ;;
+        mode) stat -c '%a' -- "$site" 2>/dev/null || printf '?' ;;
+        config_mode)
+            cfg="$(finder_config_path "$site")"
+            [ -n "$cfg" ] && { stat -c '%a' -- "$cfg" 2>/dev/null || printf '?'; } || printf '?'
+            ;;
+        wp_version) wp_version_of "$site" 2>/dev/null || printf '' ;;
+        db_name) db_name_of "$site" 2>/dev/null || printf '' ;;
+        multisite) is_multisite "$site" && printf 'yes' || printf 'no' ;;
+        opt_out) [ -e "${site}/${OPT_OUT_MARKER}" ] && printf 'yes' || printf 'no' ;;
+        modified)
+            v="$(stat -c '%y' -- "$site" 2>/dev/null)"
+            printf '%s' "${v%%.*}"
+            ;;
+        *) printf '' ;;
+    esac
+    return 0
+}
+
+# finder_config_path SITE -> the wp-config.php for this site, empty when absent.
+# WordPress allows it one level up; an inventory that reports "no config" for a
+# correctly installed site is an inventory nobody trusts.
+finder_config_path() { # SITE
+    local site="${1-}"
+    if [ -f "${site}/wp-config.php" ]; then
+        printf '%s' "${site}/wp-config.php"
+        return 0
+    fi
+    local up
+    up="$(dirname -- "$site")"
+    if [ -f "${up}/wp-config.php" ]; then
+        printf '%s' "${up}/wp-config.php"
+        return 0
+    fi
+    return 1
+}
+
+# write_manifest < NUL-separated sorted list
+#
+# The site list the manager consumes is deliberately dumb: one path per line.
+# Everything else an operator wants to know about the fleet -- who owns it, which
+# WordPress it runs, which database, whether it is a multisite, whether its
+# wp-config.php is world-readable -- belongs in a manifest, because it changes
+# more often than the list and is read by different tools.
+write_manifest() { # < NUL list
+    local target="$MANIFEST_FILE"
+    [ -n "$target" ] || { cat >/dev/null; return 0; }
+    local tmp dir
+    local -a fields=()
+    read -r -a fields <<<"$(manifest_headers)"
+    if [ "$target" != '-' ]; then
+        dir="$(dirname -- "$target")"
+        if [ ! -d "$dir" ]; then
+            mkdir -p -- "$dir" 2>/dev/null || {
+                log_error "cannot create the manifest directory: ${dir}"
+                cat >/dev/null
+                return 1
+            }
+        fi
+        make_tmp manifest || { cat >/dev/null; return 1; }
+        tmp="$TMP_LAST"
+    else
+        tmp=''
+    fi
+    _manifest_render "$tmp" "${fields[@]}"
+    local rc=$?
+    if [ "$target" != '-' ]; then
+        if [ -f "$target" ]; then
+            chmod --reference="$target" "$tmp" 2>/dev/null
+            chown --reference="$target" "$tmp" 2>/dev/null
+        else
+            chmod 640 "$tmp" 2>/dev/null
+        fi
+        if ! mv -f -- "$tmp" "$target" 2>/dev/null; then
+            log_error "cannot write the manifest: ${target}"
+            return 1
+        fi
+        log_ok "manifest written to ${target} (${MANIFEST_FORMAT})"
+    fi
+    return "$rc"
+}
+
+# _manifest_render DEST FIELDS... < NUL list
+#
+# DEST may be empty, which means stdout. Redirecting to /dev/stdout instead is
+# not portable: the name is a symlink to /proc/self/fd/1, so it vanishes in a
+# chroot without /proc, is missing on some minimal images, and fails with ENXIO
+# when fd 1 is a socket. An empty destination means "do not redirect at all".
+_manifest_render() { # DEST FIELDS...
+    local dest="${1-}"; shift
+    local -a fields=("$@")
+    local site f out first cell
+    _manifest_body() {
+        case "$MANIFEST_FORMAT" in
+            json) printf '[' ;;
+            *)
+                out=''
+                for f in ${fields[@]+"${fields[@]}"}; do
+                    if [ "$MANIFEST_FORMAT" = 'csv' ]; then
+                        out+="${out:+,}$(csv_escape "$f" ',')"
+                    else
+                        out+="${out:+$'\t'}${f}"
+                    fi
+                done
+                printf '%s\n' "$out"
+                ;;
+        esac
+        first=1
+        while IFS= read -r -d '' site; do
+            [ -n "$site" ] || continue
+            case "$MANIFEST_FORMAT" in
+                json)
+                    ((first)) || printf ','
+                    first=0
+                    printf '{'
+                    local jfirst=1
+                    for f in ${fields[@]+"${fields[@]}"}; do
+                        ((jfirst)) || printf ','
+                        jfirst=0
+                        printf '"%s":"%s"' "$(json_escape "$f")" \
+                            "$(json_escape "$(manifest_value "$f" "$site")")"
+                    done
+                    printf '}'
+                    ;;
+                csv)
+                    out=''
+                    for f in ${fields[@]+"${fields[@]}"}; do
+                        cell="$(manifest_value "$f" "$site")"
+                        out+="${out:+,}$(csv_escape "$cell" ',')"
+                    done
+                    printf '%s\n' "$out"
+                    ;;
+                *)
+                    out=''
+                    for f in ${fields[@]+"${fields[@]}"}; do
+                        cell="$(manifest_value "$f" "$site")"
+                        # A tab inside a value would invent a column; nothing a
+                        # stat(1) or a version.php can contain legitimately needs one.
+                        out+="${out:+$'\t'}${cell//$'\t'/ }"
+                    done
+                    printf '%s\n' "$out"
+                    ;;
+            esac
+        done
+        [ "$MANIFEST_FORMAT" = 'json' ] && printf ']\n'
+    }
+    if [ -n "$dest" ]; then
+        _manifest_body >"$dest"
+    else
+        _manifest_body
+    fi
+    return 0
+}
+
+# audit_site SITE : permission and hygiene findings for one installation.
+#
+# Discovery already walks the tree and already opens wp-config.php for the
+# database name, so reporting what it sees costs nothing extra -- and the finding
+# that matters most on a shared host (a 0644 wp-config.php next door to every
+# other account) is exactly the one nobody looks for until after the incident.
+audit_site() { # SITE
+    local site="$1" cfg mode='' findings=0
+    cfg="$(finder_config_path "$site")"
+    if [ -z "$cfg" ]; then
+        log_warn "${site}: no wp-config.php found in the site root or one level up"
+        AUDIT_FINDINGS=$((AUDIT_FINDINGS + 1))
+        return 0
+    fi
+    mode="$(stat -c '%a' -- "$cfg" 2>/dev/null)"
+    if [[ "$mode" =~ ^[0-7]{3,4}$ ]]; then
+        # Bit arithmetic, not digit eyeballing: 0640 is the *recommended* mode
+        # (group-read for the web server), and a check that flags it teaches the
+        # operator to ignore the audit. What matters is other-read (the last
+        # digit's 4-bit) and any group/other write (mask 022).
+        local m=$((8#${mode}))
+        if ((m & 8#022)); then
+            log_warn "${cfg}: writable by group or others (mode ${mode}); anybody in that group can replace the site's code. chmod 0640"
+            findings=$((findings + 1))
+        elif ((m & 8#004)); then
+            # World-readable wp-config.php: on a shared host this hands the
+            # database credentials to every other account.
+            log_warn "${cfg}: world-readable (mode ${mode}); it holds the database credentials. chmod 0640"
+            findings=$((findings + 1))
+        fi
+    fi
+    local owner
+    owner="$(stat -c '%U' -- "$site" 2>/dev/null)"
+    if [ "$owner" = 'root' ]; then
+        log_info "${site}: owned by root; a maintenance run will use root for WP-CLI unless the site list names another owner"
+    fi
+    if [ -d "${site}/wp-content/uploads" ]; then
+        local n=0
+        n="$(find "${site}/wp-content/uploads" -maxdepth 3 -type f -name '*.php' -print 2>/dev/null | head -n 5 | wc -l)"
+        n="${n//[^0-9]/}"
+        if ((${n:-0} > 0)); then
+            log_warn "${site}: ${n} PHP file(s) inside wp-content/uploads; this is the most common backdoor location"
+            findings=$((findings + 1))
+        fi
+    fi
+    AUDIT_FINDINGS=$((AUDIT_FINDINGS + findings))
+    return 0
+}
+
+# verify_list FILE : report on a site list that already exists.
+#
+# The list is the input to every maintenance run, and it rots: a site is deleted,
+# a directory is renamed, a disk is remounted. Without this check the symptom is
+# "skipped, not a directory" repeated in a log nobody reads. With it, one command
+# answers "is my inventory still true?".
+verify_list() { # FILE
+    local list="${1-}" line site count=0 missing=0 notwp=0 opted=0 ok=0
+    if [ ! -f "$list" ]; then
+        log_error "no such site list: ${list}"
+        return 1
+    fi
+    printf '\n%s== verifying %s ==%s\n' "$C_BOLD" "$list" "$C_RESET" >&2
+    while IFS= read -r line || [ -n "$line" ]; do
+        line="${line%$'\r'}"
+        case "$line" in '' | '#'*) continue ;; esac
+        site="${line%%$'\t'*}"
+        count=$((count + 1))
+        if [ ! -d "$site" ]; then
+            printf '  %sMISSING%s   %s\n' "$C_RED" "$C_RESET" "$site" >&2
+            missing=$((missing + 1))
+            continue
+        fi
+        if [ -e "${site}/${OPT_OUT_MARKER}" ]; then
+            printf '  %sOPTED-OUT%s %s\n' "$C_YELLOW" "$C_RESET" "$site" >&2
+            opted=$((opted + 1))
+            continue
+        fi
+        if ! is_valid_wp "$site"; then
+            printf '  %sNOT-WP%s    %s\n' "$C_YELLOW" "$C_RESET" "$site" >&2
+            notwp=$((notwp + 1))
+            continue
+        fi
+        ok=$((ok + 1))
+        if [ "$VERBOSE" = 'true' ]; then
+            printf '  %sOK%s        %s (owner %s, WP %s)\n' "$C_GREEN" "$C_RESET" "$site" \
+                "$(stat -c '%U' -- "$site" 2>/dev/null || printf '?')" \
+                "$(wp_version_of "$site" 2>/dev/null || printf '?')" >&2
+        fi
+        [ "$AUDIT" = 'true' ] && audit_site "$site"
+    done <"$list"
+    local audit_note=''
+    if ((AUDIT_FINDINGS > 0)); then
+        audit_note="$(printf ', %s audit finding(s)' "$AUDIT_FINDINGS")"
+    fi
+    printf '\n  entries %s: %s ok, %s missing, %s not a WordPress root, %s opted out%s\n' \
+        "$count" "$ok" "$missing" "$notwp" "$opted" "$audit_note" >&2
+    if ((missing > 0)) || ((notwp > 0)); then
+        return 1
+    fi
+    return 0
+}
+
+# shellcheck shell=bash
+###############################################################################
 # 9. Help
 ###############################################################################
 
@@ -626,10 +1002,28 @@ Options:
                           default: ${DEFAULT_MAX_DEPTH})
   -x, --exclude-name GLOB exclude directories whose NAME matches GLOB (repeatable)
   -X, --exclude-path PATH exclude this path and everything below it (repeatable)
+  -i, --include-name GLOB only keep directories whose NAME matches GLOB
+                          (repeatable; empty means "everything")
       --no-default-excludes
                           start with an empty exclusion list
+      --min-depth N       ignore wp-config.php shallower than N below the root
+      --follow-symlinks   follow symbolic links (off by default: a symlink loop
+                          or a link to / would turn discovery into a full
+                          filesystem walk)
       --format FMT        paths | tsv | csv | json (default: paths)
+      --print0            with --format paths: NUL-separated, so a path that
+                          contains a newline survives the pipe
       --delimiter CHAR    field delimiter for csv (default: ',')
+      --manifest FILE     also write a rich inventory: owner, group, modes,
+                          WP version, database name, multisite, opt-out, mtime
+      --manifest-format F tsv | csv | json (default: tsv)
+      --fields LIST       comma separated manifest columns (default: all of
+                          ${MANIFEST_ALL_FIELDS})
+      --audit             report permission and hygiene findings for every
+                          installation: a world-readable wp-config.php, PHP
+                          files inside uploads, root-owned sites
+      --verify-list FILE  check an existing site list instead of scanning:
+                          missing entries, non-WordPress roots, opt-outs
       --skip-existing     drop sites already present in the output file
       --fail-empty        exit 1 instead of 5 when nothing was found
       --status            describe the existing site list, do not scan
@@ -661,12 +1055,28 @@ Examples:
   ${PROG_NAME} /var/www /srv                    # scan exactly these two
   ${PROG_NAME} --depth 4 -x 'node_modules' /var/www
   ${PROG_NAME} --format json -o - /var/www | jq -r '.[].path'
+  ${PROG_NAME} --manifest /var/lib/wp-cli-update/inventory.tsv /var/www
+  ${PROG_NAME} --audit --verify-list /var/lib/wp-cli-update/wp-found.txt
+  ${PROG_NAME} --print0 /var/www | xargs -0 -n1 du -sh
   ${PROG_NAME} --status
 EOF
     exit "$rc"
 }
 
 version_info() { printf '%s %s\n' "$PROG_NAME" "$SCRIPT_VERSION"; }
+
+version_detail() {
+    printf '%s %s (build %s, %s)\n' "$PROG_NAME" "$SCRIPT_VERSION" "$BUILD_ID" "$BUILD_DATE"
+    printf 'script directory : %s\n' "$SCRIPT_DIR"
+    printf 'bash             : %s\n' "$BASH_VERSION"
+    printf 'running as       : %s (uid %s)\n' "$(id -un)" "$(id -u)"
+    printf 'find             : %s\n' "$(command -v find 2>/dev/null || printf 'not found')"
+    printf 'stat             : %s\n' "$(command -v stat 2>/dev/null || printf 'not found')"
+    printf 'default roots    : %s\n' "${DEFAULT_SEARCH_ROOTS[*]}"
+    printf 'opt-out marker   : %s\n' "$OPT_OUT_MARKER"
+    printf 'manifest fields  : %s\n' "$MANIFEST_ALL_FIELDS"
+    return 0
+}
 
 ###############################################################################
 # 10. Argument parsing
@@ -708,8 +1118,17 @@ parse_args() {
                 fi
                 shift ;;
             --no-default-excludes) USE_DEFAULT_EXCLUDES='false' ;;
+            -i | --include-name) need_value "$arg" "${2:-}"; INCLUDE_NAMES+=("$OPT_VALUE"); shift ;;
             --format) need_value "$arg" "${2:-}"; OUTPUT_FORMAT="${OPT_VALUE,,}"; shift ;;
             --delimiter) need_value "$arg" "${2:-}"; DELIMITER="$OPT_VALUE"; shift ;;
+            --print0) PRINT_NUL='true' ;;
+            --manifest) need_value "$arg" "${2:-}"; MANIFEST_FILE="$OPT_VALUE"; shift ;;
+            --manifest-format) need_value "$arg" "${2:-}"; MANIFEST_FORMAT="${OPT_VALUE,,}"; shift ;;
+            --fields) need_value "$arg" "${2:-}"; FIELD_LIST="$OPT_VALUE"; shift ;;
+            --min-depth) need_value "$arg" "${2:-}"; MIN_DEPTH="$OPT_VALUE"; shift ;;
+            --follow-symlinks | --follow) FOLLOW_SYMLINKS='true' ;;
+            --audit) AUDIT='true' ;;
+            --verify-list) need_value "$arg" "${2:-}"; VERIFY_LIST="$OPT_VALUE"; shift ;;
             --skip-existing) SKIP_EXISTING='true' ;;
             --fail-empty) FAIL_EMPTY='true' ;;
             --status) STATUS_ONLY='true' ;;
@@ -719,6 +1138,7 @@ parse_args() {
             -v | --verbose) VERBOSE='true'; QUIET='false' ;;
             -h | --help) usage "$EXIT_OK" ;;
             -V | --version) version_info; exit "$EXIT_OK" ;;
+            --version-detail) version_detail; exit "$EXIT_OK" ;;
             --) shift; break ;;
             -*) usage_error "unknown option: ${arg} (try --help)" ;;
             *) CLI_ROOTS+=("$arg") ;;
@@ -743,6 +1163,37 @@ validate_args() {
     esac
     if ! [[ "$MAX_DEPTH" =~ ^[0-9]+$ ]] || ((MAX_DEPTH < 1)) || ((MAX_DEPTH > HARD_MAX_DEPTH)); then
         usage_error "--depth must be an integer between 1 and ${HARD_MAX_DEPTH} (got '${MAX_DEPTH}')"
+    fi
+    if ! [[ "$MIN_DEPTH" =~ ^[0-9]+$ ]]; then
+        usage_error "--min-depth must be a non-negative integer (got '${MIN_DEPTH}')"
+    fi
+    if ((MIN_DEPTH > MAX_DEPTH)); then
+        usage_error "--min-depth (${MIN_DEPTH}) must not be greater than --depth (${MAX_DEPTH})"
+    fi
+    case "$MANIFEST_FORMAT" in
+        tsv | csv | json) ;;
+        *) usage_error "--manifest-format must be one of: tsv, csv, json (got '${MANIFEST_FORMAT}')" ;;
+    esac
+    if [ -n "$FIELD_LIST" ]; then
+        local f known=" ${MANIFEST_ALL_FIELDS} " saved="$IFS"
+        IFS=','
+        for f in $FIELD_LIST; do
+            IFS="$saved"
+            f="${f//[[:space:]]/}"
+            if [ -n "$f" ]; then
+                # A substring test on a space-padded list, so 'path' does not
+                # match inside 'config_mode' and 'mode' does not match 'modified'.
+                case "$known" in
+                    *" ${f} "*) : ;;
+                    *) usage_error "--fields: unknown column '${f}' (available: ${MANIFEST_ALL_FIELDS})" ;;
+                esac
+            fi
+            IFS=','
+        done
+        IFS="$saved"
+    fi
+    if [ "$PRINT_NUL" = 'true' ] && [ "$OUTPUT_FORMAT" != 'paths' ]; then
+        usage_error '--print0 only applies to --format paths'
     fi
     if [ "$OUTPUT_FILE" != '-' ]; then
         local dir
@@ -812,6 +1263,17 @@ report_skipped() {
 # 11. main
 ###############################################################################
 
+# shellcheck shell=bash
+# _audit_each < NUL list : run the audit over the discovered set.
+_audit_each() {
+    local site
+    while IFS= read -r -d '' site; do
+        [ -n "$site" ] || continue
+        audit_site "$site"
+    done
+    return 0
+}
+
 main() {
     parse_args "$@"
     validate_args
@@ -823,11 +1285,18 @@ main() {
         status_report "$OUTPUT_FILE"
         exit "$EXIT_OK"
     fi
+    if [ -n "$VERIFY_LIST" ]; then
+        # Verification is a different question from discovery: it audits a list
+        # that already exists, so it needs no roots, no scanning and no output
+        # file, and it must not overwrite anything.
+        verify_list "$VERIFY_LIST"
+        exit $?
+    fi
 
     resolve_excludes
     resolve_roots || exit "$EXIT_ERROR"
 
-    log_info "${PROG_NAME} ${SCRIPT_VERSION}: ${#SEARCH_ROOTS[@]} root(s), depth ${MAX_DEPTH}, format ${OUTPUT_FORMAT}"
+    log_info "${PROG_NAME} ${SCRIPT_VERSION}: ${#SEARCH_ROOTS[@]} root(s), depth ${MIN_DEPTH}..${MAX_DEPTH}, format ${OUTPUT_FORMAT}"
     log_debug "excluded names: ${EXCLUDE_NAMES[*]:-<none>}"
     log_debug "excluded paths: ${EXCLUDE_PATHS[*]:-<none>}"
 
@@ -861,6 +1330,18 @@ main() {
 
     if ! write_output <"$SORTED_FILE"; then
         exit "$EXIT_ERROR"
+    fi
+    if [ -n "$MANIFEST_FILE" ]; then
+        write_manifest <"$SORTED_FILE" || exit "$EXIT_ERROR"
+    fi
+    if [ "$AUDIT" = 'true' ]; then
+        log_info "auditing ${FOUND_COUNT} installation(s)"
+        _audit_each <"$SORTED_FILE"
+        if ((AUDIT_FINDINGS > 0)); then
+            log_warn "the audit reported ${AUDIT_FINDINGS} finding(s); re-run with --audit to see them again"
+        else
+            log_ok 'the audit found nothing to report'
+        fi
     fi
 
     log_ok "found ${FOUND_COUNT} installation(s)"

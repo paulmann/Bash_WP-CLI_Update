@@ -1,0 +1,21 @@
+# wp-cli-update.timer — nightly schedule for wp-cli-update.service
+#
+# Persistent=true catches up a missed run after downtime (a host that was off
+# at 03:30 runs the maintenance once it is back, once — the run lock and the
+# tool's own idempotence make a double run harmless anyway).
+# RandomizedDelaySec spreads a fleet of hosts so they do not all hit
+# wordpress.org and the shared database server in the same second.
+
+[Unit]
+Description=Nightly WordPress fleet maintenance
+Documentation=https://github.com/paulmann/Bash_WP-CLI_Update
+
+[Timer]
+OnCalendar=*-*-* 03:30:00
+Persistent=true
+RandomizedDelaySec=900
+AccuracySec=60
+Unit=wp-cli-update.service
+
+[Install]
+WantedBy=timers.target
