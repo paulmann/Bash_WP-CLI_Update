@@ -1,14 +1,13 @@
 #!/usr/bin/env bash
 # shellcheck shell=bash
-# Shared harness for the Bash WP-CLI Update test suites (v7).
+# Shared harness for the Bash WP-CLI Update test suites.
 #
 # Sourced by tests/test_*.sh. Provides:
-#   - counters that live in FILES, not variables, so a check that runs in a
+#   - a counter that lives in a FILE, not a variable, so a check that runs in a
 #     pipeline or a subshell still counts (the classic bash testing bug);
-#   - a synthetic WordPress tree with a stub `wp` that records its own argv and
-#     can be told to fail, hang, report versions or pretend to be a multisite;
+#   - a synthetic WordPress tree with a stub `wp` that records its own argv;
 #   - skip handling for the things a portable suite cannot assume: root, a real
-#     su/runuser, flock, timeout, curl/wget, gpg, jq, perl.
+#     `su`/`runuser`, `flock`, `timeout`, `node`, `python`.
 #
 # Nothing here may require root, network access, WordPress or WP-CLI.
 
@@ -21,7 +20,6 @@ bad() {
     printf 'x\n' >>"$FAIL_FILE"
 }
 skip() { printf '  SKIP  %s (%s)\n' "$1" "$2"; printf 'x\n' >>"$SKIP_FILE"; }
-
 # `grep -c ''` prints 0 *and* exits 1 for an empty file, so `cmd || printf 0`
 # would print "00" and every `[ "$n" -eq 0 ]` downstream would die with
 # "integer expression expected". Capture first, then default.
@@ -63,22 +61,10 @@ expect_not_contains() { # FILE NEEDLE NAME
 expect_lines() { # FILE EXPECTED NAME
     local got
     got="$(grep -c '' "$1" 2>/dev/null)" || got=0
-    got="${got//[^0-9]/}"
-    if [ "${got:-0}" = "$2" ]; then
+    if [ "$got" = "$2" ]; then
         ok "$3 ($got line(s))"
     else
-        bad "$3" "expected $2 line(s), got ${got:-0}"
-    fi
-}
-
-expect_grep_count() { # FILE PATTERN EXPECTED NAME
-    local got
-    got="$(grep -Ec -- "$2" "$1" 2>/dev/null)" || got=0
-    got="${got//[^0-9]/}"
-    if [ "${got:-0}" = "$3" ]; then
-        ok "$4 ($got)"
-    else
-        bad "$4" "expected $3 match(es) of /$2/, got ${got:-0}"
+        bad "$3" "expected $2 line(s), got $got"
     fi
 }
 
@@ -101,12 +87,12 @@ if [ "$HAVE_ROOT" = '1' ]; then
     done
 fi
 
-have_tool() { command -v -- "$1" >/dev/null 2>&1; }
-
 # --- the synthetic tree ------------------------------------------------------
 # Created under TMPDIR with mode 0755 on purpose. `mktemp -d` yields 0700, and a
 # 0700 root-owned working directory makes every user-switch test fail with
-# "Permission denied" before the script under test has done anything wrong.
+# "Permission denied" before the script under test has done anything wrong --
+# the previous revision of this suite had exactly that bug and reported 21
+# failures that were all fixtures.
 WORK="${TEST_WORK:-}"
 if [ -z "$WORK" ]; then
     WORK="$(mktemp -d "${TMPDIR:-/tmp}/wpcli-tests.XXXXXX")" || {
@@ -117,16 +103,21 @@ if [ -z "$WORK" ]; then
 fi
 chmod 755 "$WORK" 2>/dev/null
 
+# The counters live in files, not variables, so a check that runs inside a
+# pipeline or a subshell still counts -- the classic bash testing bug.
+# run_tests.sh exports its own paths and tallies every suite from them; a suite
+# run on its own gets a private set in its working directory.
 if [ -z "${FAIL_FILE:-}" ] || [ -z "${PASS_FILE:-}" ] || [ -z "${SKIP_FILE:-}" ]; then
-    FAIL_FILE="${WORK}/fail"
-    PASS_FILE="${WORK}/pass"
-    SKIP_FILE="${WORK}/skip"
+    FAIL_FILE="${WORK:?WORK must be set before sourcing the harness}/fail"
+    PASS_FILE="${WORK:?WORK must be set before sourcing the harness}/pass"
+    SKIP_FILE="${WORK:?WORK must be set before sourcing the harness}/skip"
     : >"$FAIL_FILE"
     : >"$PASS_FILE"
     : >"$SKIP_FILE"
 fi
 
-REPO="${REPO:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+
+REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 MANAGER="${REPO}/Bash_WP-CLI_Update.sh"
 FINDER="${REPO}/Find_WP_Senior.sh"
 STUB_DIR="${WORK}/bin"
@@ -139,40 +130,29 @@ SITES_OPTOUT="${SITE_ROOT}/opted-out.com"
 SITES_NOTWP="${SITE_ROOT}/plain-html"
 # The stub `wp` is executed as the SITE USER, so its log must live where that
 # user can write. $WORK itself is root-owned and must stay 0755 (traversable but
-# not writable), which is why the log goes under a 1777 directory. Getting this
-# wrong does not fail loudly: the stub simply records nothing and every argv
-# assertion looks like a product bug.
+# not writable), which is why the log goes under the site tree that build_fixture
+# chowns to the test user. Getting this wrong does not fail loudly: the stub
+# simply records nothing and every argv assertion looks like a product bug.
 LOG_DIR="${WORK}/var/log-stub"
 ARGV_LOG="${LOG_DIR}/argv.log"
 SITE_LIST="${WORK}/sites.txt"
 LOG_FILE="${WORK}/manager.log"
 ERR_FILE="${WORK}/errors.log"
 LOCK_FILE="${WORK}/lock"
-# shellcheck disable=SC2034  # consumed by the suites that source this harness
-STATE_FILE="${WORK}/state.json"
-# shellcheck disable=SC2034  # consumed by the suites that source this harness
-METRICS_FILE="${WORK}/metrics.prom"
-WPCLI_VER_FILE="${WORK}/wpcli-version.txt"
 
 make_site() { # DIR [DB_USER] [MARKER]
     local dir="$1" dbuser="${2:-siteuser}" marker="${3:-}"
-    mkdir -p "${dir}/wp-includes" "${dir}/wp-content/plugins" "${dir}/wp-content/uploads"
+    mkdir -p "${dir}/wp-includes" "${dir}/wp-content/plugins"
     printf '<?php\ndefine("DB_NAME", "db_%s");\ndefine("DB_USER", "%s");\n' \
         "$(basename -- "$dir" | tr -c 'A-Za-z0-9' '_')" "$dbuser" >"${dir}/wp-config.php"
     # shellcheck disable=SC2016  # literal PHP source: $wp_version must not expand
     printf '<?php\n$wp_version = "6.6.2";\n' >"${dir}/wp-includes/version.php"
     printf '<?php // wp-load\n' >"${dir}/wp-load.php"
     if [ -n "$marker" ]; then : >"${dir}/${marker}"; fi
-    chmod 640 "${dir}/wp-config.php" 2>/dev/null
     if [ -n "$SU_USER" ] && [ "$HAVE_ROOT" = '1' ]; then
         chown -R "${SU_USER}:${SU_USER}" "$dir" 2>/dev/null
     fi
     chmod -R a+rX "$dir" 2>/dev/null
-    # The a+rX above makes the fixture traversable and readable for a switched
-    # user; it must not undo the restrictive wp-config mode, because the finder
-    # audit test relies on a well-configured site being 0640 and flips exactly
-    # one site to 0644 on purpose.
-    chmod 640 "${dir}/wp-config.php" 2>/dev/null
 }
 
 build_fixture() {
@@ -187,7 +167,8 @@ build_fixture() {
     mkdir -p "$SITES_NOTWP"
     printf '<html></html>\n' >"${SITES_NOTWP}/index.html"
     printf '%s\n' "$SITES" "$SITES2" >"$SITE_LIST"
-    printf '2.11.0\n' >"$WPCLI_VER_FILE"
+    # Make the log directory writable by whoever ends up running the stub: the
+    # site user when one exists, root otherwise.
     chmod 1777 "$LOG_DIR" 2>/dev/null
     if [ -n "$SU_USER" ] && [ "$HAVE_ROOT" = '1' ]; then
         chown -R "${SU_USER}:${SU_USER}" "$LOG_DIR" 2>/dev/null
@@ -198,12 +179,20 @@ build_fixture() {
 
 # manager_run: run the manager against the fixture with a fixed, hermetic set of
 # paths so a test run never writes into the repository or fights over a lock.
+# manager_run: run the manager against the fixture with a fixed, hermetic set of
+# paths so a test run never writes into the repository or fights over a lock.
 #
 # --user-env FAKE_WP_LOG is load-bearing, not decoration: the manager builds a
-# fresh environment for the child, so the stub would not see FAKE_WP_LOG and
+# clean environment for the child, so the stub would not see FAKE_WP_LOG and
 # would fall back to its own default log. Passing it through is exactly what the
-# option is for, and it exercises the option on every single call.
+# option is for, and it also exercises the option on every single call.
 manager_run() {
+    # On a non-root account the manager refuses to run (it has to switch into the
+    # site owner), so every case would end as "exit 3" and prove nothing. Adding
+    # --no-user-switch there keeps the suite meaningful on a laptop; the switch
+    # itself is covered by the checks that ask for root explicitly.
+    local -a noswitch=()
+    [ "$(id -u)" = '0' ] || noswitch=(--no-user-switch)
     FAKE_WP_LOG="$ARGV_LOG" bash "$MANAGER" \
         --wp "$STUB_WP" \
         --sites "$SITE_LIST" \
@@ -212,6 +201,7 @@ manager_run() {
         --lock-file "$LOCK_FILE" \
         --color never \
         --user-env FAKE_WP_LOG \
+        ${noswitch[@]+"${noswitch[@]}"} \
         "$@"
 }
 
@@ -227,7 +217,8 @@ argv_log_reset() {
     fi
 }
 
-argv_count() { grep -Ec -- "$1" "$ARGV_LOG" 2>/dev/null || printf '0'; }
+# argv_lines_matching PATTERN -> number of recorded invocations containing it
+argv_count() { grep -c "$1" "$ARGV_LOG" 2>/dev/null || printf '0'; }
 
 cleanup_work() {
     if [ -z "${TEST_WORK:-}" ] && [ -n "$WORK" ] && [ -d "$WORK" ]; then
@@ -248,6 +239,5 @@ report() { # SUITE_NAME
     else
         printf 'CHECKS FAILED: %s passed, %s failed, %s skipped\n' "$p" "$f" "$s"
     fi
-    cleanup_work
     [ "$f" -eq 0 ]
 }

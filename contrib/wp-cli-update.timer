@@ -1,0 +1,15 @@
+[Unit]
+Description=Nightly WordPress maintenance (Bash WP-CLI Update)
+Documentation=file:/opt/wp-cli-update/README.md
+
+[Timer]
+# 03:20 local time, with a randomised delay so that several hosts do not start at
+# the same second and saturate one database server.
+OnCalendar=*-*-* 03:20:00
+RandomizedDelaySec=15m
+# If the host was off at 03:20, run once soon after boot instead of skipping a week.
+Persistent=true
+Unit=wp-cli-update.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,29 @@
+[Unit]
+Description=WordPress maintenance run (WP-CLI update, backup, report)
+Documentation=file:/opt/wp-cli-update/README.md
+After=network-online.target mysql.service mariadb.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# The manager switches into the owner of each site, so it has to be root.
+User=root
+WorkingDirectory=/opt/wp-cli-update
+Environment=WP_CLI_UPDATE_AUTO_DISCOVER=0
+# A fleet run must not outrun the web server it shares a disk with; the manager
+# applies this to every wp child, but the manager itself is nice too.
+Nice=10
+IOSchedulingClass=idle
+# The unit's own ceiling: three hours is long enough for a large fleet and short
+# enough that a hung run does not block the next night.
+TimeoutStartSec=3h
+# A partial summary and the JSON report are worth more than a clean kill.
+KillSignal=SIGTERM
+KillMode=mixed
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=wp-cli-update
+ExecStart=/opt/wp-cli-update/Bash_WP-CLI_Update.sh --full --backup db --report /var/log/wp-cli-update/last-run.json
+
+[Install]
+WantedBy=multi-user.target

@@ -1,3 +1,11 @@
+# Editor configuration for Bash WP-CLI Update.
+#
+# The scripts run on Linux and are executed by bash 4.2+. Two settings here are not
+# cosmetic: `end_of_line = lf` (a CR byte becomes part of the last word on every line
+# and breaks `case` labels, pattern matching and the generated site list) and
+# `insert_final_newline = true` (a file without it makes `while read` skip its last
+# line, which on a site list means silently skipping a site).
+
 root = true
 
 [*]
@@ -5,24 +13,25 @@ charset = utf-8
 end_of_line = lf
 insert_final_newline = true
 trim_trailing_whitespace = true
-
-[*.sh]
 indent_style = space
 indent_size = 4
-# bash 4.2 is the portability floor (CentOS/RHEL 7); see docs/ARCHITECTURE.md
-max_line_length = 100
+
+[*.{sh,wp}]
+indent_size = 4
+# Shell scripts are not tabs-vs-spaces taste: 4 spaces keep the heredocs and the
+# `case` bodies aligned with the rest of the tree.
 
 [*.md]
 trim_trailing_whitespace = false
-max_line_length = 90
+# Two trailing spaces are a hard line break in Markdown; stripping them silently
+# changes the rendered document.
+
+[*.{yml,yaml}]
+indent_size = 2
 
 [Makefile]
 indent_style = tab
+# A Makefile recipe line that starts with spaces is not a recipe line.
 
-[*.yml]
-indent_style = space
-indent_size = 2
-
-[*.example]
-indent_style = space
+[*.{example,conf}]
 indent_size = 4

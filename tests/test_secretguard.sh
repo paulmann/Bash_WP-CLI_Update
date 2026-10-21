@@ -15,6 +15,8 @@ WORK="$(mktemp -d "${TMPDIR:-/tmp}/wpcli-guard.XXXXXX")"
 chmod 755 "$WORK"
 # Counters: honour the ones a parent runner exported (tests/run_tests.sh tallies
 # every suite from them) and fall back to a private set when the suite runs alone.
+# Overwriting them unconditionally is what made run_tests.sh report 0/0/0 while
+# the suite itself printed a correct total.
 FAIL_FILE="${FAIL_FILE:-${WORK}/fail}"
 PASS_FILE="${PASS_FILE:-${WORK}/pass}"
 SKIP_FILE="${SKIP_FILE:-${WORK}/skip}"

@@ -1,0 +1,63 @@
+name: release
+
+# A tag is the release trigger. The workflow rebuilds, re-runs the gates and attaches
+# the tarball to the release, so a release can never contain something the suite did
+# not pass.
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: build and publish
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: install shellcheck
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y shellcheck
+
+      - name: version agrees with the tag
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          script="$(sed -n "s/^SCRIPT_VERSION='\(.*\)'.*/\1/p" Bash_WP-CLI_Update.sh | head -1)"
+          echo "tag=$tag script=$script"
+          if [ "$tag" != "$script" ]; then
+            echo "the tag and SCRIPT_VERSION disagree"; exit 1
+          fi
+          grep -q "$script" README.md
+          grep -q "$script" CHANGELOG.md
+
+      - name: gates
+        run: |
+          bash -n Bash_WP-CLI_Update.sh
+          bash -n Find_WP_Senior.sh
+          shellcheck -f gcc Bash_WP-CLI_Update.sh Find_WP_Senior.sh \
+            tools/scan-secrets.sh tests/*.sh tests/stub/wp
+          sudo bash tests/run_tests.sh
+
+      - name: build the archive
+        run: |
+          make dist
+          ls -l dist/
+          sha256sum dist/*.tar.gz > dist/SHA256SUMS
+
+      - name: publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="$GITHUB_REF_NAME"
+          notes="$(awk -v t="## [${tag#v}]" 'index($0, t) == 1 {flag=1; next} /^## \[/ {flag=0} flag' CHANGELOG.md)"
+          [ -n "$notes" ] || notes="Release ${tag}. See CHANGELOG.md."
+          gh release create "$tag" \
+            --title "Bash WP-CLI Update ${tag}" \
+            --notes "$notes" \
+            dist/*.tar.gz dist/SHA256SUMS

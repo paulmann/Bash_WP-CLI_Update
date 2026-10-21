@@ -1,0 +1,28 @@
+# Cron alternative to contrib/wp-cli-update.timer.
+#
+# Install as /etc/cron.d/wp-cli-update (root-owned, mode 0644, no dot in the name).
+# Prefer the systemd timer when both are available: it has RandomizedDelaySec and
+# Persistent=true, and it records the last run in `systemctl status`.
+#
+# The scheduler's environment is minimal on purpose. WP_CLI_UPDATE_* variables are
+# the only configuration the manager reads from the environment, and the config file
+# is the better place for everything else.
+#
+# Cron does not retry and does not alert. The manager does both:
+#   --retry 2 --retry-delay 30     retry a site that hit a transient failure
+#   --max-failures 5               stop the fleet instead of writing 200 errors
+#   --notify ... --notify-on failure   one alert when something went wrong
+#
+# MAILTO is honoured by cron itself: output is mailed only when there is output, and
+# a clean run prints nothing to fd 1 (the summary goes to stderr, which cron mails).
+
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+MAILTO=""
+
+# m   h  dom mon dow   user  command
+  20  3  *   *   *     root  cd /opt/wp-cli-update && AUTO_DISCOVER=0 ./Bash_WP-CLI_Update.sh --full --backup db --skip-if-no-updates --retry 2 --max-failures 5 --min-free-mb 500 --report /var/log/wp-cli-update/last-run.json --notify-on failure >>/var/log/wp-cli-update/cron.out 2>&1
+
+# Read-only inventory every ten minutes, for monitoring. It takes no lock and writes
+# nothing, so it is safe to run while a maintenance run is in progress.
+*/10 *  *  *  *     root  cd /opt/wp-cli-update && AUTO_DISCOVER=0 ./Bash_WP-CLI_Update.sh --health >/var/log/wp-cli-update/health.txt 2>/dev/null

@@ -3,8 +3,8 @@
 # Run every check that needs no root, no WordPress, no WP-CLI and no network.
 #
 # Usage:
-#   bash tests/run_tests.sh                 # everything
-#   bash tests/run_tests.sh manager cli     # selected suites (test_<name>.sh)
+#   bash tests/run_tests.sh            # everything
+#   bash tests/run_tests.sh manager    # one suite
 #   TEST_SITE_USER=www-data bash tests/run_tests.sh
 #
 # Environment:
@@ -14,7 +14,6 @@
 #   TEST_WORK        reuse a working directory instead of a fresh mktemp one
 #   SHELLCHECK_BIN   shellcheck binary to use for the lint check
 #   VERBOSE=1        keep the working directories for inspection
-#   WPU_BUILD_ID     build id stamped into the artifacts before checking drift
 #
 # Exit status is 0 only when every suite passed. A suite that skips checks still
 # passes, but the skip count is printed: a suite that skips everything is a suite
@@ -25,40 +24,19 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo="$(cd "$here/.." && pwd)"
 rc=0
 
-# Rebuild the artifacts from src/ first, so the suites always test what the
-# modules say. A committed artifact that drifted from its sources is exactly the
-# bug a single-file-plus-modules layout can have, and the build is cheap.
-if [ -f "${repo}/tools/build.sh" ] && [ -d "${repo}/src/manager" ]; then
-    printf 'building artifacts from src/ ...\n'
-    if ! WPU_BUILD_ID="${WPU_BUILD_ID:-test}" bash "${repo}/tools/build.sh" >&2; then
-        printf 'FATAL: the build failed; refusing to test stale artifacts\n' >&2
-        exit 3
-    fi
-fi
-
 printf 'repository : %s\n' "$repo"
 printf 'bash       : %s\n' "${BASH_VERSION:-unknown}"
 printf 'kernel     : %s\n' "$(uname -sr 2>/dev/null)"
 printf 'id         : %s (uid %s)\n' "$(id -un 2>/dev/null)" "$(id -u 2>/dev/null)"
 printf '/bin/sh    : %s\n' "$(readlink -f /bin/sh 2>/dev/null || printf 'absent')"
 printf 'shellcheck : %s\n' "$(command -v "${SHELLCHECK_BIN:-shellcheck}" 2>/dev/null || printf 'not installed')"
-for t in flock timeout runuser perl jq curl wget gpg tar logger; do
-    printf '%-11s: %s\n' "$t" "$(command -v "$t" 2>/dev/null || printf 'absent')"
-done
+printf 'flock      : %s\n' "$(command -v flock 2>/dev/null || printf 'absent')"
+printf 'timeout    : %s\n' "$(command -v timeout 2>/dev/null || printf 'absent')"
+printf 'runuser    : %s\n' "$(command -v runuser 2>/dev/null || printf 'absent')"
 printf 'site user  : %s\n' "${TEST_SITE_USER:-<auto-detect>}"
 printf '\n'
 
-SUITES=(
-    test_static.sh
-    test_pure.sh
-    test_cli_contract.sh
-    test_config.sh
-    test_manager.sh
-    test_fleet.sh
-    test_wpcli_policy.sh
-    test_finder.sh
-    test_secretguard.sh
-)
+SUITES=(test_static.sh test_base_contract.sh test_finder.sh test_manager.sh test_fleet.sh test_secretguard.sh test_v7.sh)
 if (($# > 0)); then
     SUITES=()
     for arg in "$@"; do
@@ -86,6 +64,7 @@ for suite in "${SUITES[@]}"; do
     work="$(mktemp -d "${TMPDIR:-/tmp}/wpcli-suite.XXXXXX")"
     chmod 755 "$work"
     log="${work}/out.txt"
+    # The suites count in files, so a check that runs in a pipeline still counts.
     export FAIL_FILE="${work}/fail" PASS_FILE="${work}/pass" SKIP_FILE="${work}/skip"
     : >"$FAIL_FILE"; : >"$PASS_FILE"; : >"$SKIP_FILE"
     if [ "${VERBOSE:-0}" = '1' ]; then
@@ -93,12 +72,15 @@ for suite in "${SUITES[@]}"; do
         mkdir -p "$TEST_WORK"
         chmod 755 "$TEST_WORK"
     fi
-    suite_rc=0
-    bash "$path" >"$log" 2>&1 || suite_rc=$?
+    if bash "$path" >"$log" 2>&1; then
+        suite_rc=0
+    else
+        suite_rc=$?
+    fi
     cat "$log"
-    p="$(grep -c '' "$PASS_FILE" 2>/dev/null)"; p="${p//[^0-9]/}"; p="${p:-0}"
-    f="$(grep -c '' "$FAIL_FILE" 2>/dev/null)"; f="${f//[^0-9]/}"; f="${f:-0}"
-    s="$(grep -c '' "$SKIP_FILE" 2>/dev/null)"; s="${s//[^0-9]/}"; s="${s:-0}"
+    p="$(grep -c '' "$PASS_FILE" 2>/dev/null)" || p=0
+    f="$(grep -c '' "$FAIL_FILE" 2>/dev/null)" || f=0
+    s="$(grep -c '' "$SKIP_FILE" 2>/dev/null)" || s=0
     total_pass=$((total_pass + p))
     total_fail=$((total_fail + f))
     total_skip=$((total_skip + s))
