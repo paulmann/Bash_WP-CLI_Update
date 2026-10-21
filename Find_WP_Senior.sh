@@ -3,7 +3,7 @@
 # File:        Find_WP_Senior.sh
 # Project:     Bash WP-CLI Update
 # Repository:  https://github.com/paulmann/Bash_WP-CLI_Update
-# Version:     2.0.0
+# Version:     2.2.0
 # License:     MIT — see LICENSE file in project root.
 #
 # Description:

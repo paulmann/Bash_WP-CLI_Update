@@ -4,7 +4,7 @@
 # ==============================================================================
 # File:        Bash_WP-CLI_Update.sh
 # Repository:  https://github.com/paulmann/Bash_WP-CLI_Update
-# Version:     6.0.0
+# Version:     6.3.0
 # License:     MIT — see LICENSE file in project root.
 #
 # Description:
@@ -109,7 +109,9 @@ if ((BASH_VERSINFO[0] < 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 2))); 
 	exit 3
 fi
 
-readonly SCRIPT_VERSION="6.0.0"
+# Version carries the provenance: two different deliverables already shared the
+# number 6.0.0, and that ambiguity cost time during the comparison.
+readonly SCRIPT_VERSION="6.1.0-hybrid"
 readonly SCRIPT_NAME="${0##*/}"
 SCRIPT_DIR=""
 
@@ -118,6 +120,7 @@ readonly EX_FAIL=1
 readonly EX_USAGE=2
 readonly EX_PREFLIGHT=3
 readonly EX_EMPTY=4
+readonly EX_CONFIG=5
 readonly EX_INTERRUPT=130
 
 # ------------------------------------------------------------------------------
@@ -149,6 +152,15 @@ DEBUG=0
 QUIET=0
 VERBOSE=0
 JSON_OUT=0
+# Columns requested from `wp plugin list` and the terminal pager. Both come from
+# the machine-readable end of the neighbour: a wrapper needs to ask for the
+# fields it understands, and a 400-plugin site must not flood a terminal.
+PLUGIN_FIELDS="name,title,status,version,update,update_version"
+PAGE_LIMIT=0
+# --fail-on: any (default) | all | never — which site failures make the run fail
+FAIL_ON="any"
+MAX_SITES=0
+USER_ENV_LIST=""
 DRY_RUN=0
 ONLY_ACTIVE=0
 STRICT=0
@@ -156,6 +168,10 @@ NO_DISCOVER=0
 USER_SWITCH=1
 NO_BACKUP=0
 LIST_SITES_ONLY=0
+CHECK_ONLY=0
+PRINT_CONFIG=0
+LIST_MODES=0
+STATUS_ONLY=0
 BACKUP_MODE=""
 COLOR_MODE="auto"
 CONFIG_FILE=""
@@ -189,6 +205,10 @@ WP_BIN=""
 WP_OUT=""
 WP_ERR_FILE=""
 WP_NOCOUNT=0
+# TERM by default, KILL as the escalation. The pair stands in for `timeout -k`,
+# which does not exist in BSD userland.
+WP_SIGNAL="TERM"
+KILL_AFTER=10
 WP_SOFT=0
 HAS_JQ=0
 LOCK_DIR=""
@@ -200,6 +220,7 @@ DIE_CODE=0
 PRIV_KIND="none"
 
 TIMEOUT_BIN=""
+SIGNAL_BIN=""
 ENV_BIN=""
 TAR_BIN=""
 CURRENT_USER=""
@@ -423,8 +444,9 @@ Modes:
   -s, --astra            Update Astra Pro (licence activation on failure)
   -l, --list-plugins     Inventory plugins (table, or --json)
   -m, --plugin-manage    activate | deactivate | delete a plugin
-      --status           Read-only health report
       --verify           Read-only checksum verification
+      --health           Read-only report: core version, updates, database size
+      --secrets          Scan each site's config for secret-looking values
 
 Targeting / behaviour:
   -S, --site PATH        Single site (default: every site in ${SITES_FILE})
@@ -447,6 +469,14 @@ Targeting / behaviour:
   -T, --timeout SEC      Per-command timeout (default ${WP_TIMEOUT}s, 0 = off)
   -L, --log-dir DIR      Log directory (default ${LOG_DIR})
   -J, --json             JSON Lines on stdout: one object per site + summary
+      --json-lines       Same as --json, named after the format
+      --fail-on WHEN     any | all | never — when the run exits non-zero (default ${FAIL_ON})
+      --max-sites N      Process at most N sites (0 = all, default ${MAX_SITES})
+      --user-env LIST    Space separated variable names passed through to `wp`
+      --fields LIST      Columns for --list-plugins (default ${PLUGIN_FIELDS})
+      --page-limit N     Show at most N rows of --list-plugins (0 = all)
+      --signal SIG       Signal for a timed-out command (default ${WP_SIGNAL})
+      --kill-after N     SIGKILL N seconds after --signal (default ${KILL_AFTER})
       --strict           Warnings/findings cause a non-zero exit
       --no-discover      Never run the discovery script automatically
       --no-user-switch   Run WP-CLI as the current user
@@ -459,8 +489,12 @@ Targeting / behaviour:
   -C, --config FILE      Configuration file (default ${CONFIG_FILE_DEFAULT})
   -V, --version          Print version
   -h, --help             This help
+      --check            Verify the environment and every site, change nothing
+      --print-config     Print every effective setting and the layer it came from
+      --list-modes       Print the mode names, one per line (for completion)
+      --status           Print the last run's summary and the log sizes
 
-Exit codes: 0 ok | 1 operation failure | 2 usage | 3 preflight | 4 no sites | 130 interrupted
+Exit codes: 0 ok | 1 operation failure | 2 usage | 3 preflight | 4 no sites | 5 config | 130 interrupted
 
 Examples:
   ${SCRIPT_NAME} --full --backup db
@@ -609,27 +643,93 @@ preload_cli_paths() {
 	return 0
 }
 
+# Recognised configuration keys. Everything else is refused: an unknown key is
+# either a typo that silently does nothing or an attempt to inject a setting.
+readonly CONFIG_KEYS_RE='^(SITES_FILE|DISCOVER_SCRIPT|LOG_DIR|LOG_FILE|ERROR_LOG_FILE|LOG_MAX_BYTES|LOG_KEEP|BACKUP_DIR|KEEP_BACKUPS|WP_TIMEOUT|WP_CLI_BIN|SITE_URL|DEFAULT_USER|ASTRA_KEY|ASTRA_KEY_FILE|SKIP_PLUGINS|EXCLUDE_PLUGINS|JOBS|ONLY_ACTIVE|STRICT|NO_USER_SWITCH|COLOR|DRY_RUN|BACKUP|USER|FAIL_ON|MAX_SITES|USER_ENV|WP_SIGNAL|KILL_AFTER|LOG_LEVEL|PLUGIN_FIELDS|PAGE_LIMIT)$'
+
+# Which layer produced each effective value, for --print-config.
+declare -A CONFIG_SOURCE=()
+
+config_unsafe_reason() {
+	local line="$1"
+	case "${line}" in
+		*'`'*)             printf '%s' "backtick" ;;
+		*'$('*)            printf '%s' "command substitution" ;;
+		*'${'*)            printf '%s' "variable expansion" ;;
+		*'|'*|*';'*|*'&'*) printf '%s' "shell operator" ;;
+		*'<'*|*'>'*)      printf '%s' "redirection" ;;
+		*)                 printf '%s' "" ;;
+	esac
+	return 0
+}
+
+# The config file is PARSED, never sourced. A sourced file is code execution with
+# the manager's privileges: a root-owned but group-writable file, or any file
+# another account can write, runs as root.
+parse_config_file() {
+	local file="$1" line="" lineno=0 key="" value="" reason="" bad=0
+	while IFS= read -r line || [[ -n "${line}" ]]; do
+		((lineno++)) || true
+		line="${line%$'\r'}"
+		[[ "${line}" =~ ^[[:space:]]*$ ]] && continue
+		[[ "${line}" =~ ^[[:space:]]*# ]] && continue
+		if ! [[ "${line}" =~ ^[[:space:]]*([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]]; then
+			log_err "config: ${file}:${lineno}: not a KEY=VALUE line — refusing to read the file"
+			return 1
+		fi
+		key="${BASH_REMATCH[1]}"
+		value="${BASH_REMATCH[2]}"
+		if ! [[ "${key}" =~ ${CONFIG_KEYS_RE} ]]; then
+			log_err "config: ${file}:${lineno}: unknown key '${key}' — refusing to read the file"
+			return 1
+		fi
+		reason="$(config_unsafe_reason "${value}")"
+		if [[ -n "${reason}" ]]; then
+			log_err "config: ${file}:${lineno}: ${reason} in a config value — refusing to read the file"
+			bad=1
+			continue
+		fi
+		if [[ "${#value}" -ge 2 ]]; then
+			if [[ "${value:0:1}" == '"' && "${value: -1}" == '"' ]]; then
+				value="${value:1:${#value}-2}"
+			elif [[ "${value:0:1}" == "'" && "${value: -1}" == "'" ]]; then
+				value="${value:1:${#value}-2}"
+			fi
+		fi
+		# an explicitly exported variable keeps priority over the file
+		if printenv "${key}" >/dev/null 2>&1; then
+			CONFIG_SOURCE["${key}"]="environment (file value ignored)"
+			continue
+		fi
+		# The key is whitelisted and the value carries no shell metacharacters, so
+		# assigning by name cannot reach anything the parser did not approve.
+		declare -gx "${key}=${value}"
+		CONFIG_SOURCE["${key}"]="file:${file}"
+	done <"${file}"
+	((bad)) && return 1
+	return 0
+}
+
 load_config() {
 	local file="${CONFIG_FILE:-${CONFIG_FILE_DEFAULT}}"
 	[[ -e "${file}" ]] || return 0
 	[[ -f "${file}" ]] || die "config file is not a regular file: ${file}" "${EX_USAGE}"
 	[[ -r "${file}" ]] || die "config file is not readable: ${file}" "${EX_USAGE}"
 
-	# The file is sourced: refuse group/world writable permissions and syntax
-	# errors (a syntax error in a sourced file would abort the shell with an
-	# unrelated exit code).
-	local perms=""
+	# A mask, not a single nibble: 8#022 catches group-write (0620, 0660) as well
+	# as world-write (0664, 0666). The previous check compared the last octal
+	# digit only, so a group-writable file was accepted and executed.
+	local perms="" mode=0
 	perms="$(file_perms "${file}")"
-	if [[ -n "${perms}" && "${perms}" =~ [2367]$ ]]; then
-		die "refusing to source a group/world writable config file: ${file} (chmod 0600)" "${EX_USAGE}"
-	fi
-	if ! "${BASH:-bash}" -n "${file}" 2>/dev/null; then
-		die "config file contains a shell syntax error: ${file}" "${EX_USAGE}"
+	if [[ -n "${perms}" && "${perms}" =~ ^[0-7]{3,4}$ ]]; then
+		mode=$((8#${perms}))
+		if ((mode & 8#022)); then
+			die "refusing to read a group/world writable config file: ${file} (mode ${perms}; chmod 0600)" "${EX_USAGE}"
+		fi
 	fi
 
-	# shellcheck disable=SC1090
-	source "${file}" || die "failed to load config file: ${file}" "${EX_USAGE}"
-	log_debug "config loaded: ${file}"
+	parse_config_file "${file}" || die "configuration error in ${file}" "${EX_CONFIG}"
+	log_debug "config parsed: ${file}"
 	return 0
 }
 
@@ -658,6 +758,52 @@ set_mode() {
 	return 0
 }
 
+# Snapshot of the settings as they stand after config+defaults, so that
+# --print-config can tell "command line" from "file" and "default".
+declare -A CLI_SNAPSHOT=()
+declare -A CLI_SET=()
+snapshot_settings() {
+	CLI_SNAPSHOT[MODE]="${MODE}"
+	CLI_SNAPSHOT[JOBS]="${JOBS}"
+	CLI_SNAPSHOT[ONLY_ACTIVE]="${ONLY_ACTIVE}"
+	CLI_SNAPSHOT[STRICT]="${STRICT}"
+	CLI_SNAPSHOT[USER_SWITCH]="${USER_SWITCH}"
+	CLI_SNAPSHOT[DRY_RUN]="${DRY_RUN}"
+	CLI_SNAPSHOT[BACKUP]="${BACKUP_MODE}"
+	CLI_SNAPSHOT[BACKUP_DIR]="${BACKUP_DIR}"
+	CLI_SNAPSHOT[SKIP_PLUGINS]="${SKIP_PLUGINS}"
+	CLI_SNAPSHOT[WP_TIMEOUT]="${WP_TIMEOUT}"
+	CLI_SNAPSHOT[SITES_FILE]="${SITES_FILE}"
+	CLI_SNAPSHOT[ASTRA_KEY_FILE]="${ASTRA_KEY_FILE}"
+	CLI_SNAPSHOT[FAIL_ON]="${FAIL_ON}"
+	CLI_SNAPSHOT[MAX_SITES]="${MAX_SITES}"
+	CLI_SNAPSHOT[USER_ENV]="${USER_ENV_LIST}"
+	return 0
+}
+mark_cli_overrides() {
+	local k=""
+	for k in MODE JOBS ONLY_ACTIVE STRICT USER_SWITCH DRY_RUN BACKUP BACKUP_DIR SKIP_PLUGINS WP_TIMEOUT SITES_FILE ASTRA_KEY_FILE FAIL_ON MAX_SITES USER_ENV; do
+		case "${k}" in
+			MODE)          [[ "${MODE}"             != "${CLI_SNAPSHOT[MODE]}" ]]          && CLI_SET[MODE]=1 ;;
+			JOBS)          [[ "${JOBS}"             != "${CLI_SNAPSHOT[JOBS]}" ]]          && CLI_SET[JOBS]=1 ;;
+			ONLY_ACTIVE)   [[ "${ONLY_ACTIVE}"      != "${CLI_SNAPSHOT[ONLY_ACTIVE]}" ]]   && CLI_SET[ONLY_ACTIVE]=1 ;;
+			STRICT)        [[ "${STRICT}"           != "${CLI_SNAPSHOT[STRICT]}" ]]        && CLI_SET[STRICT]=1 ;;
+			USER_SWITCH)   [[ "${USER_SWITCH}"      != "${CLI_SNAPSHOT[USER_SWITCH]}" ]]   && CLI_SET[USER_SWITCH]=1 ;;
+			DRY_RUN)       [[ "${DRY_RUN}"          != "${CLI_SNAPSHOT[DRY_RUN]}" ]]       && CLI_SET[DRY_RUN]=1 ;;
+			BACKUP)        [[ "${BACKUP_MODE}"      != "${CLI_SNAPSHOT[BACKUP]}" ]]        && CLI_SET[BACKUP]=1 ;;
+			BACKUP_DIR)    [[ "${BACKUP_DIR}"       != "${CLI_SNAPSHOT[BACKUP_DIR]}" ]]    && CLI_SET[BACKUP_DIR]=1 ;;
+			SKIP_PLUGINS)  [[ "${SKIP_PLUGINS}"     != "${CLI_SNAPSHOT[SKIP_PLUGINS]}" ]]  && CLI_SET[SKIP_PLUGINS]=1 ;;
+			WP_TIMEOUT)    [[ "${WP_TIMEOUT}"       != "${CLI_SNAPSHOT[WP_TIMEOUT]}" ]]    && CLI_SET[WP_TIMEOUT]=1 ;;
+			SITES_FILE)    [[ "${SITES_FILE}"       != "${CLI_SNAPSHOT[SITES_FILE]}" ]]    && CLI_SET[SITES_FILE]=1 ;;
+			ASTRA_KEY_FILE) [[ "${ASTRA_KEY_FILE}"  != "${CLI_SNAPSHOT[ASTRA_KEY_FILE]}" ]] && CLI_SET[ASTRA_KEY_FILE]=1 ;;
+			FAIL_ON)       [[ "${FAIL_ON}"          != "${CLI_SNAPSHOT[FAIL_ON]}" ]]       && CLI_SET[FAIL_ON]=1 ;;
+			MAX_SITES)     [[ "${MAX_SITES}"        != "${CLI_SNAPSHOT[MAX_SITES]}" ]]     && CLI_SET[MAX_SITES]=1 ;;
+			USER_ENV)      [[ "${USER_ENV_LIST}"    != "${CLI_SNAPSHOT[USER_ENV]}" ]]      && CLI_SET[USER_ENV]=1 ;;
+		esac
+	done
+	return 0
+}
+
 parse_args() {
 	local arg=""
 	while (($#)); do
@@ -673,8 +819,13 @@ parse_args() {
 			-s|--astra)         set_mode astra "$arg"; shift ;;
 			-l|--list-plugins)  set_mode list-plugins "$arg"; shift ;;
 			-m|--plugin-manage) set_mode plugin-manage "$arg"; shift ;;
-			--status)           set_mode status "$arg"; shift ;;
 			--verify)           set_mode verify "$arg"; shift ;;
+			--health)           set_mode health "$arg"; shift ;;
+			--secrets)          set_mode secrets "$arg"; shift ;;
+			--fields)           need_value "${arg}" "$#" "${2:-}"; PLUGIN_FIELDS="$2"; shift 2 ;;
+			--fields=*)         PLUGIN_FIELDS="${arg#*=}"; shift ;;
+			--page-limit)       need_value "${arg}" "$#" "${2:-}"; PAGE_LIMIT="$2"; shift 2 ;;
+			--page-limit=*)     PAGE_LIMIT="${arg#*=}"; shift ;;
 
 			-S|--site)              need_value "${arg}" "$#" "${2:-}"; TARGET_SITE="$2"; shift 2 ;;
 			--site=*)               TARGET_SITE="${arg#*=}"; shift ;;
@@ -720,12 +871,27 @@ parse_args() {
 			--no-discover)          NO_DISCOVER=1; shift ;;
 			--no-user-switch)       USER_SWITCH=0; shift ;;
 			-J|--json)              JSON_OUT=1; shift ;;
+			--json-lines)           JSON_OUT=1; shift ;;
+			--fail-on)              need_value "${arg}" "$#" "${2:-}"; FAIL_ON="${2,,}"; shift 2 ;;
+			--fail-on=*)            FAIL_ON="${arg#*=}"; FAIL_ON="${FAIL_ON,,}"; shift ;;
+			--max-sites)            need_value "${arg}" "$#" "${2:-}"; MAX_SITES="$2"; shift 2 ;;
+			--max-sites=*)          MAX_SITES="${arg#*=}"; shift ;;
+			--user-env)             need_value "${arg}" "$#" "${2:-}"; USER_ENV_LIST="$2"; shift 2 ;;
+			--user-env=*)           USER_ENV_LIST="${arg#*=}"; shift ;;
+			--signal)               need_value "${arg}" "$#" "${2:-}"; WP_SIGNAL="${2^^}"; shift 2 ;;
+			--signal=*)             WP_SIGNAL="${arg#*=}"; WP_SIGNAL="${WP_SIGNAL^^}"; shift ;;
+			--kill-after)           need_value "${arg}" "$#" "${2:-}"; KILL_AFTER="$2"; shift 2 ;;
+			--kill-after=*)         KILL_AFTER="${arg#*=}"; shift ;;
 			-D|--DEBUG|--debug)     DEBUG=1; shift ;;
 			-q|--quiet)             QUIET=1; shift ;;
 			-v|--verbose)           VERBOSE=1; shift ;;
 			--no-color)             COLOR_MODE="never"; shift ;;
 			--color)                COLOR_MODE="always"; shift ;;
 			--list-sites)           LIST_SITES_ONLY=1; shift ;;
+			--check)                CHECK_ONLY=1; shift ;;
+			--print-config)         PRINT_CONFIG=1; shift ;;
+			--list-modes)           LIST_MODES=1; shift ;;
+			--status)               STATUS_ONLY=1; shift ;;
 			-V|--version)           printf '%s %s\n' "${SCRIPT_NAME}" "${SCRIPT_VERSION}"; exit "${EX_OK}" ;;
 			-h|--help)              usage; exit "${EX_OK}" ;;
 			--)
@@ -742,7 +908,7 @@ parse_args() {
 }
 
 validate_options() {
-	if ((!LIST_SITES_ONLY)) && [[ -z "${MODE}" ]]; then
+	if ((!LIST_SITES_ONLY)) && ((!CHECK_ONLY)) && ((!PRINT_CONFIG)) && ((!LIST_MODES)) && ((!STATUS_ONLY)) && [[ -z "${MODE}" ]]; then
 		usage_error "no mode specified"
 	fi
 
@@ -770,6 +936,32 @@ validate_options() {
 		*) usage_error "--backup must be 'db' or 'full' (got: ${BACKUP_MODE})" ;;
 	esac
 
+	case "${FAIL_ON}" in
+		any|all|never) ;;
+		*) usage_error "--fail-on must be 'any', 'all' or 'never' (got: ${FAIL_ON})" ;;
+	esac
+	is_uint "${MAX_SITES}" || usage_error "--max-sites requires a non-negative integer"
+	is_uint "${PAGE_LIMIT}" || usage_error "--page-limit requires a non-negative integer"
+	if [[ -n "${PLUGIN_FIELDS}" ]] && [[ ! "${PLUGIN_FIELDS}" =~ ^[a-z_]+(,[a-z_]+)*$ ]]; then
+		usage_error "--fields takes a comma separated list of names (got: ${PLUGIN_FIELDS})"
+	fi
+	if [[ -n "${PLUGIN_FIELDS}" ]]; then
+		local bad_field="" one=""
+		for one in ${PLUGIN_FIELDS//,/ }; do
+			case "${one}" in
+				name|title|status|version|update|update_version|slug) ;;
+				*) bad_field="${one}" ;;
+			esac
+		done
+		if [[ -n "${bad_field}" ]]; then
+			usage_error "unknown column for --fields: ${bad_field} (allowed: name, title, status, version, update, update_version, slug)"
+		fi
+	fi
+	is_uint "${KILL_AFTER}" || usage_error "--kill-after requires a non-negative integer"
+	case "${WP_SIGNAL}" in
+		TERM|INT|QUIT|HUP|KILL|USR1|USR2) ;;
+		*) usage_error "--signal must be one of TERM, INT, QUIT, HUP, KILL, USR1, USR2 (got: ${WP_SIGNAL})" ;;
+	esac
 	is_uint "${JOBS}" || usage_error "--jobs requires a positive integer"
 	((JOBS >= 1)) || usage_error "--jobs must be >= 1"
 	is_uint "${KEEP_BACKUPS}" || usage_error "--keep-backups requires a non-negative integer"
@@ -834,6 +1026,7 @@ preflight() {
 	have timeout && TIMEOUT_BIN="$(command -v timeout)"
 	if [[ -z "${TIMEOUT_BIN}" ]] && have gtimeout; then TIMEOUT_BIN="$(command -v gtimeout)"; fi
 	have env && ENV_BIN="$(command -v env)"
+	have perl && SIGNAL_BIN="$(command -v perl)"
 	have tar && TAR_BIN="$(command -v tar)"
 
 	# Astra licence: file wins over environment/plain variable.
@@ -899,6 +1092,31 @@ acquire_lock() {
 # ------------------------------------------------------------------------------
 # WP-CLI execution layer
 # ------------------------------------------------------------------------------
+# The licence is handed over through a private file, never as an argument:
+# an argument is visible in /proc/<pid>/cmdline for the duration of the call.
+LICENCE_FILE=""
+licence_close() {
+	[[ -n "${LICENCE_FILE}" ]] || return 0
+	rm -f -- "${LICENCE_FILE}" 2>/dev/null || true
+	LICENCE_FILE=""
+	return 0
+}
+licence_open() {
+	local value="${1:-}"
+	licence_close
+	[[ -n "${value}" ]] || return 1
+	LICENCE_FILE="$(mktemp "${TMPDIR:-/tmp}/wp-cli-update.licence.XXXXXX")" || { LICENCE_FILE=""; return 1; }
+	chmod 600 -- "${LICENCE_FILE}" 2>/dev/null || true
+	printf '%s' "${value}" >"${LICENCE_FILE}" || { licence_close; return 1; }
+	return 0
+}
+# One argv element that the child shell expands into the file contents.
+licence_value() {
+	[[ -n "${LICENCE_FILE}" ]] || return 1
+	cat -- "${LICENCE_FILE}" 2>/dev/null
+	return 0
+}
+
 shell_join() {
 	local out="" arg=""
 	for arg in "$@"; do
@@ -966,7 +1184,8 @@ run_wp() {
 	local site="$1" user="$2" url="$3"
 	shift 3
 	local -a wp_argv=() inner=() outer=()
-	local rc=0 label="" line=""
+	local -a env_pairs=()
+	local rc=0 label="" line="" used_portable=0
 
 	build_wp_cmd "${site}" "${user}" "${url}" "$@"
 	wp_argv=( "${WP_CMD[@]}" )
@@ -989,8 +1208,30 @@ run_wp() {
 	if [[ -n "${TIMEOUT_BIN}" ]] && ((WP_TIMEOUT > 0)); then
 		inner+=( "${TIMEOUT_BIN}" "${WP_TIMEOUT}" )
 	fi
+	# --user-env NAME...: the child gets a clean environment, so anything a
+	# wrapper needs (its own log path, a staging flag) must be passed explicitly.
+	# Values are taken from OUR environment by name: neither a config file nor a
+	# command line can inject a value into the environment of `wp`.
+	env_pairs=()
+	if [[ -n "${USER_ENV_LIST}" ]]; then
+		local var=""
+		for var in ${USER_ENV_LIST}; do
+			if [[ ! "${var}" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+				log_warn "--user-env: refusing an invalid variable name: ${var}"
+				continue
+			fi
+			if [[ -n "${!var+set}" ]]; then
+				env_pairs+=( "${var}=${!var}" )
+			else
+				log_warn "--user-env: '${var}' is not set in this environment; not passed on"
+			fi
+		done
+	fi
 	if [[ -n "${ENV_BIN}" ]]; then
 		inner+=( "${ENV_BIN}" "HOME=$(user_home "${user}")" )
+		inner+=( ${env_pairs[@]+"${env_pairs[@]}"} )
+	elif ((${#env_pairs[@]})); then
+		log_warn "--user-env is ignored: env(1) was not found"
 	fi
 	inner+=( "${wp_argv[@]}" )
 
@@ -1004,7 +1245,74 @@ run_wp() {
 	: >"${WP_ERR_FILE}"
 	log_debug "exec[${PRIV_KIND}] ${user}@${site}: $(redact "${label}")"
 
-	WP_OUT="$( "${outer[@]}" 2>"${WP_ERR_FILE}" </dev/null )" || rc=$?
+	if [[ -z "${TIMEOUT_BIN}" ]] && ((WP_TIMEOUT > 0)) && [[ -n "${SIGNAL_BIN}" ]]; then
+		# Portable per-command timeout. `timeout -k` is GNU-only, and without any
+		# timeout a hung WP-CLI hangs the whole fleet, so the supervisor below is
+		# used when timeout(1) is absent: send WP_SIGNAL after WP_TIMEOUT seconds,
+		# escalate to KILL after KILL_AFTER more.
+		used_portable=1
+		# Everything the supervisor needs travels in argv: an earlier version put
+		# the limit in an environment variable, and because the assignment was a
+		# temporary on the command it never reached perl, so `alarm undef` turned
+		# the whole supervisor into a no-op.
+		WP_OUT="$( "${SIGNAL_BIN}" -e '
+			my ($limit, $sig, $grace, @cmd) = @ARGV;
+			my $pid = fork();
+			die "fork failed\n" unless defined $pid;
+			if ($pid == 0) {
+				# Own process group: killing the group reaches the grandchildren
+				# too. Without this a `wp` wrapper that leaves a child behind
+				# keeps the command-substitution pipe open, and the caller blocks
+				# until that orphan finishes — the timeout would look useless.
+				setpgrp(0, 0);
+				exec @cmd;
+				exit 127;
+			}
+			my $state = 0;
+			$SIG{ALRM} = sub {
+				# First alarm: the configured signal, then the grace period.
+				# Second alarm: SIGKILL. A shell that is blocked in an external
+				# command defers TERM until that command returns, so a process
+				# which ignores the first signal is exactly why --kill-after
+				# exists; sending the same signal twice would defeat it.
+				if ($state == 0) { $state = 1; kill "-$sig", $pid; kill $sig, $pid; alarm $grace; }
+				else {
+					# SIGKILL cannot be trapped or deferred, and the child is
+					# reaped below before exiting: an orphan would keep the
+					# command-substitution pipe open and `$(...)` in the caller
+					# would block until the orphan finished on its own, which is
+					# exactly what the timeout is supposed to prevent.
+					kill "-KILL", $pid;
+					kill "KILL", $pid;
+					$state = 2;
+				}
+			};
+			alarm $limit;
+			# waitpid returns -1 with EINTR when the alarm interrupts it. That
+			# return value was read as "the child exited", so the supervisor left
+			# before the escalation alarm could fire and a hung command survived
+			# its own kill. Retry until a real child status arrives.
+			# A tight waitpid can return before the child is gone; a signal
+			# handler also makes it return -1 with EINTR. Loop until the child is
+			# really reaped, otherwise the supervisor would leave a live orphan
+			# holding the pipe.
+			my $st = 0;
+			while (1) {
+				my $got = waitpid($pid, 0);
+				if ($got == $pid) { $st = $? >> 8; last; }
+				if ($got == -1) {
+					next if $! == 4;    # EINTR: the alarm interrupted the wait
+					last if $! == 10;   # ECHILD: the child was already reaped
+					last;               # any other error: do not spin forever
+				}
+			}
+			exit 124 if $state >= 1 && $st == 0;
+			exit($st);
+		' "${WP_TIMEOUT}" "${WP_SIGNAL}" "${KILL_AFTER}" "${outer[@]}" 2>"${WP_ERR_FILE}" </dev/null )" || rc=$?
+	else
+		WP_OUT="$( "${outer[@]}" 2>"${WP_ERR_FILE}" </dev/null )" || rc=$?
+	fi
+	((used_portable)) && log_debug "portable timeout used (${WP_TIMEOUT}s, signal ${WP_SIGNAL}, kill after ${KILL_AFTER}s)"
 
 	local err=""
 	err="$(cat -- "${WP_ERR_FILE}" 2>/dev/null || true)"
@@ -1225,6 +1533,10 @@ plugin_json_to_tsv() {
 
 load_plugins() {
 	local site="$1" user="$2" url="$3" out="" line="" rc=0
+	# --fields chooses the COLUMNS OF THE REPORT, not the columns of the query.
+	# The query always asks for the full set: the manager needs `update` to count
+	# updates, and a report that asked WP-CLI for `name,status` only would come
+	# back without it and be rendered as an empty list.
 	local fields="--fields=name,title,status,version,update,update_version"
 	local -a clean=()
 
@@ -1284,9 +1596,14 @@ ensure_dir_for_user() {
 	if ((USER_SWITCH)) && [[ "${CURRENT_USER}" == "root" ]]; then
 		group="$(id -gn -- "${user}" 2>/dev/null || true)"
 		if have install && [[ -n "${group}" ]]; then
-			install -d -m 0750 -o "${user}" -g "${group}" -- "${dir}" 2>/dev/null && return 0
+			# 1777 + sticky: every site owner writes its own dump here, but nobody
+			# can remove or replace a dump owned by another site.
+			install -d -m 1777 -o "${user}" -g "${group}" -- "${dir}" 2>/dev/null && return 0
 		fi
+		# Without `install` the dump still has to land somewhere writable: create
+		# the directory 1777 and let the sticky bit carry the isolation.
 		mkdir -p -- "${dir}" 2>/dev/null || return 1
+		chmod 1777 -- "${dir}" 2>/dev/null || true
 		chown "${user}" "${dir}" 2>/dev/null || true
 		return 0
 	fi
@@ -1295,11 +1612,17 @@ ensure_dir_for_user() {
 }
 
 prune_backups() {
-	local dir="$1" keep="$2" i=0
+	local dir="$1" keep="$2" i=0 line="" total=0
 	local -a files=()
 	((keep > 0)) || return 0
-	mapfile -t files < <(ls -1t -- "${dir}"/db-*.sql "${dir}"/plugin-*.tar.gz 2>/dev/null || true)
-	for ((i = keep; i < ${#files[@]}; i++)); do
+	# `mapfile` does not exist in bash 3.2 and the script support matrix starts
+	# there, so the oldest-first list is read line by line instead.
+	while IFS= read -r line; do
+		[[ -n "${line}" ]] || continue
+		files+=("${line}")
+	done < <(ls -1t -- "${dir}"/db-*.sql "${dir}"/plugin-*.tar.gz 2>/dev/null || true)
+	total=${#files[@]}
+	for ((i = keep; i < total; i++)); do
 		rm -f -- "${files[i]}" 2>/dev/null || true
 	done
 	return 0
@@ -1329,6 +1652,10 @@ backup_database() {
 		log_warn "database backup failed for ${site}"
 		return 1
 	fi
+	# The owner comes from the umask of the user WP-CLI ran as, so the mode is
+	# set explicitly: 0640 keeps a dump with credentials readable by its owner
+	# only, which is what a database dump deserves.
+	chmod 0640 -- "${file}" 2>/dev/null || true
 	log_ok "database backup: ${file}"
 	prune_backups "${dir}" "${KEEP_BACKUPS}"
 	return 0
@@ -1407,7 +1734,14 @@ astra_update() {
 		return 1
 	fi
 	log_info "activating the Astra Pro licence and retrying"
-	run_wp "${site}" "${user}" "${url}" brainstormforce license activate astra-addon "${ASTRA_KEY}" || return 1
+	# The key travels in a file the child reads itself: no process shows it.
+	licence_open "${ASTRA_KEY}" || { log_err "cannot prepare the licence handoff file"; return 1; }
+	run_wp "${site}" "${user}" "${url}" brainstormforce license activate astra-addon "$(licence_value)" || {
+		licence_close
+		return 1
+	}
+	licence_close
+	return 0
 	run_wp "${site}" "${user}" "${url}" plugin update astra-addon || return 1
 	return 0
 }
@@ -1447,6 +1781,7 @@ plugin_update_args() {
 
 mode_core() {
 	local site="$1" user="$2" url="$3"
+	maybe_backup "${site}" "${user}" "${url}" "${BACKUP_MODE}"
 	run_wp "${site}" "${user}" "${url}" core update || return 1
 	run_wp "${site}" "${user}" "${url}" core update-db || return 1
 	wp_soft "${site}" "${user}" "${url}" cache flush
@@ -1456,6 +1791,7 @@ mode_core() {
 
 mode_plugins() {
 	local site="$1" user="$2" url="$3"
+	maybe_backup "${site}" "${user}" "${url}" "${BACKUP_MODE}"
 	if ((ONLY_ACTIVE)); then
 		update_active_plugins "${site}" "${user}" "${url}"
 		return $?
@@ -1467,12 +1803,14 @@ mode_plugins() {
 
 mode_themes() {
 	local site="$1" user="$2" url="$3"
+	maybe_backup "${site}" "${user}" "${url}" "${BACKUP_MODE}"
 	run_wp "${site}" "${user}" "${url}" theme update --all
 	return $?
 }
 
 mode_db_optimize() {
 	local site="$1" user="$2" url="$3"
+	maybe_backup "${site}" "${user}" "${url}" "${BACKUP_MODE}"
 	run_wp "${site}" "${user}" "${url}" db optimize || return 1
 	run_wp "${site}" "${user}" "${url}" db repair || return 1
 	return 0
@@ -1523,6 +1861,30 @@ mode_astra() {
 	FORCE=1  # --astra is expected to be a no-op when the plugin is current
 	astra_update "${site}" "${user}" "${url}"
 	return $?
+}
+
+# --secrets: the scan runs on the site's own configuration, not on customer
+# data. It answers one question — "will a dump or a ticket carry a password
+# with it?" — and it is honest about its limits: it recognises NAME=VALUE and
+# define('NAME', 'VALUE') shapes and says so in --help.
+mode_secrets() {
+	local site="$1" user="$2" url="$3" scanner="" rc=0
+	scanner="${SCRIPT_DIR}/tools/scan-secrets.sh"
+	if [[ ! -f "${scanner}" ]]; then
+		log_err "secret scanner not found: ${scanner}"
+		return 1
+	fi
+	WP_NOCOUNT=1
+	log_info "scanning ${site} for secret-looking values"
+	if "${BASH:-bash}" "${scanner}" --strict "${site}" >&2; then
+		log_ok "no secret-looking values found in ${site}"
+		rc=0
+	else
+		log_warn "secret-looking values found in ${site} (see the list above)"
+		rc=1
+	fi
+	WP_NOCOUNT=0
+	return "${rc}"
 }
 
 mode_verify() {
@@ -1619,14 +1981,63 @@ mode_list_plugins() {
 	done
 	((width > 60)) && width=60
 
+	# --fields выбирает колонки отчёта. Порядок — как в списке пользователя,
+	# значения берутся из уже разобранной строки: ни одна колонка не требует
+	# второго обращения к WP-CLI.
+	local -a cols=()
+	local c=""
+	for c in ${PLUGIN_FIELDS//,/ }; do cols+=("${c}"); done
+	local total_width=0 col=""
+	for col in ${cols[@]+"${cols[@]}"}; do
+		case "${col}" in
+			name|title) total_width=$((total_width + width + 2)) ;;
+			status)     total_width=$((total_width + 9)) ;;
+			version)    total_width=$((total_width + 10)) ;;
+			update)     total_width=$((total_width + 14)) ;;
+			*)          total_width=$((total_width + 14)) ;;
+		esac
+	done
+	((total_width > 0)) || total_width=$((width + 36))
+
+	plugin_cell() { # FIELD NAME TITLE STATUS VERSION UPDATE UPDVER
+		local field="$1"
+		case "${field}" in
+			name)           printf '%s' "$2" ;;
+			title)          printf '%s' "${3:-$2}" ;;
+			slug)           printf '%s' "$(plugin_slug "$2")" ;;
+			status)         printf '%s' "$4" ;;
+			version)        printf '%s' "$5" ;;
+			update)
+				if [[ "$6" == "available" ]]; then printf '→ %s' "${7:-new}"; else printf 'up to date'; fi ;;
+			update_version) printf '%s' "${7:--}" ;;
+			*)              printf '%s' "-" ;;
+		esac
+		return 0
+	}
+
 	{
 		printf '\n%sPlugins: %s%s (%d)\n' "${C_BOLD}" "${site}" "${C_RESET}" "${#rows[@]}"
-		printf '%s%s%s\n' "${C_DIM}" "$(hline $((width + 36)))" "${C_RESET}"
-		printf '%s%-*s  %-9s  %-10s  %-12s  %s%s\n' "${C_BOLD}" "${width}" "PLUGIN" "STATUS" "VERSION" "UPDATE" "SLUG" "${C_RESET}"
-		printf '%s%s%s\n' "${C_DIM}" "$(hline $((width + 36)))" "${C_RESET}"
+		printf '%s%s%s\n' "${C_DIM}" "$(hline $((total_width + 2)))" "${C_RESET}"
+		printf '%s' "${C_BOLD}"
+		for col in ${cols[@]+"${cols[@]}"}; do
+			case "${col}" in
+				name|title) printf '%-*s  ' "${width}" "${col^^}" ;;
+				status)     printf '%-9s ' "${col^^}" ;;
+				version)    printf '%-10s ' "${col^^}" ;;
+				update)     printf '%-14s ' "${col^^}" ;;
+				*)          printf '%-14s ' "${col^^}" ;;
+			esac
+		done
+		printf '%s\n' "${C_RESET}"
+		printf '%s%s%s\n' "${C_DIM}" "$(hline $((total_width + 2)))" "${C_RESET}"
 	} >&2
 
+	local shown=0
 	for row in ${rows[@]+"${rows[@]}"}; do
+		if ((PAGE_LIMIT > 0)) && ((shown >= PAGE_LIMIT)); then
+			break
+		fi
+		((shown++)) || true
 		IFS=$'\t' read -r name title status version update updver <<<"${row}"
 		disp="${title:-$(plugin_slug "${name}")}"
 		((${#disp} > width)) && disp="${disp:0:$((width - 1))}…"
@@ -1638,15 +2049,33 @@ mode_list_plugins() {
 		esac
 		local up_txt="up to date"
 		[[ "${update}" == "available" ]] && up_txt="→ ${updver:-new}"
-		printf '%-*s  %s%s %-7s%s  %-10s  %-12s  %s%s%s\n' \
-			"${width}" "${disp}" "${color}" "${mark}" "${status}" "${C_RESET}" \
-			"${version}" "${up_txt}" "${C_DIM}" "$(plugin_slug "${name}")" "${C_RESET}" >&2
+		for col in ${cols[@]+"${cols[@]}"}; do
+			local cell=""
+			cell="$(plugin_cell "${col}" "${name}" "${disp}" "${status}" "${version}" "${update}" "${updver}")"
+			case "${col}" in
+				name|title)
+					if [[ "${col}" == "name" ]]; then
+						printf '%-*s  ' "${width}" "${cell}"
+					else
+						printf '%s%s %-*s%s  ' "${color}" "${mark}" "$((width - 2))" "${cell}" "${C_RESET}"
+					fi ;;
+				status)     printf '%s%s %-7s%s ' "${color}" "${mark}" "${cell}" "${C_RESET}" ;;
+				version)    printf '%-10s ' "${cell}" ;;
+				update)     printf '%-14s ' "${up_txt}" ;;
+				*)          printf '%s%-13s%s ' "${C_DIM}" "${cell}" "${C_RESET}" ;;
+			esac
+		done
+		printf '\n' >&2
 		((count++)) || true
 	done
 
 	{
-		printf '%s%s%s\n' "${C_DIM}" "$(hline $((width + 36)))" "${C_RESET}"
+		printf '%s%s%s\n' "${C_DIM}" "$(hline $((total_width + 2)))" "${C_RESET}"
 		printf 'Total: %d plugin(s)\n' "${count}"
+		if ((PAGE_LIMIT > 0)) && ((${#rows[@]} > count)); then
+			printf 'Shown: %d of %d (--page-limit %d; raise it or use 0 for all)\n' \
+				"${count}" "${#rows[@]}" "${PAGE_LIMIT}"
+		fi
 	} >&2
 	return 0
 }
@@ -1759,6 +2188,8 @@ execute_mode() {
 		plugin-manage) mode_plugin_manage "${site}" "${user}" "${url}"; return $? ;;
 		status)        mode_status "${site}" "${user}" "${url}"; return $? ;;
 		verify)        mode_verify "${site}" "${user}" "${url}"; return $? ;;
+		health)        mode_status "${site}" "${user}" "${url}"; return $? ;;
+		secrets)       mode_secrets "${site}" "${user}" "${url}"; return $? ;;
 		*)             log_err "unknown mode: ${MODE}"; return 1 ;;
 	esac
 }
@@ -1836,6 +2267,7 @@ run_parallel() {
 				process_site "${SITES[i]}" >"${tmpdir}/out.${i}" 2>&1
 				printf '%s' "$?" >"${tmpdir}/rc.${i}"
 				printf '%s' "${STATS[warnings]}" >"${tmpdir}/warn.${i}"
+				printf '%s %s %s' "${STATS[wp_ok]}" "${STATS[wp_failed]}" "${STATS[wp_skipped]}" >"${tmpdir}/wp.${i}"
 			) &
 			pids+=("$!")
 			batch+=("${i}")
@@ -1854,6 +2286,17 @@ run_parallel() {
 			if is_uint "${w}"; then
 				((STATS[warnings] += w)) || true
 			fi
+			# Fold the worker's WP-operation counters into the parent totals: a
+			# forked worker increments its own copy, which would otherwise vanish.
+			if [[ -f "${tmpdir}/wp.${j}" ]]; then
+				local -a wc=()
+				read -r -a wc <"${tmpdir}/wp.${j}" || true
+				if ((${#wc[@]} == 3)); then
+					((STATS[wp_ok]      += wc[0])) || true
+					((STATS[wp_failed]  += wc[1])) || true
+					((STATS[wp_skipped] += wc[2])) || true
+				fi
+			fi
 			((STATS[sites]++)) || true
 			if [[ "${rc}" == "0" ]]; then
 				((STATS[sites_ok]++)) || true
@@ -1862,7 +2305,7 @@ run_parallel() {
 				((STATS[sites_failed]++)) || true
 				SITE_REPORT+=("FAIL|${SITES[j]}")
 			fi
-			rm -f -- "${tmpdir}/out.${j}" "${tmpdir}/rc.${j}" "${tmpdir}/warn.${j}" "${tmpdir}/err.${j}" 2>/dev/null || true
+			rm -f -- "${tmpdir}/out.${j}" "${tmpdir}/rc.${j}" "${tmpdir}/warn.${j}" "${tmpdir}/err.${j}" "${tmpdir}/wp.${j}" 2>/dev/null || true
 		done
 	done
 
@@ -1886,6 +2329,12 @@ load_sites() {
 		[[ -z "${line}" || "${line}" == \#* ]] && continue
 		SITES+=("${line}")
 	done <"${SITES_FILE}"
+	# --max-sites is the safety catch a scheduled run needs: a wrong glob or a
+	# freshly mounted disk must not turn one cron job into a two-hour fleet run.
+	if ((MAX_SITES > 0)) && ((${#SITES[@]} > MAX_SITES)); then
+		log_warn "--max-sites=${MAX_SITES}: ${#SITES[@]} entries found, the rest are not processed"
+		SITES=("${SITES[@]:0:MAX_SITES}")
+	fi
 	return 0
 }
 
@@ -1897,9 +2346,12 @@ ensure_sites_file() {
 		die "sites file is missing or empty: ${SITES_FILE} (discovery disabled with --no-discover)" "${EX_EMPTY}"
 	fi
 
-	if [[ -x "${DISCOVER_SCRIPT}" ]]; then
+	if [[ -f "${DISCOVER_SCRIPT}" ]]; then
 		log_warn "sites file is missing or empty — running ${DISCOVER_SCRIPT}"
-		if "${DISCOVER_SCRIPT}" --output "${SITES_FILE}"; then
+		# Run it with the interpreter that runs this script. Going through the
+		# shebang picks up whatever "bash" the PATH resolves to, which on some
+		# hosts is 3.2 and makes discovery fail with a version error (rc=4).
+		if "${BASH:-bash}" "${DISCOVER_SCRIPT}" --output "${SITES_FILE}"; then
 			log_ok "discovery finished: ${SITES_FILE}"
 		else
 			log_warn "the discovery script exited with a non-zero status"
@@ -1946,6 +2398,8 @@ show_banner() {
 		plugin-manage) mode_desc="plugin management (${PLUGIN_ACTION})" ;;
 		status)        mode_desc="health report (read-only)" ;;
 		verify)        mode_desc="checksum verification (read-only)" ;;
+		health)        mode_desc="read-only health report" ;;
+		secrets)       mode_desc="secret scan of the site configuration" ;;
 		*)             mode_desc="unknown" ;;
 	esac
 
@@ -1971,16 +2425,171 @@ show_banner() {
 }
 
 # ------------------------------------------------------------------------------
+# --check and --print-config
+# ------------------------------------------------------------------------------
+# `--check` answers one question before a fleet run: is this host able to do the
+# job at all? It contacts every site read-only and changes nothing.
+mode_check() {
+	local fails=0 site="" user="" url=""
+	printf 'environment\n'
+	printf '  %-22s %s\n' "script"        "${SCRIPT_NAME} ${SCRIPT_VERSION}"
+	printf '  %-22s %s\n' "bash"          "${BASH_VERSION}"
+	printf '  %-22s %s\n' "run as"        "${CURRENT_USER}"
+	printf '  %-22s %s\n' "wp binary"     "${WP_BIN:-<not resolved>}"
+	printf '  %-22s %s\n' "privilege"     "${PRIV_KIND}"
+	printf '  %-22s %s\n' "timeout(1)"    "${TIMEOUT_BIN:-not found (per-command timeout disabled)}"
+	printf '  %-22s %s\n' "tar(1)"        "${TAR_BIN:-not found (plugin file backups unavailable)}"
+	printf '  %-22s %s\n' "jq"            "$( ((HAS_JQ)) && printf 'found' || printf 'not found (table/CSV fallback used)')"
+	printf '  %-22s %s\n' "config"        "${CONFIG_FILE:-${CONFIG_FILE_DEFAULT}}"
+	printf '  %-22s %s\n' "sites file"    "${SITES_FILE}"
+	printf '  %-22s %s\n' "log dir"       "${LOG_DIR}"
+	printf '  %-22s %s\n' "backup dir"    "${BACKUP_DIR}"
+	printf '  %-22s %s\n' "parallelism"   "${JOBS}"
+	if ((USER_SWITCH)); then
+		if [[ "${CURRENT_USER}" == "root" ]]; then
+			printf '  %-22s %s\n' "user switch" "enabled (root)"
+		else
+			printf '  %-22s %s\n' "user switch" "refused without root — use --no-user-switch"
+			fails=1
+		fi
+	else
+		printf '  %-22s %s\n' "user switch" "disabled (--no-user-switch)"
+	fi
+	[[ -d "${LOG_DIR}" && -w "${LOG_DIR}" ]] || { printf '  %-22s %s\n' "log dir writable" "NO"; fails=1; }
+	printf '\nsites\n'
+	local s=""
+	for s in ${SITES[@]+"${SITES[@]}"}; do
+		user="$(resolve_site_user "${s}")" || user=""
+		if [[ -z "${user}" ]]; then
+			printf '  %-38s %s\n' "${s}" "no system user resolved — pass --user"
+			fails=1
+			continue
+		fi
+		if run_wp "${s}" "${user}" "${url}" core version >/dev/null 2>&1; then
+			printf '  %-38s %s\n' "${s}" "ok (user: ${user})"
+		else
+			printf '  %-38s %s\n' "${s}" "FAILED (user: ${user})"
+			fails=1
+		fi
+	done
+	printf '\n%s\n' "$( ((fails)) && printf 'CHECK FAILED' || printf 'CHECK OK (nothing was changed)')"
+	((fails)) && return 1
+	return 0
+}
+
+# `--print-config` answers "why is this value what it is": every effective
+# setting with the layer that decided it (command line > environment > file >
+# default). Secrets are printed as a length, never as a value.
+print_config() {
+	local k="" v="" origin="" line="" cnt=0
+	printf '%-20s %-46s %s\n' "SETTING" "VALUE" "LAYER"
+	printf '%-20s %-46s %s\n' "--------------------" "----------------------------------------------" "-----------"
+	while IFS='|' read -r k v; do
+		[[ -n "${k}" ]] || continue
+		((cnt++)) || true
+		case "${k}" in
+			ASTRA_KEY)
+				if [[ -n "${v}" && "${v}" != "YOUR_KEY" ]]; then v="<redacted: ${#v} chars>"; fi ;;
+		esac
+		if [[ -n "${CLI_SET[${k}]:-}" ]]; then
+			origin="command line"
+		elif [[ -n "${CONFIG_SOURCE[${k}]:-}" ]]; then
+			origin="${CONFIG_SOURCE[${k}]}"
+		else
+			origin="default"
+		fi
+		printf '%-20s %-46s %s\n' "${k}" "${v}" "${origin}"
+	done <<EOF
+MODE|${MODE:-<none>}
+JOBS|${JOBS}
+MAX_SITES|${MAX_SITES}
+ONLY_ACTIVE|${ONLY_ACTIVE}
+FAIL_ON|${FAIL_ON}
+USER_ENV|${USER_ENV_LIST:-<none>}
+PLUGIN_FIELDS|${PLUGIN_FIELDS}
+PAGE_LIMIT|${PAGE_LIMIT}
+WP_SIGNAL|${WP_SIGNAL}
+KILL_AFTER|${KILL_AFTER}
+STRICT|${STRICT}
+USER_SWITCH|${USER_SWITCH}
+DRY_RUN|${DRY_RUN}
+BACKUP|${BACKUP_MODE:-off}
+KEEP_BACKUPS|${KEEP_BACKUPS}
+SKIP_PLUGINS|${SKIP_PLUGINS:-<empty>}
+EXCLUDE_PLUGINS|${EXCLUDE_PLUGINS:-<empty>}
+WP_TIMEOUT|${WP_TIMEOUT}
+WP_CLI_BIN|${WP_CLI_BIN:-<from PATH or --wp-bin>}
+SITES_FILE|${SITES_FILE}
+DISCOVER_SCRIPT|${DISCOVER_SCRIPT}
+LOG_DIR|${LOG_DIR}
+BACKUP_DIR|${BACKUP_DIR}
+CONFIG_FILE|${CONFIG_FILE:-${CONFIG_FILE_DEFAULT}}
+SITE_URL|${SITE_URL:-<none>}
+DEFAULT_USER|${DEFAULT_USER:-<none>}
+ASTRA_KEY_FILE|${ASTRA_KEY_FILE:-<none>}
+ASTRA_KEY|${ASTRA_KEY:-<none>}
+EOF
+	return 0
+}
+
+# Machine-readable mode list: lets a completion script or a wrapper discover the
+# modes without parsing --help.
+list_modes() {
+	printf '%s\n' full core plugins themes db-optimize db-fix cron astra verify health secrets \
+		list-plugins plugin-manage list-sites check print-config list-modes status
+	return 0
+}
+
+# What happened last time: the tail of the error log plus the log sizes. Reads
+# files, changes nothing, needs no lock and no WP-CLI.
+print_status() {
+	local lines=0 bytes=0
+	printf 'logs\n'
+	if [[ -f "${LOG_FILE}" ]]; then
+		bytes="$(wc -c <"${LOG_FILE}" 2>/dev/null | tr -d ' ')"
+		lines="$(wc -l <"${LOG_FILE}" 2>/dev/null | tr -d ' ')"
+		printf '  %-22s %s (%s lines, %s bytes)\n' "manager log" "${LOG_FILE}" "${lines}" "${bytes}"
+	else
+		printf '  %-22s %s\n' "manager log" "${LOG_FILE} (absent)"
+	fi
+	if [[ -f "${ERROR_LOG_FILE}" ]]; then
+		printf '  %-22s %s\n' "error log" "${ERROR_LOG_FILE}"
+		printf '\nlast run header(s)\n'
+		grep -E '^=== RUN ' "${ERROR_LOG_FILE}" 2>/dev/null | tail -n 3 | sed 's/^/  /'
+	else
+		printf '  %-22s %s\n' "error log" "${ERROR_LOG_FILE} (absent)"
+	fi
+	printf '\n'
+	return 0
+}
+
+# ------------------------------------------------------------------------------
 # Main
 # ------------------------------------------------------------------------------
+# Exit code policy. The order matters: --strict is checked first, because
+# "ignore site failures, but not warnings" has to stay expressible as
+# `--fail-on never --strict`.
 final_exit() {
-	if [[ "${STATS[wp_failed]}" != "0" || "${STATS[sites_failed]}" != "0" ]]; then
-		exit "${EX_FAIL}"
-	fi
 	if ((STRICT)) && [[ "${STATS[warnings]}" != "0" ]]; then
+		log_warn "--strict: ${STATS[warnings]} warning(s) turn this run into a failure"
 		exit "${EX_FAIL}"
 	fi
-	exit "${EX_OK}"
+	case "${FAIL_ON}" in
+		never)
+			exit "${EX_OK}" ;;
+		all)
+			# Only a total wipe-out counts: one failed site out of fifty is a
+			# site problem, fifty out of fifty is an infrastructure problem.
+			if [[ "${STATS[sites]}" != "0" && "${STATS[sites_failed]}" == "${STATS[sites]}" ]]; then
+				exit "${EX_FAIL}"
+			fi
+			exit "${EX_OK}" ;;
+		*)
+			if [[ "${STATS[wp_failed]}" != "0" || "${STATS[sites_failed]}" != "0" ]]; then
+				exit "${EX_FAIL}"
+			fi
+			exit "${EX_OK}" ;;
+	esac
 }
 
 main() {
@@ -1989,12 +2598,40 @@ main() {
 	preload_cli_paths "$@"
 	load_config
 	apply_defaults
+	snapshot_settings
 	resolve_log_paths
 	parse_args "$@"
+	mark_cli_overrides
 	validate_options
+
+	# The three diagnostic modes below answer questions about configuration and
+	# logs only: they must work on a host where WP-CLI is not installed yet, which
+	# is exactly when they are asked.
+	if ((LIST_MODES)); then
+		list_modes
+		return 0
+	fi
+
+	if ((STATUS_ONLY)); then
+		print_status
+		return 0
+	fi
+
+	if ((PRINT_CONFIG)); then
+		print_config
+		return 0
+	fi
+
 	preflight
 
 	log_info "run ${RUN_ID}: mode=${MODE:-list-sites} wp=${WP_BIN} user=${CURRENT_USER}"
+
+	if ((CHECK_ONLY)); then
+		ensure_sites_file
+		load_sites || die "cannot read ${SITES_FILE}" "${EX_PREFLIGHT}"
+		mode_check || exit "${EX_FAIL}"
+		return 0
+	fi
 
 	if ((LIST_SITES_ONLY)); then
 		ensure_sites_file
@@ -2017,6 +2654,10 @@ main() {
 		log_warn "no sites to process"
 		print_summary
 		exit "${EX_EMPTY}"
+	fi
+
+	if [[ "${MODE}" == "health" ]] && ((${#SITES[@]} > 0)); then
+		log_info "read-only health report for ${#SITES[@]} site(s)"
 	fi
 
 	if [[ "${MODE}" == "plugin-manage" ]] && ((${#SITES[@]} > 1)) && ((!FORCE)); then
