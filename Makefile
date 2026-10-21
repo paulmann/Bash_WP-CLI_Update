@@ -40,7 +40,12 @@ lint: syntax
 
 # What ships. The frozen 6.3/6.4 snapshots, the test bench and the working
 # directories are deliberately excluded: the archive is the product, not the lab.
-dist: lint test
+#
+# dist depends on `lint`, not on `test`: the suites need root for the user-switch
+# checks, and a release job that runs as an ordinary user would fail here for a
+# reason that has nothing to do with the archive. CI runs the suites as root in its
+# own job before the tag is cut; `make dist` only has to produce the bytes.
+dist: lint
 	@mkdir -p dist
 	@tar czf dist/bash-wp-cli-update-$(VERSION).tar.gz \
 		--exclude=dist --exclude=.git --exclude=.ragraf --exclude=.zwork \
