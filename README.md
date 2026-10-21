@@ -11,7 +11,7 @@ JSON report, a change log and a restore path.
 Bash_WP-CLI_Update.sh --full --backup db --jobs 4 --report /var/log/wp/report.json
 ```
 
-* Version: **8.0.3**
+* Version: **8.0.4**
 * Requires: `bash >= 4.2`, GNU coreutils/findutils, WP-CLI, `root` (to switch into
   site owners), one of `runuser` / `sudo` / `su`
 * Optional: `flock`, `timeout` (or `perl`), `tar`, `gzip`, `nice`, `ionice`, `curl`,
@@ -94,35 +94,46 @@ The tool runs as root and changes live sites, so the rules are explicit:
 
 ## 3. Install
 
-The steps below are what `sudo ./install.sh` does, in the same order, idempotently —
-run it with `--dry-run` first and it prints every command it would execute. Do the
-manual version once if you want to see what lands where (AGENTS.md §3 explains each
-step and why it is in that order).
+Three ways, same result. Pick one:
 
 ```bash
-# 1. the tools
+# 1. npm (any Linux with node 16+; the package is a delivery channel, the tool is bash)
+npm install -g bash-wp-cli-update
+
+# 2. the installer from the archive
+curl -LO https://github.com/paulmann/Bash_WP-CLI_Update/releases/latest/download/bash-wp-cli-update-8.0.4.tar.gz
+sudo ./install.sh --dry-run     # show every step
+sudo ./install.sh --systemd     # does it, plus the nightly timer
+```
+
+The npm package installs two commands, `wp-cli-update` and `wp-find`, that exec the same
+scripts; it does **not** install WP-CLI, and it does not run anything for you. The tool
+still needs root at run time, because it switches into the owner of every site.
+
+```bash
+# 3. by hand
 sudo apt-get install -y bash coreutils findutils gzip tar
 # WP-CLI itself:
 curl -o /usr/local/bin/wp https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar
 sudo chmod 755 /usr/local/bin/wp
 
-# 2. this project
+# the project
 sudo git clone https://github.com/paulmann/Bash_WP-CLI_Update.git /opt/wp-cli-update
 sudo chmod 755 /opt/wp-cli-update/Bash_WP-CLI_Update.sh
 sudo ln -sf /opt/wp-cli-update/Bash_WP-CLI_Update.sh /usr/local/bin/wp-cli-update
 sudo ln -sf /opt/wp-cli-update/Find_WP_Senior.sh /usr/local/bin/wp-find
 
-# 3. directories the tool writes to
+# directories the tool writes to
 sudo install -d -m 755 /var/log/wp-cli-update /var/backups/wp-cli-update /var/lib/wp-cli-update
 
-# 4. configuration (root only: it can hold a licence)
+# configuration (root only: it can hold a licence)
 sudo install -m 600 /opt/wp-cli-update/wp-cli-update.conf.example /etc/wp-cli-update.conf
 sudo editor /etc/wp-cli-update.conf
 
-# 5. build the site list
+# build the site list
 sudo wp-find --output /var/lib/wp-cli-update/wp-found.txt /var/www /home
 
-# 6. verify before touching anything
+# verify before touching anything
 sudo wp-cli-update --doctor
 sudo wp-cli-update --check
 ```

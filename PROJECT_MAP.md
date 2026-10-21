@@ -2,7 +2,7 @@
 
 File-by-file map of the repository, with the direction of every dependency.
 
-**Files: 41** · generated 2026-10-21 · `tests/test_static.sh` verifies the count
+**Files: 44** · generated 2026-10-21 · `tests/test_static.sh` verifies the count
 against `git ls-files`, so this document cannot go stale silently the way the
 auto-generated map of an earlier revision did (it declared 5 files while the
 branch shipped 11, in a second language, with a content fingerprint that did not
@@ -20,7 +20,7 @@ same commit.
 
 | File | Version | Purpose | Depends on |
 |---|---|---|---|
-| `Bash_WP-CLI_Update.sh` | 8.0.3 | Runs WP-CLI maintenance over every site in the list, each as its owner. Modes (mutating, read-only and diagnostic), configuration layers, locking, logging, timeouts, licence handoff, backups and restore, retries and the circuit breaker, JSON reports and notifications, rendering. | `Find_WP_Senior.sh` (only when the site list is missing and `AUTO_DISCOVER` is on) · `wp` · `runuser`/`sudo`/`su` · `flock`, `timeout` or `perl` (optional) · `gzip`, 
+| `Bash_WP-CLI_Update.sh` | 8.0.4 | Runs WP-CLI maintenance over every site in the list, each as its owner. Modes (mutating, read-only and diagnostic), configuration layers, locking, logging, timeouts, licence handoff, backups and restore, retries and the circuit breaker, JSON reports and notifications, rendering. | `Find_WP_Senior.sh` (only when the site list is missing and `AUTO_DISCOVER` is on) · `wp` · `runuser`/`sudo`/`su` · `flock`, `timeout` or `perl` (optional) · `gzip`, 
 ice`, `ionice`, `curl`, `mail` (optional) |
 | `Find_WP_Senior.sh` | 2.1.0 | Scans named web roots for WordPress installations, honours `.no_wp_cli` and exclusions, deduplicates, enriches with metadata, writes the list atomically. | `find`, `sort`, `stat`, `mktemp` |
 | `wp-cli-update.conf.example` | — | Every manager setting with its default and the reason it exists. Copy to `/etc/wp-cli-update.conf` or next to the script. | read by `Bash_WP-CLI_Update.sh` |
@@ -66,6 +66,8 @@ trailing whitespace) and the `--output` / `--sites` flags.
 | `AGENT.md` | Pointer to `AGENTS.md`, kept because older tooling looks for this name. |
 | `docs/COMPARISON.md` | The three-way comparison (`main`, `QWEN_Hybrid`, `DeepSeek_Hybrid`) that produced 8.0.0: metrics, feature matrix, what came from where, what was rejected and why, defects found, what all three had forgotten, and the verification record. |
 | `SECURITY.md` | Threat model of a root tool, supported versions, how to report, known non-issues, hardening checklist. |
+| `package.json` | npm packaging: name, version, `bin` shims, `files` whitelist, `os: linux`, licence. `prepublishOnly` re-checks the syntax of all four shell files. |
+| `bin/wp-cli-update`, `bin/wp-find` | The npm shims: resolve their real path through the symlink npm creates, then `exec bash` the script with the same arguments. |
 | `install.sh` | Idempotent installer: code, symlinks, log/backup/state directories, config (only if absent), optional systemd units. `--dry-run`, `--uninstall`. |
 | `Makefile` | `make test`, `make lint`, `make dist`, `make install`. |
 | `.editorconfig` | LF endings and 4-space indent; the two settings that break a shell script silently. |

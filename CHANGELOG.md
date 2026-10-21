@@ -35,6 +35,32 @@ different architecture, not an earlier draft of 8.0.0: it is preserved as its ow
 release and is not a superset of it (it has no restore path, no disk guard and no
 circuit breaker; 8.0.0 has no modular `src/` tree).
 
+## [8.0.4 / 2.1.0] - 2026-10-21
+
+Distribution release. Nothing in the manager, the finder or any mode changed; the tool is
+now also installable from npm.
+
+### Added
+
+- **npm package `bash-wp-cli-update`.** `npm install -g bash-wp-cli-update` puts
+  `wp-cli-update` and `wp-find` on PATH. The package ships the two scripts unchanged plus
+  two shims (`bin/wp-cli-update`, `bin/wp-find`) that resolve their own real path — npm
+  installs them as symlinks — and `exec` the script with the arguments it was given. The
+  licence is PolyForm Noncommercial 1.0.0, `os` is `linux` (the tool needs bash 4.2 and
+  GNU coreutils; macOS ships bash 3.2), and `files` is a whitelist, so the archive holds
+  the scripts, the config example, `contrib/`, `install.sh` and the documentation — 18
+  files, 107 kB.
+- npm does not install WP-CLI and runs nothing at install time: it is a delivery channel,
+  not an installer. Root is still needed at run time, because the manager switches into
+  the owner of every site.
+
+### Changed
+
+- `README.md` section 3 lists three routes (npm, `install.sh`, by hand) and says what the
+  npm route does not do; `AGENTS.md` section 3 does the same for an agent.
+- `.gitignore` no longer ignores `bin/`: it now holds the shims, and a shim that is not
+  committed cannot be published.
+
 ## [8.0.3 / 2.1.0] - 2026-10-21
 
 Found by installing 8.0.2 on the production host and running one site for real. This one

@@ -201,6 +201,24 @@ else
 fi
 
 say 'PROJECT_MAP.md is not stale'
+# package.json carries the version that goes to npm. A registry release whose version
+# disagrees with the script is a support case nobody can reproduce.
+if [ -f "${repo}/package.json" ]; then
+    pkg_version="$(sed -n 's/^  "version": "\([^"]*\)",$/\1/p' "${repo}/package.json" | head -1)"
+    script_version="$(sed -n "s/^SCRIPT_VERSION='\(.*\)'.*/\1/p" "${repo}/Bash_WP-CLI_Update.sh" | head -1)"
+    if [ "$pkg_version" = "$script_version" ]; then
+        ok "package.json version matches the script (${pkg_version})"
+    else
+        bad 'package.json version disagrees with the script' "package.json=${pkg_version:-none} script=${script_version:-none}"
+    fi
+    for shim in bin/wp-cli-update bin/wp-find; do
+        if [ -x "${repo}/${shim}" ]; then
+            ok "the npm shim is executable: ${shim}"
+        else
+            bad "the npm shim is missing or not executable: ${shim}" ''
+        fi
+    done
+fi
 map="${repo}/PROJECT_MAP.md"
 if [ -f "$map" ]; then
     # PROJECT_MAP.md declares its own count on a line of its own; accept both

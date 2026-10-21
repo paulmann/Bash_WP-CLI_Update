@@ -1,4 +1,4 @@
-# AGENTS.md — install and configure Bash WP-CLI Update 8.0.3
+# AGENTS.md — install and configure Bash WP-CLI Update 8.0.4
 
 Instructions for an LLM agent (or a careful human) who has to install, configure and
 verify this tool on a Linux host. Read the whole file before running anything: this
@@ -57,6 +57,17 @@ error (exit 3), by design.
 
 ## 3. Install, in this order
 
+There are two supported ways to get the code onto the host. They are equivalent — the npm
+package contains the same two scripts and two shims that exec them — so pick one:
+
+```bash
+# A. npm (delivery only: it does not install WP-CLI and runs nothing)
+npm install -g bash-wp-cli-update
+# commands land in $(npm prefix -g)/bin: wp-cli-update, wp-find
+
+# B. the repository (what the steps below assume)
+```
+
 ```bash
 # 3.1 place the code
 sudo git clone https://github.com/paulmann/Bash_WP-CLI_Update.git /opt/wp-cli-update
@@ -72,6 +83,9 @@ sudo install -d -m 755 /var/log/wp-cli-update /var/backups/wp-cli-update /var/li
 # 3.4 configuration, root-readable only
 sudo install -m 600 /opt/wp-cli-update/wp-cli-update.conf.example /etc/wp-cli-update.conf
 ```
+
+With the npm route the steps 3.3 and 3.4 still apply; only 3.1 and 3.2 are replaced, and
+the config template is then at `$(npm root -g)/bash-wp-cli-update/wp-cli-update.conf.example`.
 
 A copy of the config next to the script (`/opt/wp-cli-update/wp-cli-update.conf`) wins
 over `/etc/wp-cli-update.conf`. Prefer the `/etc` one; the local one is a trap for the

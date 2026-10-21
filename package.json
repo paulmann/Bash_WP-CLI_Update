@@ -1,0 +1,59 @@
+{
+  "name": "bash-wp-cli-update",
+  "version": "8.0.4",
+  "description": "Fleet maintenance for WordPress sites through WP-CLI: core, plugin and theme updates, database repair and optimisation, a database dump before anything changes, a restore path, JSON reports and a lock that stops two runs from overlapping.",
+  "keywords": [
+    "wordpress",
+    "wp-cli",
+    "wp-cli-update",
+    "fleet",
+    "maintenance",
+    "updates",
+    "backup",
+    "sysadmin",
+    "bash",
+    "cli"
+  ],
+  "license": "PolyForm-Noncommercial-1.0.0",
+  "author": "Mikhail Deynekin <Mikhail@Deynekin.com> (https://github.com/paulmann)",
+  "homepage": "https://github.com/paulmann/Bash_WP-CLI_Update#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/paulmann/Bash_WP-CLI_Update.git"
+  },
+  "bugs": {
+    "url": "https://github.com/paulmann/Bash_WP-CLI_Update/issues"
+  },
+  "bin": {
+    "wp-cli-update": "bin/wp-cli-update",
+    "wp-find": "bin/wp-find"
+  },
+  "files": [
+    "bin/wp-cli-update",
+    "bin/wp-find",
+    "Bash_WP-CLI_Update.sh",
+    "Find_WP_Senior.sh",
+    "wp-cli-update.conf.example",
+    "contrib/",
+    "install.sh",
+    "README.md",
+    "AGENTS.md",
+    "CHANGELOG.md",
+    "SECURITY.md",
+    "LICENSE",
+    "docs/COMPARISON.md",
+    "docs/README.md"
+  ],
+  "os": [
+    "linux"
+  ],
+  "engines": {
+    "node": ">=16"
+  },
+  "scripts": {
+    "test": "bash tests/run_tests.sh"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

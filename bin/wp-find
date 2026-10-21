@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# npm shim for the finder. Same resolution rule as bin/wp-cli-update: npm installs a
+# symlink, so the real path is resolved first and the finder is taken from the package
+# root.
+set -uo pipefail
+
+self="$(readlink -f -- "${BASH_SOURCE[0]}" 2>/dev/null || printf '%s' "${BASH_SOURCE[0]}")"
+root="$(cd -- "$(dirname -- "$self")/.." && pwd)"
+
+if [ ! -f "${root}/Find_WP_Senior.sh" ]; then
+    printf '%s: cannot find Find_WP_Senior.sh next to %s\n' "${0##*/}" "$root" >&2
+    exit 3
+fi
+
+exec bash "${root}/Find_WP_Senior.sh" "$@"

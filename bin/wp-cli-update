@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# npm shim: run the packaged manager with exactly the arguments npm passed.
+#
+# npm installs this file as a symlink in node_modules/.bin (or in the global bin
+# directory), so the script has to resolve its own real path before looking for the
+# manager next to it. `readlink -f` does that on Linux; when it is unavailable the
+# unresolved path still works for a plain copy.
+#
+# The manager is a bash script with its own version guard: bash 4.2 or newer, GNU
+# coreutils, findutils, tar, gzip. This shim adds nothing and changes nothing.
+set -uo pipefail
+
+self="$(readlink -f -- "${BASH_SOURCE[0]}" 2>/dev/null || printf '%s' "${BASH_SOURCE[0]}")"
+root="$(cd -- "$(dirname -- "$self")/.." && pwd)"
+
+if [ ! -f "${root}/Bash_WP-CLI_Update.sh" ]; then
+    printf '%s: cannot find Bash_WP-CLI_Update.sh next to %s\n' "${0##*/}" "$root" >&2
+    exit 3
+fi
+
+exec bash "${root}/Bash_WP-CLI_Update.sh" "$@"

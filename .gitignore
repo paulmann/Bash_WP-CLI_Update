@@ -68,7 +68,8 @@ dist/
 .compare
 research/
 stand/
-bin/
+# bin/ is deliberately NOT listed here: it holds the npm shims (bin/wp-cli-update,
+# bin/wp-find) and they have to ship with the package.
 
 # --- RAGRAF index -----------------------------------------------------------
 # Machine-local derived data (index, revisions, code-property graph). It is rebuilt
