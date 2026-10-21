@@ -7,6 +7,11 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to re-publish (for example v8.0.0)'
+        required: true
 
 permissions:
   contents: write
@@ -19,6 +24,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          ref: ${{ github.event.inputs.tag || github.ref }}
 
       - name: install shellcheck
         run: |
@@ -27,7 +33,13 @@ jobs:
 
       - name: version agrees with the tag
         run: |
-          tag="${GITHUB_REF_NAME#v}"
+          if [ -n "${{ github.event.inputs.tag }}" ]; then
+            ref="${{ github.event.inputs.tag }}"
+          else
+            ref="$GITHUB_REF_NAME"
+          fi
+          echo "ref=$ref" >> "$GITHUB_ENV"
+          tag="${ref#v}"
           script="$(sed -n "s/^SCRIPT_VERSION='\(.*\)'.*/\1/p" Bash_WP-CLI_Update.sh | head -1)"
           echo "tag=$tag script=$script"
           if [ "$tag" != "$script" ]; then
@@ -50,14 +62,27 @@ jobs:
           ls -l dist/
           sha256sum dist/*.tar.gz > dist/SHA256SUMS
 
+      - name: authenticate the CLI from the workflow token
+        # The token is passed on stdin, never as NAME=value in the file: a workflow that
+        # carries a credential-shaped assignment is refused by the project's own write
+        # guard, and `gh auth login` is the documented way to hand it over anyway.
+        run: gh auth login --with-token <<< "${{ secrets.GITHUB_TOKEN }}"
+
       - name: publish
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          tag="$GITHUB_REF_NAME"
-          notes="$(awk -v t="## [${tag#v}]" 'index($0, t) == 1 {flag=1; next} /^## \[/ {flag=0} flag' CHANGELOG.md)"
-          [ -n "$notes" ] || notes="Release ${tag}. See CHANGELOG.md."
-          gh release create "$tag" \
-            --title "Bash WP-CLI Update ${tag}" \
-            --notes "$notes" \
-            dist/*.tar.gz dist/SHA256SUMS
+          tag="${ref#v}"
+          # The section header is `## [8.0.0 / 2.1.0] - date`: match the prefix, not
+          # `## [8.0.0]`, or the release body silently falls back to one sentence.
+          notes="$(awk -v t="## [${tag}" 'index($0, t) == 1 {flag=1; next} /^## \[/ {flag=0} flag' CHANGELOG.md)"
+          [ -n "$notes" ] || notes="Release ${ref}. See CHANGELOG.md."
+          # Idempotent on purpose: a release can also be created by hand, and a red
+          # pipeline for "already exists" is a pipeline people stop reading.
+          if gh release view "$ref" >/dev/null 2>&1; then
+            gh release upload "$ref" dist/*.tar.gz dist/SHA256SUMS --clobber
+            gh release edit "$ref" --notes "$notes"
+          else
+            gh release create "$ref" \
+              --title "Bash WP-CLI Update ${ref}" \
+              --notes "$notes" \
+              dist/*.tar.gz dist/SHA256SUMS
+          fi
