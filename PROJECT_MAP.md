@@ -2,7 +2,7 @@
 
 File-by-file map of the repository, with the direction of every dependency.
 
-**Files: 44** · generated 2026-10-21 · `tests/test_static.sh` verifies the count
+**Files: 45** · generated 2026-10-21 · `tests/test_static.sh` verifies the count
 against `git ls-files`, so this document cannot go stale silently the way the
 auto-generated map of an earlier revision did (it declared 5 files while the
 branch shipped 11, in a second language, with a content fingerprint that did not
@@ -73,6 +73,7 @@ trailing whitespace) and the `--output` / `--sites` flags.
 | `.editorconfig` | LF endings and 4-space indent; the two settings that break a shell script silently. |
 | `CONTRIBUTING.md` | The four invariants, the fixed order for adding a feature, versioning, commit rules. |
 | `docs/README.md` | Documentation index: by document and by task. |
+| `docs/PUBLISHING.md` | How a release is cut: version bump, the three artefacts, what the workflow checks, and the npm step that is deliberately manual. |
 | `.github/workflows/release.yml` | On a `v*` tag: re-runs the gates, checks that tag and `SCRIPT_VERSION` agree, builds `dist/`, publishes the release with the tarball and `SHA256SUMS`. |
 | `.github/workflows/ci.yml` | CI: shellcheck, the full suite on bash 5.x and on the 4.2 floor, documentation and version consistency, and a check that the test run leaves no files behind. |
 | `contrib/wp-cli-update.service`, `contrib/wp-cli-update.timer` | A nightly systemd run: nice/ionice, a three-hour ceiling, journal logging, randomised delay. |

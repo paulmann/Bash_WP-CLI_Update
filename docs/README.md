@@ -8,6 +8,7 @@
 | [../SECURITY.md](../SECURITY.md) | you are reviewing the threat model of a root tool, or hardening a host |
 | [../CONTRIBUTING.md](../CONTRIBUTING.md) | you are changing the code: the four invariants, the fixed order for adding a feature, versioning |
 | [../CHANGELOG.md](../CHANGELOG.md) | you are upgrading and want to know what moved |
+| [PUBLISHING.md](PUBLISHING.md) | you are cutting a release: the version bump, git, the workflow gates, and the npm step. |
 | [../PROJECT_MAP.md](../PROJECT_MAP.md) | you need the file-by-file map and the data flow |
 | [../install.sh](../install.sh) | you want the install steps performed for you: `--dry-run` first, `--systemd` to add the timer, `--uninstall` to remove the symlinks |
 | [../ANALYSIS.md](../ANALYSIS.md) | you want the audit of the original 5.0 code, with line citations and the reproduced injection |
