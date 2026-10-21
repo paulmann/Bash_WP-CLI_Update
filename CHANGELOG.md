@@ -57,6 +57,9 @@ what 8.0.0 shipped.
 
 ### Changed
 
+- `SHA256SUMS` lists bare file names, not `dist/...`. The release archive is downloaded
+  next to the checksum file, so `sha256sum -c SHA256SUMS` used to fail on a fresh
+  download with “No such file or directory” — verified now on both 8.0.0 and 8.0.1.
 - `.gitattributes` covers the file types 8.0.0 introduced: `*.service`, `*.timer`,
   `*.yml`, `Makefile`, `.editorconfig`, `LICENSE`, `*.example`, plus `*.tar.gz`
   marked binary. A CR byte in a systemd `[Timer]` section is an error an operator sees

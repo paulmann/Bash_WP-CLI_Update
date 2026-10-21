@@ -60,7 +60,11 @@ jobs:
         run: |
           make dist
           ls -l dist/
-          sha256sum dist/*.tar.gz > dist/SHA256SUMS
+          # Basenames only: the checksum file is downloaded next to the tarball, not
+          # inside a dist/ directory, so 'sha256sum -c SHA256SUMS' has to work from a
+          # plain download directory.
+          (cd dist && sha256sum ./*.tar.gz | sed 's|\./||' > SHA256SUMS)
+          cat dist/SHA256SUMS
 
       - name: authenticate the CLI from the workflow token
         # The token is passed on stdin, never as NAME=value in the file: a workflow that
