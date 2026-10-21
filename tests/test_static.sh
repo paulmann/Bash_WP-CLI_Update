@@ -104,7 +104,7 @@ for f in "${PRODUCT_SCRIPTS[@]}"; do
     name="${f#"$repo"/}"
     code="${WORK}/code.$(basename "$f")"
     code_only "$f" >"$code"
-    if grep -nE '(^|[^\\])\beval\b' "$code" | grep -q .; then
+    if grep -nE '(^|[^\\])\beval\b' "$code" | grep -c . >/dev/null; then
         bad "eval used: ${name}" "$(grep -nE '\beval\b' "$code" | head -3)"
     else
         ok "no eval: ${name}"
@@ -118,7 +118,7 @@ for f in "${PRODUCT_SCRIPTS[@]}"; do
     # The line that defines the backtick variable is excluded, otherwise the
     # check matches its own subject -- a lint that reports itself is a lint that
     # gets disabled, and then it reports nothing at all.
-    if grep -Fv 'printf ' "$code" | grep -Fq "$bt"; then
+    if grep -Fv 'printf ' "$code" | grep -Fc "$bt" >/dev/null; then
         bad "backticks used: ${name}" "$(grep -Fv 'printf ' "$code" | grep -Fn "$bt" | head -3)"
     else
         ok "no backticks: ${name}"

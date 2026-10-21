@@ -55,6 +55,22 @@ section §11 of the README recommends.
   must not break `--doctor` or `--list-modes`, and an explicit flag with the wrong mode
   must still exit 2.
 
+### Fixed in the test bench (the reason CI went red twice)
+
+- **`cmd | grep -q` under `set -o pipefail` reports success as failure.** `grep` exits at
+  the first match, the producer gets SIGPIPE, and the pipeline status is 141. Three
+  checks flaked this way, and one of them — `fleet_run ... | grep -q` — could kill the
+  manager under test mid-run. Every such comparison in the suites now uses `grep -c ...
+  >/dev/null`, which reads the stream to the end, or a shell pattern match.
+- **The parallel recorder lost records.** The sleep-stub wrote its `ARGV:` line with
+  seven separate `printf` calls, so five workers starting together could interleave and
+  put two records on one line; the check then saw four invocations where five ran. The
+  stub assembles the line first and writes it once.
+- **The worker-directory leak check counted other people's runs.** It scanned `/tmp` for
+  directories newer than five minutes, so any earlier or neighbouring run was reported
+  as this test's leak. Each parallel check now runs with its own `TMPDIR` and inspects
+  only that directory.
+
 ## [8.0.1 / 2.1.0] - 2026-10-21
 
 Patch release. No behaviour change: the manager, the finder and every mode are exactly

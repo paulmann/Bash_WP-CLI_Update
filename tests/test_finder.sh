@@ -135,7 +135,7 @@ expect_lines "$OUT" 1 'paths: one bare path per line'
 if grep -q $'\t' "$OUT"; then bad 'paths format contains a tab' 'the manager reads one path per line'; else ok 'paths format has no metadata columns'; fi
 
 finder_run --format tsv --output "$OUT" "$SITE_ROOT" >/dev/null 2>&1
-if head -1 "$OUT" | grep -Fq 'path'; then
+if head -1 "$OUT" | grep -Fc 'path' >/dev/null; then
     ok 'tsv: header present'
 else
     bad 'tsv header missing' "$(head -1 "$OUT")"

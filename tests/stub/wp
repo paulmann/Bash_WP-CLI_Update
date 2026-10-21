@@ -18,16 +18,25 @@ LIC_STATE='<unset>'
 if [ -n "${WP_CLI_LICENCE:-}" ]; then
     LIC_STATE="<set,len=${#WP_CLI_LICENCE},cksum=$(printf '%s' "$WP_CLI_LICENCE" | cksum | cut -d' ' -f1)>"
 fi
-{
-    printf 'ARGV:'
-    for a in "$@"; do printf ' [%s]' "$a"; done
-    printf ' | CWD=%s USER=%s' "$PWD" "$(id -un)"
-    printf ' | ASTRFAIL=%s' "${ASTRA_FAIL_SLUG:-<unset>}"
-    printf ' | DOCUMENT_ROOT=%s HOMEDIR=%s HTTP_HOST=%s DOCUMENT_URI=%s HOME=%s LOGNAME=%s' \
-        "${DOCUMENT_ROOT:-<unset>}" "${HOMEDIR:-<unset>}" "${HTTP_HOST:-<unset>}" \
-        "${DOCUMENT_URI:-<unset>}" "${HOME:-<unset>}" "${LOGNAME:-<unset>}"
-    printf ' | LICENCE=%s\n' "$LIC_STATE"
-} >>"$LOG"
+# One record, built in a variable and appended with a single write under an exclusive
+# lock. The previous version emitted the line in seven separate printf calls inside a
+# redirected group: with -j N the workers interleaved their writes and two records could
+# land on one line, so a test that counts invocations saw four where five ran. The
+# product was fine; the recorder was not.
+argv_line="ARGV:"
+for a in "$@"; do argv_line="${argv_line} [${a}]"; done
+argv_line="${argv_line} | CWD=${PWD} USER=$(id -un)"
+argv_line="${argv_line} | ASTRFAIL=${ASTRA_FAIL_SLUG:-<unset>}"
+argv_line="${argv_line} | DOCUMENT_ROOT=${DOCUMENT_ROOT:-<unset>} HOMEDIR=${HOMEDIR:-<unset>} HTTP_HOST=${HTTP_HOST:-<unset>} DOCUMENT_URI=${DOCUMENT_URI:-<unset>} HOME=${HOME:-<unset>} LOGNAME=${LOGNAME:-<unset>}"
+argv_line="${argv_line} | LICENCE=${LIC_STATE}"
+if command -v flock >/dev/null 2>&1; then
+    (
+        flock 9
+        printf '%s\n' "$argv_line" >&9
+    ) 9>>"$LOG"
+else
+    printf '%s\n' "$argv_line" >>"$LOG"
+fi
 
 fmt='table' fields='' only_update='' size_fmt=''
 positional=()

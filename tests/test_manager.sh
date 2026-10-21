@@ -146,7 +146,7 @@ else
 fi
 argv_log_reset
 manager_run --core --skip-plugins 'alpha,beta' >/dev/null 2>&1
-if grep -F '[core] [update-db]' "$ARGV_LOG" 2>/dev/null | grep -Fq -- '[--skip-plugins]'; then
+if grep -F '[core] [update-db]' "$ARGV_LOG" 2>/dev/null | grep -Fc -- '[--skip-plugins]' >/dev/null; then
     ok 'core update-db received --skip-plugins (matches what WordPress does during an upgrade)'
 else
     bad 'core update-db did not receive --skip-plugins' "$(grep -F 'update-db' "$ARGV_LOG" 2>/dev/null | head -1)"
@@ -256,7 +256,7 @@ else
     fi
 fi
 csv_out="$(list_run --format csv 2>/dev/null)"
-if printf '%s' "$csv_out" | head -1 | grep -Fq 'name,status,update,version'; then
+if printf '%s' "$csv_out" | head -1 | grep -Fc 'name,status,update,version' >/dev/null; then
     ok '--format csv has a CSV header'
 else
     bad '--format csv header' "$(printf '%s' "$csv_out" | head -1)"
@@ -652,24 +652,24 @@ SKIP_PLUGINS=from-file
 LOG_LEVEL=warn
 EOF
 out="$(bash "$M" --print-config --config "$cfg" 2>/dev/null)"
-if printf '%s' "$out" | grep -F 'SKIP_PLUGINS' | grep -Fq 'from-file'; then
+if printf '%s' "$out" | grep -F 'SKIP_PLUGINS' | grep -Fc 'from-file' >/dev/null; then
     ok 'a config file value is applied'
 else
     bad 'config file value ignored' "$(printf '%s' "$out" | grep -F SKIP_PLUGINS | head -1)"
 fi
 out="$(WP_CLI_UPDATE_SKIP_PLUGINS=from-env bash "$M" --print-config --config "$cfg" 2>/dev/null)"
-if printf '%s' "$out" | grep -F 'SKIP_PLUGINS' | grep -Fq 'from-env'; then
+if printf '%s' "$out" | grep -F 'SKIP_PLUGINS' | grep -Fc 'from-env' >/dev/null; then
     ok 'the environment beats the config file'
 else
     bad 'environment did not beat the file' "$(printf '%s' "$out" | grep -F SKIP_PLUGINS | head -1)"
 fi
 out="$(WP_CLI_UPDATE_SKIP_PLUGINS=from-env bash "$M" --print-config --config "$cfg" --skip-plugins from-cli 2>/dev/null)"
-if printf '%s' "$out" | grep -F 'SKIP_PLUGINS' | grep -Fq 'from-cli'; then
+if printf '%s' "$out" | grep -F 'SKIP_PLUGINS' | grep -Fc 'from-cli' >/dev/null; then
     ok 'the command line beats the environment'
 else
     bad 'CLI did not win' "$(printf '%s' "$out" | grep -F SKIP_PLUGINS | head -1)"
 fi
-if printf '%s' "$out" | grep -F 'SKIP_PLUGINS' | grep -Fq 'command line'; then
+if printf '%s' "$out" | grep -F 'SKIP_PLUGINS' | grep -Fc 'command line' >/dev/null; then
     ok '--print-config names the winning layer'
 else
     bad '--print-config does not name the winning layer' "$(printf '%s' "$out" | grep -F SKIP_PLUGINS | head -1)"

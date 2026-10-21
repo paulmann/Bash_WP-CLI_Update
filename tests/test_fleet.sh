@@ -53,7 +53,13 @@ FLEET_N=5
 SLEEP_WP="${WORK}/bin/wp-sleep"
 cat >"$SLEEP_WP" <<'STUB'
 #!/usr/bin/env bash
-{ printf 'ARGV:'; for a in "$@"; do printf ' [%s]' "$a"; done; printf '\n'; } >>"${MOCK_LOG:-/dev/null}"
+# One line, one write. Seven printf calls inside one redirected group look harmless
+# and are not: five workers start at the same moment, their write() calls interleave,
+# and two records land on one line. The check that counts invocations then sees four
+# where five ran, which reads like a skipped site.
+line='ARGV:'
+for a in "$@"; do line="${line} [${a}]"; done
+printf '%s\n' "$line" >>"${MOCK_LOG:-/dev/null}"
 sleep "${STUB_SLEEP:-1}"
 echo 'Success: ok'
 STUB
@@ -123,7 +129,7 @@ else
     bad 'the child did not run as the invoking user' "$(head -1 "$ARGV_LOG" 2>/dev/null | grep -o 'USER=[^ ]*')"
 fi
 lk="$(next_lock)"; lg="$(next_log)"
-if fleet_run "$STUB_WP" "$FLEET" "$lk" "$lg" --list-sites 2>/dev/null | grep -q '^/'; then
+if fleet_run "$STUB_WP" "$FLEET" "$lk" "$lg" --list-sites 2>/dev/null | grep -c '^/' >/dev/null; then
     ok '--list-sites still reports paths under --no-user-switch'
 else
     bad '--list-sites produced nothing under --no-user-switch' ''
@@ -349,7 +355,7 @@ if command -v tar >/dev/null 2>&1; then
     else
         bad 'the archive is not readable' "${first:-none}"
     fi
-    if [ -n "$first" ] && tar -tzf "$first" 2>/dev/null | grep -Fq 'wp-config.php'; then
+    if [ -n "$first" ] && tar -tzf "$first" 2>/dev/null | grep -Fc 'wp-config.php' >/dev/null; then
         ok 'the archive contains the installation'
     else
         bad 'the archive does not contain wp-config.php' ''
@@ -613,7 +619,7 @@ fi
 lk="$(next_lock)"; lg="$(next_log)"
 fleet_run "$STUB_WP" "$LS_LIST" "$lk" "$lg" --list-sites --json >"${WORK}/lsj.txt" 2>/dev/null
 lsj_rc=$?
-if head -1 "${WORK}/lsj.txt" | grep -Fq '"path"'; then
+if head -1 "${WORK}/lsj.txt" | grep -Fc '"path"' >/dev/null; then
     ok '--list-sites --json emits one JSON object per site'
 else
     bad '--list-sites --json' "rc=${lsj_rc}, stdout: $(head -c 200 "${WORK}/lsj.txt")"
@@ -692,7 +698,12 @@ expect_rc 0 'an ordinary config file is accepted' \
 say 'dry run still executes nothing, in parallel too'
 argv_log_reset
 lk="$(next_lock)"; lg="$(next_log)"
-fleet_run "$STUB_WP" "$FLEET" "$lk" "$lg" --full --dry-run -j "$FLEET_N" >"${WORK}/dry.txt" 2>&1
+# A private TMPDIR for this run only. Counting worker directories in /tmp with a
+# five-minute window meant an unrelated run — an earlier suite, a killed experiment, a
+# neighbour on the same host — could be reported as this test's leak.
+PTMP="${WORK}/tmp-workers"
+mkdir -p "$PTMP"
+TMPDIR="$PTMP" fleet_run "$STUB_WP" "$FLEET" "$lk" "$lg" --full --dry-run -j "$FLEET_N" >"${WORK}/dry.txt" 2>&1
 calls="$(grep -c 'ARGV' "$ARGV_LOG" 2>/dev/null)"
 if [ "${calls:-0}" = '0' ]; then
     ok 'a parallel dry run invoked wp zero times'
@@ -707,12 +718,12 @@ else
 fi
 
 say 'parallel mode leaves no worker directories behind'
-leftovers="$(find "${TMPDIR:-/tmp}" -maxdepth 1 -name 'Bash_WP-CLI_Update.sh.workers.*' -newermt '-5 minutes' 2>/dev/null | wc -l)"
+leftovers="$(find "$PTMP" -maxdepth 1 -name 'Bash_WP-CLI_Update.sh.workers.*' 2>/dev/null | wc -l)"
 leftovers="${leftovers//[^0-9]/}"
 if [ "${leftovers:-0}" = '0' ]; then
     ok 'no worker directory survived the run'
 else
-    bad 'worker directories leaked' "${leftovers} in ${TMPDIR:-/tmp}"
+    bad 'worker directories leaked' "${leftovers} in ${PTMP}"
 fi
 
 say 'the lock still protects a parallel run'
