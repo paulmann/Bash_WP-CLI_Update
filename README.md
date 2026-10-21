@@ -1,115 +1,301 @@
-# Итоговая версия (гибрид) — что унаследовано, откуда и что закрыто
+# Bash WP-CLI Update
 
-Основа — **Deepseek Harness Flash** (коммит `3904a73`, ветка `SagaAI_DeepSeeek_Flash`): единственная
-конфигурация без дефектов уровня critical и с полным набором возможностей. Поверх неё перенесены
-решения из **QWEN Hybrid**, **SagaAI DeepSeek Flash**, **AutoClaw GLM 5.3 Flash + RAGRAF**
-и **SagaAI DeepSeek Pro + RAGRAF**.
+WordPress maintenance automation for a fleet of installations, in two standalone
+Bash scripts and nothing else. No PHP dependency, no Composer, no daemon, no
+agent: `Bash_WP-CLI_Update.sh` runs WP-CLI operations over every site in a list,
+each one as the system user that owns it, and `Find_WP_Senior.sh` builds that
+list by scanning web roots.
 
-Проверки: **166 из 166** в трёх наборах проходят на macOS без root — `verify.sh` (78),
-`tests/compat_test.sh` (49), `verify_build.sh` (39).
-Журнал прогона: `research/out/hybrid_verify.txt`.
-
-## 1. Состав поставки
-
-| Файл | Что это |
-|---|---|
-| `Bash_WP-CLI_Update.sh` | менеджер, 2 481 строка, 101 функция |
-| `Find_WP_Senior.sh` | поисковик донора, не изменялся (`sha256` совпадает с донорским) |
-| `tools/scan-secrets.sh` | сканер секретов в конфигурации сайта (работает и на bash 3.2) |
-| `verify.sh` | 78 проверок на общем стенде, без root |
-| `build_from_donor.sh` | воспроизведение сборки из чистого донора |
-| `README.md` | этот файл |
-| `REFACTORING.md` | что заимствовано, что взято, а что нет и почему |
-| `legacy/` | архив исходников базы (байты `main`) |
-| `ANALYSIS.md`, `LICENSE`, `tests/`, `wp-maintenance.conf.example` | унаследовано от донора |
-
-Расширение версии: **`6.1.0-hybrid`** (у донора было `6.0.0`); обвязка поисковика — `2.0.0`.
-
-## 2. Что унаследовано откуда
-
-| Возможность | Источник идеи | Как реализовано здесь |
+| Component | Version | Purpose |
 |---|---|---|
-| Ядро: режимы, `-j`, бэкапы, `--verify`, `--only-active`, `--list-sites`, `--timeout`, `--no-user-switch` | Deepseek Harness Flash | без изменений (донор) |
-| Конфиг читается как **данные**, ключи по белому списку | SagaAI DeepSeek Flash | `parse_config_file()`, `CONFIG_KEYS_RE` (30 ключей) |
-| Отказ на метасимволах в значениях конфига | QWEN Hybrid | `config_unsafe_reason()` → rc=5 |
-| Маска прав конфига, а не один ниббл | AutoClaw GLM 5.3 Flash + RAGRAF | `((mode & 8#022))` отвергает 0620, 0660, 0664, 0666 |
-| Ключ Astra передаётся файлом `0600`, в `argv` — только значение из файла | AutoClaw GLM 5.3 Flash + RAGRAF, QWEN Hybrid | `licence_open`/`licence_value`/`licence_close` |
-| Маскирование секрета в любом канале | SagaAI DeepSeek Pro + RAGRAF | `redact()` + `--print-config` печатает длину, не значение |
-| Слой значения в диагностике конфигурации | QWEN Hybrid | `--print-config`: `command line` / `environment` / `file:…` / `default` |
-| Проверка окружения и сайтов без изменений | AutoClaw GLM 5.3 Flash + RAGRAF, SagaAI DeepSeek Flash | `--check` |
-| Машиночитаемые списки для обёрток | AutoClaw GLM 5.3 Flash + RAGRAF | `--list-modes`, `--status` |
-| Свёртка счётчиков воркеров при `-j` | журнал интеграции QWEN Hybrid | воркер пишет счётчики в файл, родитель суммирует |
-| Права каталога бэкапов и дампов | QWEN Hybrid | каталог `1777` + sticky, дамп `0640` |
-| Переносимый таймаут `--signal`/`--kill-after` | QWEN Hybrid (у него — GNU `timeout -k`) | супервизор на perl: TERM группе, затем KILL группе |
-| `--user-env` — передача переменных окружения ребёнку | QWEN Hybrid | только по имени, из собственного окружения, с проверкой имени |
-| `--fail-on any/all/never` | QWEN Hybrid | `final_exit()` с приоритетом `--strict` |
-| `--max-sites` — предохранитель парка | QWEN Hybrid | обрезка списка в `load_sites()` с предупреждением |
-| `--json-lines` (синоним `--json`) | QWEN Hybrid | тот же вывод: объект на сайт + итог |
-| `--health` — отчёт о состоянии без изменений | QWEN Hybrid | `mode_status()` донора стал доступен как режим |
-| Сканер секретов с обеими формами записи | QWEN Hybrid (правило по имени) | `tools/scan-secrets.sh` + режим `--secrets` |
+| `Bash_WP-CLI_Update.sh` | **6.2.0** | Run maintenance operations over a site list |
+| `Find_WP_Senior.sh` | **2.1.0** | Discover WordPress installations and write the site list |
+| `tools/scan-secrets.sh` | 1.1.0 | Look for credential literals in the repository |
 
-## 3. Что закрыто из реестра дефектов
+Requirements: **bash 4.2+** (CentOS 7 / RHEL 7 or newer, Debian, Ubuntu), GNU
+coreutils and findutils, [WP-CLI](https://wp-cli.org/), root (to switch into
+site owners), and one of `runuser` / `sudo` / `su`. `flock` and `timeout` are
+used when present and degrade with a warning when they are not.
 
-| Дефект | Суть | Как закрыт | Подтверждение |
-|---|---|---|---|
-| **HF-01** | Поисковик запускался через shebang и подхватывал `bash` 3.2 из PATH | вызов `"${BASH}" "${DISCOVER_SCRIPT}"` | при `bash` 3.2 первым в PATH поисковик исполнен bash 5.2 |
-| **HF-02** | При `-j>1` счётчики операций терялись: «0 ok» при реальных вызовах | воркер сохраняет счётчики, родитель сворачивает | `-j 1` и `-j 2` дают одинаковый результат |
-| **HF-03** | `--backup db` молча ничего не делал вне `--full` | `maybe_backup` из `core`/`plugins`/`themes`/`db-optimize` | бэкап создаётся во всех четырёх режимах |
-| **HF-04** | Гвардия конфига смотрела только other-ниббл: 0660/0620 сорсился и исполнялся | парсинг как данных + маска `022` | 0620/0660/0664/0666 отвергнуты с rc=2 |
-| **HF-06** | Ключ в `argv` процесса `wp` вопреки собственной шапке | файл `0600`, в `argv` уходит результат чтения файла | ключа нет в мок-логе и логах, файл удалён после вызова |
-| **F2-13** | Конфиг `source` исполнял код | тот же парсер | зонд `SKIP_PLUGINS=a; touch /tmp/PWNED` → файл не создан, rc=5 |
-| **QW-06** | `find -printf` (GNU-only) ломал ротацию бэкапов на BSD | ротация на переносимом пути | 5 прогонов с `--keep-backups 2` → 2 файла на сайт |
-| **QW-10** | `--strict` не мог вернуть 0 на хосте без `flock` | предупреждение о переносимости не считается предупреждением | `--strict` на macOS без `flock`/`timeout` → rc=0 |
-| **QW-07** | Файлы поставки без бита выполнения | в гибриде исполняемые файлы имеют `+x` | `ls -l`: менеджер, поисковик, сканер, проверки |
+---
 
-Сверх реестра закрыты два дефекта, найденные при портировании (см. REFACTORING.md, раздел 4):
-HG-01 (`mapfile` в `prune_backups` не существует в bash 3.2) и HG-02 (права каталога бэкапов
-делали выгрузку невозможной для пользователя сайта).
-
-## 4. Что гибрид НЕ наследует и почему
-
-| Не взято | Откуда | Причина |
-|---|---|---|
-| Ключ Astra аргументом `wp` | база, SagaAI DeepSeek Pro, SagaAI DeepSeek Flash + RAGRAF, SagaAI DeepSeek Pro + RAGRAF, AutoClaw GLM 5.3 Flash + RAGRAF, Deepseek Harness Flash | виден в `ps` |
-| `source` конфига | SagaAI DeepSeek Pro, SagaAI DeepSeek Flash + RAGRAF, Deepseek Harness Flash | исполнение кода с привилегиями менеджера |
-| Сборка команды строкой и `su -c` | база | RCE (воспроизведено) |
-| `printf %q` для оператора `&&` | SagaAI DeepSeek Pro + RAGRAF | ломает запуск WP-CLI, отказ бесшумный |
-| Маски исключений по полному пути | база | молчаливая потеря сайтов |
-| Авторский список плагинов в дефолте | шесть поставок | чужое требование в каждом вызове |
-| Значения `--user-env` из конфига или `argv` | — | это был бы канал инъекции в окружение `wp`; принимаются только имена, значения берутся из своего окружения |
-| `--fields`, `--page-limit`, `--allow-root auto/always`, `--log-level`, `--lock-file`, `--error-log-file` | QWEN Hybrid | интерфейсные удобства; `--log-dir` уже покрывает сценарий, а `--lock-file` дублирует безопасный лок в `TMPDIR` |
-
-## 5. Чего в гибриде всё ещё нет
-
-| Пробел | Номер | Почему оставлен |
-|---|---|---|
-| Документация `ANALYSIS.md` донора описывает `source`-конфиг | **HY-01** | аудит базы не переписывается: он описывает состояние базы, а не гибрида; расхождение зафиксировано |
-| Набор `tests/smoke_test.sh` донора не обновлён | **HY-02** | проверяет старое поведение конфига; вместо него независимый `verify.sh` (72 проверки) |
-| 3 note ShellCheck класса info | **HY-03** | намеренные шаблоны (`'$'*`) и обработчик через `trap` |
-| Реальная смена пользователя не проверена | — | нужен root, которого на стенде нет |
-| Сканер секретов не читает бинарные файлы и значения, собранные из фрагментов | — | заявлено в его `--help` явно |
-
-## 6. Как воспроизвести
+## Quick start
 
 ```bash
-# проверки (72), общий стенд, без root
-bash research/hybrid/verify.sh && bash research/hybrid/tests/compat_test.sh && bash research/hybrid/verify_build.sh
+# 1. put both scripts somewhere stable
+sudo install -d /opt/wp-cli-update
+sudo install -m 755 Bash_WP-CLI_Update.sh Find_WP_Senior.sh /opt/wp-cli-update/
 
-# статика
-research/bin/shellcheck -f gcc research/hybrid/Bash_WP-CLI_Update.sh research/hybrid/Find_WP_Senior.sh research/hybrid/tools/scan-secrets.sh
+# 2. configure (optional but recommended)
+sudo cp wp-cli-update.conf.example /etc/wp-cli-update.conf
+sudo chmod 600 /etc/wp-cli-update.conf
+sudo "$EDITOR" /etc/wp-cli-update.conf
 
-# диагностика без установленного WP-CLI
-research/bin/bash52 research/hybrid/Bash_WP-CLI_Update.sh --print-config
-research/bin/bash52 research/hybrid/Bash_WP-CLI_Update.sh --status
-research/bin/bash52 research/hybrid/Bash_WP-CLI_Update.sh --list-modes
+# 3. look before you leap -- this changes nothing
+sudo /opt/wp-cli-update/Bash_WP-CLI_Update.sh --check
+sudo /opt/wp-cli-update/Bash_WP-CLI_Update.sh --full --dry-run
 
-# сканер секретов отдельно (работает и на bash 3.2)
-research/hybrid/tools/scan-secrets.sh --strict /var/www/example.com
+# 4. discover the sites and run
+sudo /opt/wp-cli-update/Find_WP_Senior.sh --output /var/lib/wp-cli-update/wp-found.txt /var/www
+sudo /opt/wp-cli-update/Bash_WP-CLI_Update.sh --full
 ```
 
-## 7. Оговорка о сопоставимости
+---
 
-Гибрид — работа другого рода, чем поставка агента по замеру: он собран после того, как все дефекты
-шести конфигураций были найдены и описаны в реестре, и использует чужой код как основу и как источник
-идей. Его «стоимость поставки» несопоставима с токенами и минутами сессий 1—6, поэтому в рейтинге он
-идёт строкой **вне конкурса**, а балл приведён справочно.
+## What it does
+
+### Modes
+
+Exactly one mode per run. `--list-modes` prints them for shell completion.
+
+| Mode | Short | WP-CLI operations |
+|---|---|---|
+| `--full` | `-f` | `core update`, `plugin update --all`, `theme update --all`, `core update-db --skip-plugins`, `db optimize`, `db repair`, `cron event run --due-now`, plus the Astra step when a licence is configured |
+| `--core` | `-c` | `core update`, `core update-db --skip-plugins` |
+| `--plugins` | `-p` | `plugin update --all` |
+| `--themes` | `-t` | `theme update --all` |
+| `--db-optimize` | `-d` | `db optimize`, `db repair` |
+| `--db-fix` | `-x` | `db repair` |
+| `--cron` | `-r` | `cron event run --due-now` |
+| `--astra` | `-s` | `plugin update <slug>`, then `brainstormforce license activate` and a retry if that failed |
+| `--list-plugins` | `-l` | `plugin list --format=json`, rendered as table / json / csv / tsv |
+| `--plugin-manage` | `-m` | resolve `--name` to one slug, deactivate it, back it up, then `plugin delete` |
+| `--verify` | | read-only `core verify-checksums` + `plugin verify-checksums --all` |
+| `--check` | | validate the environment and every listed site, change nothing |
+| `--status` | | print the recorded summary of the last run and the log sizes |
+| `--list-sites` | | print the resolved site list with owners and exit |
+
+A failing site never aborts the run: it is counted, reported, and the loop goes
+on to the next site.
+
+### Fleet-wide options
+
+| Option | What it does |
+|---|---|
+| `-j, --jobs N` | process N sites in parallel batches (default 1 = sequential) |
+| `-b, --backup db\|full` | `wp db export`, or a tar.gz of the whole tree, before the site is touched |
+| `-B, --backup-dir DIR`, `--keep-backups N` | where backups go and how many generations survive |
+| `--only-active` | update only plugins that are active **and** have an update available |
+| `-e, --exclude-plugins LIST` | leave these slugs out of `--plugins` / `--full` |
+| `-U, --url URL` | pass `--url` to WP-CLI on every call (multisite) |
+| `-J, --json` / `--json-lines` | fleet report as JSON Lines: one object per site plus a summary |
+| `--strict` | exit non-zero when anything was warned about, not only when something failed |
+| `--no-user-switch` | run WP-CLI as the invoking user instead of switching into the site owner |
+
+**Parallelism is a batch barrier, not a continuous pool.** Bash 4.2 has no
+`wait -n`, so the next batch starts when the slowest site of the current one
+finishes. Per-site console output and log lines are buffered and replayed in site
+order at the barrier, so neither interleaves — which means `tail -f` on the log
+looks stalled until the batch lands. That is deliberate: three sites writing into
+one file at once is unreadable. Choose N from the slowest shared resource, which
+is normally the database server, not the CPU; 4–8 is a sane range for one MySQL
+instance on one host.
+
+**Backups are off by default**, because a dump per site per run fills disks that
+nobody monitors. `--backup db` costs seconds and covers everything these modes
+change; `--backup full` is complete and can be tens of gigabytes, so the script
+reports the tree size before archiving. A plugin deletion is the exception: it is
+always archived first unless `--no-backup` was given explicitly, and the operator
+is warned in the log when that happens. If a backup fails, the site is **skipped
+rather than updated unprotected**, unless `--fail-on never` says otherwise. `wp core check-update` is deliberately not counted as an
+operation, because it exits 1 when the site is already up to date and would cry
+wolf on every healthy run.
+
+### Exit codes
+
+The codes are a contract and the scripts honour it — including for `--help`.
+
+| Code | Meaning |
+|---|---|
+| `0` | success (with `--fail-on=any`: every operation on every site succeeded) |
+| `1` | operational error — at least one WP-CLI operation failed |
+| `2` | usage error — bad command line |
+| `3` | environment error — not root, bash too old, WP-CLI missing, lock held |
+| `4` | configuration error — unreadable, unsafe or invalid config file |
+| `5` | *(finder only)* no installation found — not a failure of the tool |
+
+`--fail-on any|all|never` moves the `0`/`1` boundary: `any` is right for cron
+alerting, `all` for best-effort jobs, `never` when you parse the log instead.
+
+---
+
+## Configuration
+
+Precedence, lowest to highest:
+
+```
+built-in defaults  <  /etc/wp-cli-update.conf  <  ./wp-cli-update.conf
+                   <  WP_CLI_UPDATE_<KEY> environment  <  command line
+```
+
+`Bash_WP-CLI_Update.sh --print-config` prints the effective value of every
+setting, the layer that produced it, and whether the command line overrode it.
+That is the first thing to run when a host behaves differently from another.
+
+**The config file is data, not shell.** Only `KEY=VALUE` lines are read and the
+file is never sourced. A line containing a backtick, `$(`, `|`, `;`, `&`, `<` or
+`>` makes the whole file be rejected with exit code 4. A configuration file that
+can execute code is a privilege escalation waiting for one loose permission bit,
+and this tool runs as root.
+
+See [`wp-cli-update.conf.example`](wp-cli-update.conf.example) for every setting
+with its default and the reason it exists.
+
+### The Astra licence
+
+The licence value is **never an argument of any process**. It is written to a
+temporary file and the child shell reads it at run time:
+
+```
+runuser -u siteuser -- /bin/sh -c 'exec env WP_CLI_LICENCE="$(cat -- /tmp/…XXXXXX)" … wp brainstormforce license activate astra-addon "$WP_CLI_LICENCE"' sh
+```
+
+so the value appears neither in `ps` output, nor in a log line, nor in a dry-run
+listing, nor in an error box. Sources, in order: `--astra-key`,
+`WP_CLI_UPDATE_LICENCE`, `ASTRA_KEY`, `ASTRA_LICENSE_KEY`, then the first
+readable file among `./astra.key`, `/etc/wp-cli-update/astra.key`,
+`$HOME/.astra.key`. The file must be readable by the site owner for the
+duration of the call; `licence_open()` documents that trade-off and every
+alternative that was rejected.
+
+---
+
+## Site discovery
+
+```bash
+Find_WP_Senior.sh [options] [SEARCH_ROOT ...]
+```
+
+* **Only the roots you name are scanned.** With no argument, a short list of
+  conventional web roots is used (`/var/www`, `/srv/www`, `/usr/share/nginx/html`,
+  `/srv`, `/home`). `/` is never a default and never injected: an earlier
+  revision expanded an empty array with `"${arr[@]:-}"`, which in bash 4.4+
+  yields one empty element, and a later `[[ -n $r ]] || r='/'` turned that into a
+  full filesystem scan that silently added unrelated sites to the list.
+* A directory is a WordPress root when it holds `wp-config.php` **and** one of
+  `wp-load.php` or `wp-includes/version.php`. A stray config file is not a site.
+* A directory containing `.no_wp_cli` is always skipped. That is how one site
+  opts out of automated maintenance without being removed from the inventory.
+* `find` output is read with `-print0` / `read -d ''`, so a path with a space, a
+  quote or a newline survives the whole pipeline.
+* The write is atomic (temporary file + `mv`) and preserves the permissions of an
+  existing list, so a reader never sees a half-written file and a cron job
+  reading the list as another user keeps working.
+* Prose goes to stderr, data to stdout. `--output -` writes the list to stdout,
+  so `Find_WP_Senior.sh --format json -o - /var/www | jq -r '.[].path'` works.
+
+Formats: `paths` (default, one absolute path per line — what the manager
+consumes), `tsv`, `csv`, `json` (with `owner`, `group`, `modified`,
+`wp_version`, `db_name`).
+
+---
+
+## Safety features
+
+| Feature | Flags / settings |
+|---|---|
+| Dry run | `-n, --dry-run` — prints the exact command per site, executes nothing |
+| Inspection | `--check`, `--status`, `--print-config`, `--list-modes` |
+| Concurrency | `flock` on `--lock-file`, pid-file fallback, stale locks from dead pids are removed, `--no-lock` to bypass |
+| Runaway commands | `--timeout SEC`, `--signal SIG`, `--kill-after SEC` |
+| Privilege | `--allow-root auto\|always\|never` |
+| Destructive actions | `plugin delete` refuses without a terminal or `--yes`/`--force` |
+| Colour | `--color auto\|always\|never`, `--no-color`, `NO_COLOR` |
+| Log growth | `LOG_MAX_BYTES` + `LOG_KEEP` rotation of both logs |
+| Secrets | value never in argv; `redact()` scrubs registered secrets from every message; `tools/scan-secrets.sh` |
+| Interrupts | `trap` on EXIT/INT/TERM/HUP prints a partial summary, so a half-finished fleet run still reports how far it got |
+
+---
+
+## Tests
+
+```bash
+bash tests/run_tests.sh            # everything
+bash tests/run_tests.sh manager    # one suite
+VERBOSE=1 bash tests/run_tests.sh  # keep the working directories
+```
+
+No root, no WordPress, no WP-CLI and no network are needed. A stub `wp` records
+its own argv, working directory, user and environment, so every assertion is
+about what would really be executed. Checks that need something the machine may
+not have (`runuser`, `flock`, `timeout`, `node`, `python3`, a switchable
+account) report **SKIP** with the reason instead of failing.
+
+| Suite | What it protects |
+|---|---|
+| `test_static.sh` | `bash -n`, ShellCheck clean, LF endings, executable bits, and the absence of the constructs that broke this project before: `eval`, backticks, `"${arr[@]:-}"`, `printf %q`, `su -c` without `-s`, sourcing a config file, personal data in code |
+| `test_base_contract.sh` | **the public surface of the original scripts**: every mode and short form, every documented option, the exit-code contract, the `.no_wp_cli` marker, paths with spaces, the `DOCUMENT_ROOT`/`HTTP_HOST`/`HOMEDIR`/`DOCUMENT_URI` environment contract, CRLF site lists, and that no scan ever exceeds the requested roots |
+| `test_finder.sh` | detection rule, exclusions, depth, deduplication, all four output formats (JSON and CSV validated with a real parser), atomic write and permission preservation, `--status`, `--skip-existing`, empty-result exit code |
+| `test_fleet.sh` | the fleet-wide surface: `--no-user-switch`, `-j N` measured against a sleeping stub (sequential ≥ 4 s vs `-j 5` ≈ 1 s), counters identical at `-j 1/2/3/5`, console order and log contiguity, a failing site inside a batch, `--backup db\|full`, rotation with `--keep-backups`, a backup destination that cannot be created, deletion backup and deactivation, `--verify` issues no mutation, `--only-active` and `--exclude-plugins` selection, `--strict`, JSON Lines shape and ordering, `--list-sites`, `--url`, the configuration layers for the new keys, every shell metacharacter in a config file, a killed worker, leaked worker directories |
+| `test_manager.sh` | per-mode argv, `--skip-plugins` policy, `--allow-root` policy, dry run, all four list formats, `--fields`, `--name` filtering, slug resolution, ambiguity refusal, delete confirmation, injection attempts through `--name` and through a site path, the licence never reaching argv or a log, `--check`, `--status`, failure counting, `--fail-on`, timeouts, concurrent runs, stale locks, config precedence, config-file rejection, log rotation, colour policy |
+| `test_secretguard.sh` | the guard finds planted values in five name conventions, masks them by default, exits 1 under `--strict`, honours the allowlist, finds a value that was committed and later removed (`--history`), and stays quiet on placeholders, paths, expansions and settings |
+
+Run `bash tools/scan-secrets.sh --strict` before committing; it must exit 0.
+
+---
+
+## Design rules
+
+[`AGENT.md`](AGENT.md) holds the binding rules for anyone — human or model —
+changing these scripts. The four that matter most:
+
+1. **No command is built by string concatenation.** Every WP-CLI call is a bash
+   array that becomes argv. The only string handed to a shell is the user switch,
+   and there the arguments travel as *positional parameters*, so no escaping is
+   needed at all.
+2. **`printf %q` is bash-only.** Never use it to build a string for `sh -c` or
+   `su -c` without `-s`. `/bin/sh` is dash on Debian, `\&\&` is a literal there,
+   and the failure mode is `cd: too many arguments` on *every* site.
+3. **Never expand a possibly-empty array as `"${arr[@]:-}"`.** In bash 4.4+ that
+   is one empty element, not zero elements. Use `${arr[@]+"${arr[@]}"}`.
+4. **A configuration file is data.** Parse it; do not source it.
+
+---
+
+## Cron
+
+```cron
+# Maintenance at 03:20: four sites at a time, a database dump first, two
+# generations kept, and --strict so that a warning also pages somebody.
+20 3 * * *  root  /opt/wp-cli-update/Bash_WP-CLI_Update.sh --full -j 4 --backup db \
+                  --keep-backups 2 --timeout 900 --strict --quiet \
+                  >> /var/log/wp-cli-update/cron.log 2>&1
+
+# Nightly integrity check, machine-readable, only the sites that are not OK.
+40 4 * * *  root  /opt/wp-cli-update/Bash_WP-CLI_Update.sh --verify -j 8 --json-lines \
+                  | grep -v '"status":"OK"' >> /var/log/wp-cli-update/verify.log
+
+# Refresh the inventory on Sundays, keeping the list even when it comes back empty.
+0 4 * * 0   root  /opt/wp-cli-update/Find_WP_Senior.sh --output /var/lib/wp-cli-update/wp-found.txt /var/www >> /var/log/wp-cli-update/cron.log 2>&1
+```
+
+The lock makes an overlap harmless: the second run exits 3 with
+`refusing to run concurrently` instead of updating the same databases twice.
+
+---
+
+## Repository layout
+
+```
+Bash_WP-CLI_Update.sh          the manager (6.2.0)
+Find_WP_Senior.sh              the discovery tool (2.1.0)
+wp-cli-update.conf.example     every setting, documented
+tools/scan-secrets.sh          secret guard (1.1.0)
+tools/secret-allowlist.txt     known-benign lines, each with a reason
+tests/run_tests.sh             suite runner, non-zero on any failure
+tests/test_fleet.sh            parallelism, backups, fleet-wide reporting
+tests/harness.sh               shared fixtures and counters
+tests/stub/wp                  recording stub of WP-CLI
+tests/test_*.sh                five suites
+legacy/                        byte-exact archive of the original main scripts
+ANALYSIS.md                    audit of the original code, with the PoC
+REFACTORING.md                 what this tree took from each of the five revisions
+AGENT.md                       binding rules for changes
+PROJECT_MAP.md                 file-by-file map with dependencies
+CHANGELOG.md                   Keep a Changelog
+LICENSE                        MIT
+```
+
+## License
+
+MIT — see [LICENSE](LICENSE).
