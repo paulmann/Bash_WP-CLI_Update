@@ -1,607 +1,677 @@
 #!/usr/bin/env bash
-# shellcheck shell=bash
-###############################################################################
-# WordPress installation discovery
-#
+# ==============================================================================
 # File:        Find_WP_Senior.sh
 # Project:     Bash WP-CLI Update
 # Repository:  https://github.com/paulmann/Bash_WP-CLI_Update
-# License:     MIT
 # Version:     2.0.0
+# License:     MIT — see LICENSE file in project root.
 #
-# Scans one or more web roots for WordPress installations (a directory holding
-# wp-config.php and wp-load.php), skips opt-outs and exclusions, deduplicates the
-# result and writes it to the site list consumed by Bash_WP-CLI_Update.sh.
+# Description:
+#   Scans one or more webroots for WordPress installations, resolves the real
+#   WordPress root (including "wp-config.php one level above the core" and
+#   Bedrock-style layouts), honours per-site opt-out markers, applies safe
+#   exclusions and writes a deduplicated, atomically replaced site list that is
+#   consumed by Bash_WP-CLI_Update.sh.
+#
+# Usage:
+#   ./Find_WP_Senior.sh [OPTIONS] [SEARCH_DIRS...]
+#
+# Options:
+#   -o, --output FILE      Output file (default: <script dir>/wp-found.txt, "-" = stdout)
+#   -e, --exclude PATTERN  Exclude a directory. Repeatable.
+#                            No "/"  -> matches the directory NAME  (e.g. 'backup*')
+#                            With "/" -> matches the whole PATH     (e.g. '*/staging', '/srv/old')
+#   -m, --max-depth N      Maximum scan depth (default: 6)
+#   -L, --follow           Follow symbolic links (deduplicated via realpath when available)
+#   -d, --details          Print the found sites table (default when stderr is a TTY)
+#       --no-details       Do not print the table
+#       --json             Print machine-readable JSON to stdout
+#   -q, --quiet            Only errors on stderr
+#   -v, --verbose          Show skipped paths and their reasons
+#       --dry-run          Discover only, do not write the output file
+#       --fail-if-empty    Exit with code 3 when nothing was found
+#       --no-color         Disable ANSI colours (also honoured: NO_COLOR=1)
+#   -V, --version          Print version and exit
+#   -h, --help             Print this help and exit
+#
+# Per-site opt-out marker:
+#   • .no_wp_cli  — if this file exists in the resolved WordPress root (or in its
+#                   parent directory, which covers Bedrock layouts), the site is
+#                   skipped and never written to the output file.
+#
+# Logging/diagnostics always go to STDERR; STDOUT carries only machine-readable
+# data (JSON or paths with --output -).
 #
 # Exit codes:
-#   0  installations found and written
-#   1  operational error (unreadable root, cannot write the output file)
+#   0  success
+#   1  runtime error (unreadable output dir, find failure on every root, ...)
 #   2  usage error
-#   3  environment error (bash too old, required tools missing)
-#   5  no installations found (not an error of the tool itself)
-###############################################################################
+#   3  nothing found and --fail-if-empty was given
+#
+# Requirements:
+#   • Bash 4.2+
+#   • find, sort, mktemp, dirname, basename (GNU coreutils or BSD userland)
+#
+# Author & Support:
+#   Paul Mann — https://github.com/paulmann
+# ==============================================================================
 
-if [ -z "${BASH_VERSION:-}" ]; then
-    printf 'ERROR: this script requires bash.\n' >&2
-    exit 3
+set -Eeuo pipefail
+
+# Bash 4.2+ is required (associative arrays, printf -v, array slicing).
+# Keeping this check before any 4.x-only declaration makes old shells fail with
+# a readable message instead of "declare: -A: invalid option".
+if ((BASH_VERSINFO[0] < 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 2))); then
+	printf 'ERROR: %s requires Bash 4.2 or newer (running: %s)\n' "${0##*/}" "${BASH_VERSION}" >&2
+	printf '       On macOS install a current bash (e.g. "brew install bash") and run it explicitly.\n' >&2
+	exit 3
 fi
 
-# No 'set -e': the scan is a sequence of independent roots and a failing root must
-# not abort the whole run. Statuses are checked explicitly.
-set -uo pipefail
-shopt -s inherit_errexit 2>/dev/null || true
+readonly SCRIPT_VERSION="2.0.0"
+SCRIPT_NAME="${0##*/}"
+SCRIPT_DIR=""
 
-if (( BASH_VERSINFO[0] < 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 2) )); then
-    printf 'ERROR: bash 4.2 or newer is required, found %s\n' "${BASH_VERSION}" >&2
-    exit 3
-fi
-
-export LC_ALL=C
-
-readonly EXIT_OK=0
-readonly EXIT_ERROR=1
-readonly EXIT_USAGE=2
-readonly EXIT_ENV=3
-readonly EXIT_NOT_FOUND=5
-
-readonly PROG_NAME="${0##*/}"
-readonly SCRIPT_VERSION='2.0.0'
-
-_resolve_script_dir() {
-    local src="${BASH_SOURCE[0]}" dir
-    while [ -L "$src" ]; do
-        dir="$(cd -P "$(dirname "$src")" >/dev/null 2>&1 && pwd)"
-        src="$(readlink "$src")"
-        [[ "$src" != /* ]] && src="$dir/$src"
-    done
-    cd -P "$(dirname "$src")" >/dev/null 2>&1 && pwd
+# ------------------------------------------------------------------------------
+# Resolve the real script directory (symlink-safe, no subshell side effects)
+# ------------------------------------------------------------------------------
+resolve_script_dir() {
+	local src="${BASH_SOURCE[0]}" dir
+	while [[ -L "${src}" ]]; do
+		dir="$(cd -P -- "$(dirname -- "${src}")" >/dev/null 2>&1 && pwd)" || break
+		src="$(readlink -- "${src}")"
+		[[ "${src}" != /* ]] && src="${dir}/${src}"
+	done
+	dir="$(cd -P -- "$(dirname -- "${src}")" >/dev/null 2>&1 && pwd)" || dir="${PWD}"
+	printf '%s' "${dir}"
 }
-script_dir="$(_resolve_script_dir)" || { printf 'ERROR: cannot resolve script directory\n' >&2; exit "$EXIT_ENV"; }
-readonly script_dir
-unset -f _resolve_script_dir
+SCRIPT_DIR="$(resolve_script_dir)"
+readonly SCRIPT_NAME SCRIPT_DIR
 
-# The default output sits next to the script, which is where the manager expects
-# its site list. It is NOT derived from $PWD: the previous version wrote the file
-# into the current directory, so './Find_WP_Senior.sh' from another directory
-# produced a list the manager never saw.
-readonly DEFAULT_OUTPUT_FILE="${script_dir}/wp-found.txt"
-readonly DEFAULT_MAX_DEPTH=8
-readonly MARKER_FILE='.no_wp_cli'
+# ------------------------------------------------------------------------------
+# Defaults (override with environment variables)
+# ------------------------------------------------------------------------------
+readonly DEFAULT_OUTPUT_FILE="${SCRIPT_DIR}/wp-found.txt"
+readonly DEFAULT_MAX_DEPTH="${WP_FINDER_MAX_DEPTH:-6}"
 
-# Roots scanned when none are given on the command line.
+# Roots that are scanned when no SEARCH_DIRS are given. Non-existent roots are
+# skipped silently — the list is intentionally a superset of common layouts.
 readonly -a DEFAULT_SEARCH_DIRS=(
-    /var/www
-    /var/www/html
-    /usr/share/nginx/html
-    /usr/local/nginx/html
-    /usr/local/var/www
-    /srv
-    /home
+	/var/www
+	/var/www/html
+	/usr/share/nginx/html
+	/usr/local/nginx/html
+	/usr/local/var/www
+	/srv
+	/home
+	/opt
 )
 
-# Directory NAMES to prune, matched as whole path components. Substring globs
-# ('*old*', '*test*', '*backup*') are deliberately gone: they silently dropped
-# production sites such as oldtown.com, btest.example.com and contest.org.
-# Consequences worth knowing: 'old' and 'backup-2025' are kept, because the name
-# alone cannot tell a backup from a live site; use --exclude-name or
-# --exclude-path for those.
-readonly -a DEFAULT_EXCLUDE_NAMES=(
-    .git
-    .svn
-    .hg
-    node_modules
-    bower_components
-    vendor
-    __pycache__
-    cache
-    caches
-    tmp
-    temp
-    backups
-    backup
-    lost+found
-    proc
-    sys
-    dev
-    run
+# Directory NAMES that are never descended into. Deliberately conservative:
+# a directory is skipped only when its own name matches, so legitimate sites
+# such as /var/www/test.example.com or /var/www/oldboy.com are NOT skipped
+# (this was a silent data-loss bug in v1.01, where '*/test*' and '*/old*'
+# patterns were matched against the full site path).
+readonly -a DEFAULT_PRUNE_NAMES=(
+	.git
+	.svn
+	.hg
+	.snapshot
+	.trash
+	node_modules
+	bower_components
+	vendor
+	cache
+	backups
+	backup
+	.@__thumb
 )
 
-OUTPUT_FILE="$DEFAULT_OUTPUT_FILE"
-MAX_DEPTH="$DEFAULT_MAX_DEPTH"
-OUTPUT_FORMAT='paths'
-DELIMITER=''
-SKIP_EXISTS='false'
-STATUS_ONLY='false'
-QUIET='false'
-VERBOSE='false'
-COLOR_MODE='auto'
+# Additional prune patterns kept for backwards compatibility with v1.01 CLI
+# usage. These are PATH patterns (they contain "/").
+readonly -a DEFAULT_PRUNE_PATHS=()
+
+# Directories that are never valid webroots even if they contain wp-config.php
+readonly -a DEFAULT_EXTRA_EXCLUDES=(
+	/proc
+	/sys
+	/dev
+	/run
+)
+
+# ------------------------------------------------------------------------------
+# Globals
+# ------------------------------------------------------------------------------
+OUTPUT_FILE="${DEFAULT_OUTPUT_FILE}"
+MAX_DEPTH="${DEFAULT_MAX_DEPTH}"
+FOLLOW_LINKS=0
+SHOW_DETAILS="auto"
+JSON_OUTPUT=0
+QUIET=0
+VERBOSE=0
+DRY_RUN=0
+FAIL_IF_EMPTY=0
+COLOR_MODE="auto"
+
 declare -a SEARCH_DIRS=()
-declare -a EXCLUDE_NAMES=()
-declare -a EXCLUDE_PATHS=()
-declare -a EXCLUDE_PATHS_NORM=()
+declare -a PRUNE_NAMES=()        # effective list (defaults + user)
+declare -a PRUNE_PATHS=()        # effective list (defaults + user)
+declare -a USER_PRUNE_NAMES=()   # from --exclude (name patterns)
+declare -a USER_PRUNE_PATHS=()   # from --exclude (path patterns)
 
-C_RESET=''; C_BOLD=''; C_DIM=''; C_RED=''; C_GREEN=''; C_YELLOW=''; C_BLUE=''
+declare -a SITE_PATHS=()
+declare -a SITE_USERS=()
+declare -a SITE_GROUPS=()
+declare -a SITE_MTIMES=()
+declare -A SEEN_SITES=()
 
-###############################################################################
-# Output helpers
-###############################################################################
-_colors_init() {
-    local use='no'
-    if [ -n "${NO_COLOR:-}" ] || [ "$COLOR_MODE" = 'never' ]; then
-        use='no'
-    elif [ "$COLOR_MODE" = 'always' ]; then
-        use='yes'
-    elif [ "$COLOR_MODE" = 'auto' ] && [ -t 2 ]; then
-        use='yes'
-    fi
-    if [ "$use" = 'yes' ]; then
-        C_RESET=$'\033[0m'; C_BOLD=$'\033[1m'; C_DIM=$'\033[2m'
-        C_RED=$'\033[31m'; C_GREEN=$'\033[32m'; C_YELLOW=$'\033[33m'; C_BLUE=$'\033[34m'
-    fi
+STAT_SCANNED_ROOTS=0
+STAT_SKIPPED_MARKER=0
+STAT_SKIPPED_DUPLICATE=0
+STAT_INVALID=0
+STAT_FIND_ERRORS=0
+
+TMP_FILES=()
+
+# ------------------------------------------------------------------------------
+# Colours / logging (stderr only)
+# ------------------------------------------------------------------------------
+C_RED=""
+C_GREEN=""
+C_YELLOW=""
+C_BLUE=""
+C_DIM=""
+C_RESET=""
+
+setup_colors() {
+	local enabled=0
+	case "${COLOR_MODE}" in
+		never) enabled=0 ;;
+		always) enabled=1 ;;
+		*)
+			if [[ -t 2 && -z "${NO_COLOR:-}" && "${TERM:-dumb}" != "dumb" ]]; then
+				enabled=1
+			fi
+			;;
+	esac
+	if ((enabled)); then
+		C_RED=$'\033[0;31m'
+		C_GREEN=$'\033[0;32m'
+		C_YELLOW=$'\033[1;33m'
+		C_BLUE=$'\033[0;34m'
+		C_DIM=$'\033[2m'
+		C_RESET=$'\033[0m'
+	fi
+	return 0
 }
 
-# Every human message goes to stderr: stdout carries only the result, so
-# 'Find_WP_Senior.sh | ...' is usable without filtering noise out.
-log()     { [ "$QUIET" = 'true' ] || printf '%sINFO%s %s\n'  "$C_BLUE"   "$C_RESET" "$*" >&2; }
-warn()    { printf '%sWARN%s %s\n' "$C_YELLOW" "$C_RESET" "$*" >&2; }
-error()   { printf '%sERROR%s %s\n' "$C_RED"   "$C_RESET" "$*" >&2; }
-success() { [ "$QUIET" = 'true' ] || printf '%sOK%s %s\n'    "$C_GREEN"  "$C_RESET" "$*" >&2; }
-vlog()    { [ "$VERBOSE" = 'true' ] && printf '%sDEBUG%s %s\n' "$C_DIM" "$C_RESET" "$*" >&2; return 0; }
+log()  { ((QUIET)) || printf '%sINFO:%s %s\n'  "${C_BLUE}"   "${C_RESET}" "$*" >&2; return 0; }
+ok()   { ((QUIET)) || printf '%sOK:%s %s\n'    "${C_GREEN}"  "${C_RESET}" "$*" >&2; return 0; }
+warn() { printf '%sWARN:%s %s\n' "${C_YELLOW}" "${C_RESET}" "$*" >&2; return 0; }
+err()  { printf '%sERROR:%s %s\n' "${C_RED}"   "${C_RESET}" "$*" >&2; return 0; }
+vlog() { ((VERBOSE)) && { printf '%sDEBUG:%s %s\n' "${C_DIM}" "${C_RESET}" "$*" >&2; }; return 0; }
 
-usage() { # EXIT_CODE
-    local rc="${1:-$EXIT_USAGE}"
-    cat <<EOF
-${PROG_NAME} v${SCRIPT_VERSION} - find WordPress installations
+die() { local code="${2:-1}"; err "$1"; exit "${code}"; }
 
-Usage:
-  ${PROG_NAME} [options] [SEARCH_DIR...]
+# ------------------------------------------------------------------------------
+# Helpers
+# ------------------------------------------------------------------------------
+have() { command -v -- "$1" >/dev/null 2>&1; }
+
+mktemp_file() {
+	local tpl="${TMPDIR:-/tmp}/wp-finder.XXXXXXXX" f
+	f="$(mktemp "${tpl}")" || return 1
+	TMP_FILES+=("${f}")
+	printf '%s' "${f}"
+}
+
+cleanup() {
+	local rc=$?
+	local f
+	for f in "${TMP_FILES[@]:-}"; do
+		[[ -n "${f}" && -e "${f}" ]] && rm -f -- "${f}"
+	done
+	return "${rc}"
+}
+
+json_escape() {
+	local s="$1"
+	s="${s//\\/\\\\}"
+	s="${s//\"/\\\"}"
+	s="${s//$'\n'/\\n}"
+	s="${s//$'\t'/\\t}"
+	s="${s//$'\r'/\\r}"
+	printf '%s' "${s}"
+}
+
+# Portable owner/group/mtime lookup: GNU stat first, BSD stat as fallback.
+# Prints "user|group|mtime" or returns 1.
+stat_meta() {
+	local target="$1" out
+	if out="$(stat -c '%U|%G|%y' -- "${target}" 2>/dev/null)"; then
+		out="${out%%.*}"           # strip fractional seconds
+		printf '%s' "${out}"
+		return 0
+	fi
+	if out="$(stat -f '%Su|%Sg|%Sm' -t '%Y-%m-%d %H:%M:%S' -- "${target}" 2>/dev/null)"; then
+		printf '%s' "${out}"
+		return 0
+	fi
+	return 1
+}
+
+# ------------------------------------------------------------------------------
+# Usage
+# ------------------------------------------------------------------------------
+usage() {
+	cat <<EOF
+WordPress Installation Discovery v${SCRIPT_VERSION}
+
+Usage: ${SCRIPT_NAME} [OPTIONS] [SEARCH_DIRS...]
+
+Default roots:
+$(printf '  %s\n' "${DEFAULT_SEARCH_DIRS[@]}")
 
 Options:
-  -o, --output FILE       write the site list to FILE (default: ${DEFAULT_OUTPUT_FILE})
-  -d, --depth N           maximum search depth below each root (default: ${DEFAULT_MAX_DEPTH})
-  -x, --exclude-name NAME exclude directories with this NAME (repeatable)
-      --exclude-path PATH exclude this path and everything below it (repeatable)
-      --format FMT        result format: paths|tsv|json|csv (default: paths)
-      --delimiter CHAR    field delimiter for tsv/csv (default: tab, comma for csv)
-      --skip-existing     do not rewrite the output when its content is unchanged
-      --status            print the state of the output file and exit
-      --quiet             no progress messages
-  -v, --verbose           show each root as it is scanned
-      --color WHEN        auto|always|never (default: auto)
-      --no-color          same as --color never
-  -h, --help              show this help and exit with status 0
-  -V, --version           print the version and exit
+  -o, --output FILE      Output file (default: ${DEFAULT_OUTPUT_FILE}; "-" = stdout)
+  -e, --exclude PATTERN  Exclude directory (repeatable):
+                           no "/"  -> matches directory NAME ('backup*')
+                           with "/" -> matches full PATH ('*/staging', '/srv/old')
+  -m, --max-depth N      Maximum scan depth (default: ${DEFAULT_MAX_DEPTH})
+  -L, --follow           Follow symlinks (and deduplicate by real path)
+  -d, --details          Print the found sites table
+      --no-details       Do not print the table
+      --json             Print JSON to stdout
+  -q, --quiet            Errors only
+  -v, --verbose          Show skipped paths and reasons
+      --dry-run          Do not write the output file
+      --fail-if-empty    Exit 3 when nothing was found
+      --no-color         Disable colours
+  -V, --version          Print version
+  -h, --help             Print this help
 
-Opt-out:
-  A directory containing ${MARKER_FILE} is skipped, together with everything below it.
+Per-site opt-out: create an empty ".no_wp_cli" file in the WordPress root.
 
-Result format:
-  paths  one absolute path per line (what Bash_WP-CLI_Update.sh reads)
-  tsv    path, owner, group, last-modified
-  csv    the same four columns, comma separated
-  json   an array of objects with the same four fields
-
-Exit codes:
-  0 found   1 error   2 usage error   3 environment error   5 nothing found
+Exit codes: 0 = success, 1 = runtime error, 2 = usage error, 3 = empty (--fail-if-empty)
 
 Examples:
-  ${PROG_NAME}
-  ${PROG_NAME} /var/www /srv
-  ${PROG_NAME} --exclude-name staging --format tsv
-  ${PROG_NAME} --output /etc/wp-cli-update/sites.txt --depth 10
+  ${SCRIPT_NAME}
+  ${SCRIPT_NAME} /var/www /srv
+  ${SCRIPT_NAME} -o /etc/wp-sites.txt --exclude '*/staging' --exclude 'backup*'
+  ${SCRIPT_NAME} --max-depth 8 --follow --json
 EOF
-    exit "$rc"
+	return 0
 }
 
-version_info() { printf '%s %s\n' "$PROG_NAME" "$SCRIPT_VERSION"; }
-
-usage_error() {
-    printf '%s: %s\n' "$PROG_NAME" "$1" >&2
-    printf 'Try "%s --help".\n' "$PROG_NAME" >&2
-    exit "$EXIT_USAGE"
-}
-
-###############################################################################
+# ------------------------------------------------------------------------------
 # Argument parsing
-###############################################################################
-_need_value() { # OPTION NEXT
-    local opt="$1" next="${2:-}"
-    if [ -z "$next" ] || [[ "$next" == -* ]]; then
-        usage_error "option ${opt} requires a value"
-    fi
-    printf '%s' "$next"
+# ------------------------------------------------------------------------------
+usage_error() {
+	err "$1"
+	printf 'Try "%s --help" for more information.\n' "${SCRIPT_NAME}" >&2
+	exit 2
+}
+
+need_value() {
+	# $1 = option name, $2 = remaining argument count
+	[[ "$2" -ge 2 ]] || usage_error "option '$1' requires a value"
+	return 0
 }
 
 parse_args() {
-    local arg next
-    while [ $# -gt 0 ]; do
-        arg="$1"; shift
-        case "$arg" in
-            -o|--output)        next="$(_need_value "$arg" "${1:-}")"; OUTPUT_FILE="$next"; shift ;;
-            -d|--depth)         next="$(_need_value "$arg" "${1:-}")"; MAX_DEPTH="$next"; shift ;;
-            -x|--exclude-name)  next="$(_need_value "$arg" "${1:-}")"; EXCLUDE_NAMES+=("$next"); shift ;;
-            --exclude-path)     next="$(_need_value "$arg" "${1:-}")"; EXCLUDE_PATHS+=("$next"); shift ;;
-            --format)           next="$(_need_value "$arg" "${1:-}")"; OUTPUT_FORMAT="${next,,}"; shift ;;
-            --delimiter)        next="$(_need_value "$arg" "${1:-}")"; DELIMITER="$next"; shift ;;
-            --skip-existing)    SKIP_EXISTS='true' ;;
-            --status)           STATUS_ONLY='true' ;;
-            --quiet)            QUIET='true' ;;
-            -v|--verbose)       VERBOSE='true' ;;
-            --color)            next="$(_need_value "$arg" "${1:-}")"; COLOR_MODE="${next,,}"; shift ;;
-            --no-color)         COLOR_MODE='never' ;;
-            -h|--help)          usage "$EXIT_OK" ;;
-            -V|--version)       version_info; exit "$EXIT_OK" ;;
-            --)                 shift
-                                while [ $# -gt 0 ]; do SEARCH_DIRS+=("$1"); shift; done ;;
-            -*)                 usage_error "unknown option: ${arg}" ;;
-            *)                  SEARCH_DIRS+=("$arg") ;;
-        esac
-    done
+	local arg
+	while (($#)); do
+		arg="$1"
+		case "${arg}" in
+			-o|--output)
+				need_value "${arg}" "$#"; OUTPUT_FILE="$2"; shift 2 ;;
+			--output=*)
+				OUTPUT_FILE="${arg#*=}"; shift ;;
+			-e|--exclude)
+				need_value "${arg}" "$#"; add_exclude "$2"; shift 2 ;;
+			--exclude=*)
+				add_exclude "${arg#*=}"; shift ;;
+			-m|--max-depth)
+				need_value "${arg}" "$#"; set_max_depth "$2"; shift 2 ;;
+			--max-depth=*)
+				set_max_depth "${arg#*=}"; shift ;;
+			-L|--follow)
+				FOLLOW_LINKS=1; shift ;;
+			-d|--details)
+				SHOW_DETAILS="yes"; shift ;;
+			--no-details)
+				SHOW_DETAILS="no"; shift ;;
+			--json)
+				JSON_OUTPUT=1; shift ;;
+			-q|--quiet)
+				QUIET=1; shift ;;
+			-v|--verbose)
+				VERBOSE=1; shift ;;
+			--dry-run)
+				DRY_RUN=1; shift ;;
+			--fail-if-empty)
+				FAIL_IF_EMPTY=1; shift ;;
+			--no-color)
+				COLOR_MODE="never"; shift ;;
+			--color)
+				COLOR_MODE="always"; shift ;;
+			-V|--version)
+				printf '%s %s\n' "${SCRIPT_NAME}" "${SCRIPT_VERSION}"; exit 0 ;;
+			-h|--help)
+				usage; exit 0 ;;
+			--)
+				shift
+				while (($#)); do SEARCH_DIRS+=("$1"); shift; done
+				break ;;
+			-*)
+				usage_error "unknown option: ${arg}" ;;
+			*)
+				SEARCH_DIRS+=("${arg}"); shift ;;
+		esac
+	done
+
+	((${#SEARCH_DIRS[@]})) || SEARCH_DIRS=("${DEFAULT_SEARCH_DIRS[@]}")
+	[[ -n "${OUTPUT_FILE}" ]] || usage_error "--output requires a non-empty value"
+	return 0
 }
 
-validate_options() {
-    [[ "$MAX_DEPTH" =~ ^[0-9]+$ ]] || usage_error "invalid --depth: ${MAX_DEPTH}"
-    case "$OUTPUT_FORMAT" in
-        paths|tsv|csv|json) ;;
-        *) usage_error "invalid --format: ${OUTPUT_FORMAT} (paths, tsv, csv, json)" ;;
-    esac
-    case "$COLOR_MODE" in
-        auto|always|never) ;;
-        *) usage_error "invalid --color: ${COLOR_MODE} (auto, always, never)" ;;
-    esac
-    if [ -z "$DELIMITER" ]; then
-        case "$OUTPUT_FORMAT" in
-            csv) DELIMITER=',' ;;
-            *)   DELIMITER=$'\t' ;;
-        esac
-    fi
-    have find || { error "'find' is not available"; exit "$EXIT_ENV"; }
-    have stat || vlog "stat is missing: owner and date columns will be reported as unknown"
-    return 0
+add_exclude() {
+	local pattern="$1"
+	[[ -n "${pattern}" ]] || usage_error "--exclude requires a non-empty value"
+	if [[ "${pattern}" == */* ]]; then
+		USER_PRUNE_PATHS+=("${pattern}")
+	else
+		USER_PRUNE_NAMES+=("${pattern}")
+	fi
+	return 0
 }
 
-have() { command -v "$1" >/dev/null 2>&1; }
-
-# 'grep -c' exits 1 when it matches nothing, which turns '$(... || printf 0)' into
-# two values and breaks every later numeric test. Always return one number.
-count_lines() { # FILE
-    local n
-    n="$(grep -c '' "$1" 2>/dev/null)" || n=0
-    n="${n//[^0-9]/}"
-    printf '%s' "${n:-0}"
+set_max_depth() {
+	[[ "$1" =~ ^[0-9]+$ ]] || usage_error "--max-depth requires a non-negative integer (got: $1)"
+	MAX_DEPTH="$1"
+	return 0
 }
 
-###############################################################################
-# Exclusions
-###############################################################################
-# Directory names are matched as whole components by 'find -name', and the same
-# list is applied again after the walk for clarity. Whole-component matching is
-# what keeps 'oldtown.com' in the result while 'old' is dropped.
-build_exclude_names() {
-    local -a merged=("${DEFAULT_EXCLUDE_NAMES[@]}")
-    merged+=("${EXCLUDE_NAMES[@]+"${EXCLUDE_NAMES[@]}"}")
-    printf '%s\n' "${merged[@]}" | awk 'NF && !seen[$0]++'
+# ------------------------------------------------------------------------------
+# WordPress root resolution
+#   A directory holding wp-config.php is not necessarily the WP root: WordPress
+#   (and therefore WP-CLI) also accepts wp-config.php one level above the core
+#   files, which is the default Bedrock layout.
+# ------------------------------------------------------------------------------
+resolve_wp_root() {
+	local cfg_dir="$1" sub
+	if [[ -f "${cfg_dir}/wp-includes/version.php" || -f "${cfg_dir}/wp-load.php" ]]; then
+		printf '%s' "${cfg_dir}"
+		return 0
+	fi
+	local -a candidates=(wp wordpress core htdocs public web/wp public/wp)
+	for sub in "${candidates[@]}"; do
+		if [[ -f "${cfg_dir}/${sub}/wp-load.php" || -f "${cfg_dir}/${sub}/wp-includes/version.php" ]]; then
+			printf '%s' "${cfg_dir}/${sub}"
+			return 0
+		fi
+	done
+	return 1
 }
 
-# Normalise an excluded path once, so the comparison in the hot loop is textual.
-normalise_paths() {
-    local p
-    EXCLUDE_PATHS_NORM=()
-    for p in "${EXCLUDE_PATHS[@]+"${EXCLUDE_PATHS[@]}"}"; do
-        [ -n "$p" ] || continue
-        if [ -d "$p" ]; then
-            p="$(cd "$p" 2>/dev/null && pwd)" || p="${p%/}"
-        else
-            p="${p%/}"
-        fi
-        EXCLUDE_PATHS_NORM+=("$p")
-    done
+# ------------------------------------------------------------------------------
+# Site collection (dedupe + opt-out marker)
+# ------------------------------------------------------------------------------
+add_site() {
+	local dir="$1" abs="$2"
+
+	if [[ -f "${dir}/.no_wp_cli" || -f "$(dirname -- "${dir}")/.no_wp_cli" ]]; then
+		((STAT_SKIPPED_MARKER++)) || true
+		vlog "skip (marker .no_wp_cli): ${dir}"
+		return 1
+	fi
+	if [[ -n "${SEEN_SITES["${abs}"]:-}" ]]; then
+		((STAT_SKIPPED_DUPLICATE++)) || true
+		vlog "skip (duplicate): ${dir}"
+		return 1
+	fi
+	SEEN_SITES["${abs}"]=1
+	SITE_PATHS+=("${dir}")
+	return 0
 }
 
-is_excluded_path() { # DIR
-    local dir="$1" p
-    for p in "${EXCLUDE_PATHS_NORM[@]+"${EXCLUDE_PATHS_NORM[@]}"}"; do
-        [ -z "$p" ] && continue
-        if [ "$dir" = "$p" ] || [[ "$dir" == "${p}/"* ]]; then
-            return 0
-        fi
-    done
-    return 1
+# ------------------------------------------------------------------------------
+# Build the find expression once, as an array (never as a string)
+# ------------------------------------------------------------------------------
+declare -a FIND_EXPR=()
+build_find_expr() {
+	local first name pattern
+	FIND_EXPR=()
+
+	# 1) prune junk directories by name
+	if ((${#PRUNE_NAMES[@]})); then
+		first=1
+		FIND_EXPR+=( -type d '(' )
+		for name in "${PRUNE_NAMES[@]}"; do
+			((first)) || FIND_EXPR+=( -o )
+			FIND_EXPR+=( -name "${name}" )
+			first=0
+		done
+		FIND_EXPR+=( ')' -prune -o )
+	fi
+
+	# 2) prune subtrees matched by path pattern (absolute excludes included)
+	if ((${#PRUNE_PATHS[@]})); then
+		first=1
+		FIND_EXPR+=( -type d '(' )
+		for pattern in "${PRUNE_PATHS[@]}"; do
+			((first)) || FIND_EXPR+=( -o )
+			FIND_EXPR+=( -path "${pattern}" )
+			first=0
+		done
+		FIND_EXPR+=( ')' -prune -o )
+	fi
+
+	# 3) report wp-config.php files (NUL separated)
+	FIND_EXPR+=( -type f -name 'wp-config.php' -print0 )
+	return 0
 }
 
-###############################################################################
-# Detection
-###############################################################################
-# A WordPress root has wp-config.php and one of wp-load.php / wp-includes/version.php.
-# Requiring only wp-includes/version.php, as v1 did, rejected installations whose
-# version.php lives behind a symlinked wp-includes.
-is_wordpress_root() { # DIR
-    local dir="$1"
-    [ -f "${dir}/wp-config.php" ] || return 1
-    [ -f "${dir}/wp-load.php" ] || [ -f "${dir}/wp-includes/version.php" ] || return 1
-    return 0
+# ------------------------------------------------------------------------------
+# Scan a single root. Runs in the current shell (no pipeline subshell), so all
+# counters survive.
+# ------------------------------------------------------------------------------
+scan_root() {
+	local root="$1"
+	local -a cmd=(find)
+	local abs_root tmp_out tmp_err rc=0 cfg dir resolved resolved_abs before
+
+	[[ -d "${root}" ]] || { vlog "skip (not a directory): ${root}"; return 0; }
+	abs_root="$(cd -P -- "${root}" >/dev/null 2>&1 && pwd)" || abs_root="${root}"
+
+	((FOLLOW_LINKS)) && cmd+=( -L )
+	cmd+=( "${abs_root}" -maxdepth "${MAX_DEPTH}" )
+	cmd+=( "${FIND_EXPR[@]}" )
+
+	tmp_out="$(mktemp_file)" || { warn "cannot create temp file"; return 1; }
+	tmp_err="$(mktemp_file)" || { warn "cannot create temp file"; return 1; }
+
+	((QUIET)) || log "Scanning: ${abs_root} (max-depth ${MAX_DEPTH})"
+	before="${#SITE_PATHS[@]}"
+
+	if ! "${cmd[@]}" >"${tmp_out}" 2>"${tmp_err}"; then
+		rc=$?
+		((STAT_FIND_ERRORS++)) || true
+		warn "find exited with status ${rc} for ${abs_root}: $(head -n 1 -- "${tmp_err}" 2>/dev/null)"
+	fi
+	((STAT_SCANNED_ROOTS++)) || true
+
+	while IFS= read -r -d '' cfg; do
+		dir="$(dirname -- "${cfg}")"
+		if ! resolved="$(resolve_wp_root "${dir}")"; then
+			((STAT_INVALID++)) || true
+			vlog "skip (no WordPress core next to ${cfg})"
+			continue
+		fi
+		# Canonical path is used for duplicate detection only.
+		resolved_abs="$(cd -P -- "${resolved}" >/dev/null 2>&1 && pwd)" || resolved_abs="${resolved}"
+		add_site "${resolved}" "${resolved_abs}" || true
+	done < "${tmp_out}"
+
+	((VERBOSE)) && vlog "root ${abs_root}: $(( ${#SITE_PATHS[@]} - before )) site(s) added"
+	return 0
 }
 
-metadata_of() { # DIR -> "user<TAB>group<TAB>mtime"
-    local dir="$1" user='' group='' mtime=''
-    if have stat; then
-        user="$(stat -c '%U' "$dir" 2>/dev/null || true)"
-        group="$(stat -c '%G' "$dir" 2>/dev/null || true)"
-        mtime="$(stat -c '%y' "$dir" 2>/dev/null || true)"
-        mtime="${mtime%%.*}"
-    fi
-    printf '%s\t%s\t%s' "${user:-unknown}" "${group:-unknown}" "${mtime:-unknown}"
+# ------------------------------------------------------------------------------
+# Metadata collection (owner/group/mtime)
+# ------------------------------------------------------------------------------
+collect_metadata() {
+	local dir meta
+	local -a paths=("$@")
+	SITE_USERS=()
+	SITE_GROUPS=()
+	SITE_MTIMES=()
+	for dir in "${paths[@]}"; do
+		if meta="$(stat_meta "${dir}")"; then
+			SITE_USERS+=("${meta%%|*}")
+			meta="${meta#*|}"
+			SITE_GROUPS+=("${meta%%|*}")
+			SITE_MTIMES+=("${meta#*|}")
+		else
+			SITE_USERS+=("<unknown>")
+			SITE_GROUPS+=("<unknown>")
+			SITE_MTIMES+=("<unknown>")
+		fi
+	done
+	return 0
 }
 
-csv_quote() {
-    local s="$1"
-    case "$s" in
-        *[,\"]*|*$'\n'*) s="\"${s//\"/\"\"}\"" ;;
-    esac
-    printf '%s' "$s"
-}
-
-json_quote() {
-    local s="$1"
-    s="${s//\\/\\\\}"
-    s="${s//\"/\\\"}"
-    s="${s//$'\n'/\\n}"
-    s="${s//$'\t'/\\t}"
-    printf '"%s"' "$s"
-}
-
-###############################################################################
-# Scanning
-###############################################################################
-declare -a FOUND_DIRS=()
-
-# Build the find expression as an ARRAY. v1 assembled the prune clause into a
-# single string with 'printf', which merged '-path X -prune -o' into one invalid
-# operand and silently disabled every exclusion.
-scan_root() { # ROOT
-    local root="$1"
-    local -a names=()
-    local name
-    while IFS= read -r name; do
-        [ -n "$name" ] || continue
-        names+=("$name")
-    done < <(build_exclude_names)
-
-    vlog "scanning ${root} (depth ${MAX_DEPTH})"
-
-    # The expression is built from two parts, and the file branch ends with its
-    # own -print. In v1 the only -print came from the prune helper, so as soon as
-    # an exclusion existed find printed directories instead of wp-config.php.
-    local -a expr=()
-    expr+=( '(' -type d '(' )
-    local i first=1
-    for (( i = 0; i < ${#names[@]}; i++ )); do
-        [ "$first" -eq 1 ] || expr+=(-o)
-        first=0
-        expr+=(-name "${names[i]}")
-    done
-    expr+=( ')' -prune ')' -o )
-
-    local p
-    for p in "${EXCLUDE_PATHS_NORM[@]+"${EXCLUDE_PATHS_NORM[@]}"}"; do
-        [ -n "$p" ] || continue
-        expr+=( '(' -path "$p" -o -path "$p/*" ')' -prune ')' -o )
-    done
-
-    expr+=( '(' -type f -name 'wp-config.php' -print ')' )
-    local config site_dir
-    while IFS= read -r config; do
-        [ -n "$config" ] || continue
-        site_dir="${config%/wp-config.php}"
-        if [ -f "${site_dir}/${MARKER_FILE}" ]; then
-            vlog "skipped (${MARKER_FILE}): ${site_dir}"
-            continue
-        fi
-        if is_excluded_path "$site_dir"; then
-            vlog "skipped (excluded path): ${site_dir}"
-            continue
-        fi
-        if is_wordpress_root "$site_dir"; then
-            printf '%s\n' "$site_dir"
-        else
-            vlog "skipped (incomplete installation): ${site_dir}"
-        fi
-    done < <(find "$root" -maxdepth "$MAX_DEPTH" "${expr[@]}" 2>/dev/null)
-}
-
-dedupe() { # < stdin
-    awk 'NF && !seen[$0]++'
-}
-
-###############################################################################
+# ------------------------------------------------------------------------------
 # Output
-###############################################################################
-render_result() { # < sorted unique dirs on stdin
-    local format="$1" dir meta user group mtime first=1
-    case "$format" in
-        paths)
-            cat
-            ;;
-        tsv|csv)
-            if [ "$format" = 'csv' ]; then
-                printf 'path%cowner%cgroup%cmtime\n' "$DELIMITER" "$DELIMITER" "$DELIMITER"
-            fi
-            while IFS= read -r dir; do
-                [ -n "$dir" ] || continue
-                meta="$(metadata_of "$dir")"
-                IFS=$'\t' read -r user group mtime <<<"$meta"
-                if [ "$format" = 'csv' ]; then
-                    printf '%s%c%s%c%s%c%s\n' "$(csv_quote "$dir")" "$DELIMITER" "$(csv_quote "$user")" \
-                        "$DELIMITER" "$(csv_quote "$group")" "$DELIMITER" "$(csv_quote "$mtime")"
-                else
-                    printf '%s%s%s%s%s%s%s\n' "$dir" "$DELIMITER" "$user" "$DELIMITER" \
-                        "$group" "$DELIMITER" "$mtime"
-                fi
-            done
-            ;;
-        json)
-            printf '['
-            while IFS= read -r dir; do
-                [ -n "$dir" ] || continue
-                meta="$(metadata_of "$dir")"
-                IFS=$'\t' read -r user group mtime <<<"$meta"
-                [ "$first" -eq 1 ] || printf ','
-                first=0
-                printf '{"path":%s,"owner":%s,"group":%s,"mtime":%s}' \
-                    "$(json_quote "$dir")" "$(json_quote "$user")" \
-                    "$(json_quote "$group")" "$(json_quote "$mtime")"
-            done
-            printf ']\n'
-            ;;
-    esac
-    return 0
+# ------------------------------------------------------------------------------
+print_table() {
+	local i pad=0 len
+	for ((i = 0; i < ${#SITE_PATHS[@]}; i++)); do
+		len="${#SITE_PATHS[i]}"
+		((len > pad)) && pad="${len}"
+	done
+	printf '%s%-*s  %-12s  %-12s  %s%s\n' "${C_BLUE}" "${pad}" "PATH" "USER" "GROUP" "LAST MODIFIED" "${C_RESET}" >&2
+	for ((i = 0; i < ${#SITE_PATHS[@]}; i++)); do
+		printf '%-*s  %-12s  %-12s  %s\n' \
+			"${pad}" "${SITE_PATHS[i]}" "${SITE_USERS[i]}" "${SITE_GROUPS[i]}" "${SITE_MTIMES[i]}" >&2
+	done
+	return 0
 }
 
-# Write the result atomically: a partial file would be read by the manager as a
-# truncated site list.
-write_result() { # FILE < stdin
-    local file="$1" tmp dir rc=0
-    dir="$(dirname "$file")"
-    if [ ! -d "$dir" ]; then
-        error "output directory does not exist: ${dir}"
-        cat >/dev/null
-        return 1
-    fi
-    if [ ! -w "$dir" ]; then
-        error "output directory is not writable: ${dir}"
-        cat >/dev/null
-        return 1
-    fi
-    tmp="$(mktemp "${dir}/.${PROG_NAME##*/}.XXXXXX")" || { cat >/dev/null; error "cannot create a temporary file in ${dir}"; return 1; }
-    cat >"$tmp" || rc=1
-    if [ "$rc" -ne 0 ]; then
-        rm -f "$tmp"
-        error "failed to collect results"
-        return 1
-    fi
-    if [ "$SKIP_EXISTS" = 'true' ] && [ -f "$file" ] && cmp -s "$tmp" "$file"; then
-        rm -f "$tmp"
-        vlog "output unchanged: ${file}"
-        return 0
-    fi
-    if ! mv -f "$tmp" "$file"; then
-        rm -f "$tmp"
-        error "cannot write ${file}"
-        return 1
-    fi
-    return 0
+print_json() {
+	local i first=1
+	printf '['
+	for ((i = 0; i < ${#SITE_PATHS[@]}; i++)); do
+		((first)) || printf ','
+		first=0
+		printf '\n  {"path": "%s", "user": "%s", "group": "%s", "mtime": "%s"}' \
+			"$(json_escape "${SITE_PATHS[i]}")" \
+			"$(json_escape "${SITE_USERS[i]}")" \
+			"$(json_escape "${SITE_GROUPS[i]}")" \
+			"$(json_escape "${SITE_MTIMES[i]}")"
+	done
+	((${#SITE_PATHS[@]})) && printf '\n'
+	printf ']\n'
+	return 0
 }
 
-show_status() {
-    printf '%s %s\n' "$PROG_NAME" "$SCRIPT_VERSION"
-    printf 'output file: %s\n' "$OUTPUT_FILE"
-    if [ -f "$OUTPUT_FILE" ]; then
-        printf 'entries:     %s\n' "$(count_lines "$OUTPUT_FILE")"
-        printf 'size:        %s bytes\n' "$(wc -c <"$OUTPUT_FILE" 2>/dev/null || printf '0')"
-        printf 'modified:    %s\n' "$(date -r "$OUTPUT_FILE" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || printf 'unknown')"
-        printf 'stale:       %s\n' "$(status_stale)"
-    else
-        printf 'entries:     0\nstale:       yes (file missing)\n'
-    fi
-    printf 'search roots: %s\n' "${SEARCH_DIRS[*]}"
-    printf 'depth:       %s\n' "$MAX_DEPTH"
-    return 0
+write_output_file() {
+	local target="$1" tmp out_dir
+	out_dir="$(dirname -- "${target}")"
+	[[ -d "${out_dir}" ]] || die "output directory does not exist: ${out_dir}" 1
+	[[ -w "${out_dir}" ]] || die "output directory is not writable: ${out_dir}" 1
+
+	tmp="$(mktemp "${out_dir}/.wp-found.XXXXXXXX")" || die "cannot create temp file in ${out_dir}" 1
+	TMP_FILES+=("${tmp}")
+	if ((${#SITE_PATHS[@]})); then
+		printf '%s\n' "${SITE_PATHS[@]}" >"${tmp}"
+	else
+		: >"${tmp}"
+	fi
+	chmod 0644 "${tmp}" 2>/dev/null || true
+	mv -f -- "${tmp}" "${target}" || die "cannot replace ${target}" 1
+	return 0
 }
 
-# A site list is stale when the recorded modification time is older than a
-# wp-config.php that appeared below one of the roots in the meantime.
-status_stale() {
-    local file="$1" root newer
-    file="$OUTPUT_FILE"
-    [ -f "$file" ] || { printf 'yes'; return 0; }
-    for root in "${SEARCH_DIRS[@]}"; do
-        [ -d "$root" ] || continue
-        newer="$(find "$root" -maxdepth "$MAX_DEPTH" -type f -name 'wp-config.php' -newer "$file" -print 2>/dev/null | head -n1)"
-        if [ -n "$newer" ]; then
-            printf 'yes (%s is newer)' "$newer"
-            return 0
-        fi
-    done
-    printf 'no'
-    return 0
-}
-
-###############################################################################
+# ------------------------------------------------------------------------------
 # Main
-###############################################################################
+# ------------------------------------------------------------------------------
 main() {
-    parse_args "$@"
-    _colors_init
-    validate_options
+	parse_args "$@"
+	setup_colors
 
-    [ "${#EXCLUDE_NAMES[@]}" -eq 0 ] && EXCLUDE_NAMES=()
-    if [ "${#SEARCH_DIRS[@]}" -eq 0 ]; then
-        SEARCH_DIRS=("${DEFAULT_SEARCH_DIRS[@]}")
-    fi
-    normalise_paths
+	# Effective exclusions = built-in defaults + user supplied patterns.
+	PRUNE_NAMES=("${DEFAULT_PRUNE_NAMES[@]}" ${USER_PRUNE_NAMES[@]+"${USER_PRUNE_NAMES[@]}"})
+	PRUNE_PATHS=("${DEFAULT_PRUNE_PATHS[@]}" "${DEFAULT_EXTRA_EXCLUDES[@]}" ${USER_PRUNE_PATHS[@]+"${USER_PRUNE_PATHS[@]}"})
+	build_find_expr
 
-    if [ "$STATUS_ONLY" = 'true' ]; then
-        show_status
-        exit "$EXIT_OK"
-    fi
+	((QUIET)) || {
+		log "WordPress discovery v${SCRIPT_VERSION}"
+		log "Roots: ${#SEARCH_DIRS[@]} | excludes: ${#PRUNE_NAMES[@]} names, ${#PRUNE_PATHS[@]} paths | max-depth: ${MAX_DEPTH}"
+	}
 
-    local start_time end_time
-    start_time="$(date +%s)"
-    log "searching ${#SEARCH_DIRS[@]} root(s), depth ${MAX_DEPTH}"
+	local root
+	for root in "${SEARCH_DIRS[@]}"; do
+		scan_root "${root}"
+	done
 
-    local -a existing=()
-    local root
-    for root in "${SEARCH_DIRS[@]}"; do
-        if [ -d "$root" ]; then
-            existing+=("$root")
-        else
-            warn "root does not exist, skipped: ${root}"
-        fi
-    done
+	if ((${#SITE_PATHS[@]})); then
+		# Stable, locale independent ordering and duplicate removal.
+		local sorted
+		sorted="$(mktemp_file)"
+		printf '%s\n' "${SITE_PATHS[@]}" | LC_ALL=C sort -u >"${sorted}"
+		SITE_PATHS=()
+		while IFS= read -r line; do
+			[[ -n "${line}" ]] && SITE_PATHS+=("${line}")
+		done <"${sorted}"
+	fi
 
-    if [ "${#existing[@]}" -eq 0 ]; then
-        error "none of the search roots exists"
-        exit "$EXIT_ERROR"
-    fi
+	if ((${#SITE_PATHS[@]})); then
+		collect_metadata "${SITE_PATHS[@]}"
+	fi
 
-    local results_file
-    results_file="$(mktemp "${TMPDIR:-/tmp}/wp-found.XXXXXX")" || { error "cannot create a temporary file"; exit "$EXIT_ERROR"; }
-    trap 'rm -f "$results_file" 2>/dev/null' EXIT INT TERM
+	if ((JSON_OUTPUT)); then
+		print_json
+	fi
 
-    # Scan every existing root. The previous version only descended into roots
-    # whose name matched its own exclusion globs by accident, and lost the whole
-    # result whenever the file branch printed nothing.
-    : >"$results_file"
-    for root in "${existing[@]}"; do
-        scan_root "$root" >>"$results_file"
-    done
+	if [[ "${SHOW_DETAILS}" == "yes" ]] || { [[ "${SHOW_DETAILS}" == "auto" ]] && [[ -t 2 ]] && ((!JSON_OUTPUT)); }; then
+		if ((${#SITE_PATHS[@]})); then
+			printf '\n' >&2
+			print_table
+		fi
+	fi
 
-    local sorted_file
-    sorted_file="$(mktemp "${TMPDIR:-/tmp}/wp-found-sorted.XXXXXX")" || { error "cannot create a temporary file"; exit "$EXIT_ERROR"; }
-    dedupe <"$results_file" | sort >"$sorted_file"
+	# "--output -" always prints to stdout, also in --dry-run mode (stdout is not
+	# a file and is the natural way to preview the result).
+	if [[ "${OUTPUT_FILE}" == "-" ]]; then
+		if ((${#SITE_PATHS[@]})); then
+			printf '%s\n' "${SITE_PATHS[@]}"
+		fi
+	elif ((DRY_RUN)); then
+		((QUIET)) || warn "dry-run: output file not written (${OUTPUT_FILE})"
+	else
+		write_output_file "${OUTPUT_FILE}"
+		if ((${#SITE_PATHS[@]})); then
+			ok "Found ${#SITE_PATHS[@]} WordPress installation(s) -> ${OUTPUT_FILE}"
+		else
+			warn "No WordPress installations found; ${OUTPUT_FILE} was emptied"
+		fi
+	fi
 
-    local count
-    count="$(count_lines "$sorted_file")"
+	((QUIET)) || log "Summary: roots=${STAT_SCANNED_ROOTS} found=${#SITE_PATHS[@]} duplicates=${STAT_SKIPPED_DUPLICATE} marker-skipped=${STAT_SKIPPED_MARKER} non-wp=${STAT_INVALID} find-errors=${STAT_FIND_ERRORS}"
 
-    if [ "$count" -eq 0 ]; then
-        warn "no WordPress installation found under: ${existing[*]}"
-        render_result "$OUTPUT_FORMAT" <"$sorted_file" | write_result "$OUTPUT_FILE" || exit "$EXIT_ERROR"
-        end_time="$(date +%s)"
-        log "finished in $((end_time - start_time))s"
-        exit "$EXIT_NOT_FOUND"
-    fi
-
-    render_result "$OUTPUT_FORMAT" <"$sorted_file" | write_result "$OUTPUT_FILE" || exit "$EXIT_ERROR"
-
-    success "found ${count} installation(s)"
-    success "written to ${OUTPUT_FILE}"
-    if [ "$OUTPUT_FORMAT" != 'paths' ]; then
-        render_result "$OUTPUT_FORMAT" <"$sorted_file"
-    fi
-
-    end_time="$(date +%s)"
-    log "finished in $((end_time - start_time))s"
-    return 0
+	if ((${#SITE_PATHS[@]} == 0)); then
+		if ((FAIL_IF_EMPTY)); then
+			exit 3
+		fi
+		if ((STAT_FIND_ERRORS > 0)); then
+			exit 1
+		fi
+	fi
+	return 0
 }
 
-main "$@"
+trap cleanup EXIT
+
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+	main "$@"
+fi

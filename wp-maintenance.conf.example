@@ -1,0 +1,57 @@
+# ------------------------------------------------------------------------------
+# Example configuration for Bash_WP-CLI_Update.sh v6.0.0
+#
+#   cp wp-maintenance.conf.example wp-maintenance.conf
+#   chmod 0600 wp-maintenance.conf      # the file is sourced; 0600 is enforced
+#
+# Precedence: command line > environment > this file > built-in defaults.
+# Always assign with ": ${VAR:=value}" so that an environment variable that is
+# already set keeps priority over this file.
+# ------------------------------------------------------------------------------
+
+# --- WP-CLI ------------------------------------------------------------------
+# Absolute path to the WP-CLI binary. When unset, the script looks in $PATH,
+# then /usr/local/bin/wp and /usr/bin/wp.
+#: "${WP_CLI_BIN:=/usr/local/bin/wp}"
+
+# Plugins that must not be loaded during the WP bootstrap (they may break it).
+# NOTE: this does NOT exclude them from "wp plugin update --all" — use
+# EXCLUDE_PLUGINS for that.
+: "${SKIP_PLUGINS:=saphali-woocommerce-lite,jet-compare-wishlist,jet-data-importer}"
+
+# Plugins excluded from "wp plugin update --all" (comma separated slugs).
+#: "${EXCLUDE_PLUGINS:=some-legacy-plugin,another-one}"
+
+# Per-command timeout in seconds (0 disables it; "db export" is never limited).
+: "${WP_TIMEOUT:=600}"
+
+# Default system user for WP-CLI when detection is not desired.
+# Can also be set per site with a "<site>/.wp-cli-user" file.
+#: "${DEFAULT_USER:=www-data}"
+
+# --- Site list and discovery -------------------------------------------------
+#: "${SITES_FILE:=/etc/wp-maintenance/wp-found.txt}"
+#: "${DISCOVER_SCRIPT:=/usr/local/bin/Find_WP_Senior.sh}"
+
+# --- Logging -----------------------------------------------------------------
+#: "${LOG_DIR:=/var/log/wp-maintenance}"
+#: "${LOG_FILE:=/var/log/wp-maintenance/wp_cli_manager.log}"
+#: "${ERROR_LOG_FILE:=/var/log/wp-maintenance/wp_cli_errors.log}"
+#: "${LOG_MAX_BYTES:=5242880}"     # rotate when the log exceeds 5 MiB
+
+# --- Backups -----------------------------------------------------------------
+#: "${BACKUP_DIR:=/var/backups/wp-maintenance}"
+#: "${KEEP_BACKUPS:=3}"            # backup files kept per site
+
+# --- Parallelism -------------------------------------------------------------
+#: "${JOBS:=4}"                    # sites processed per batch
+
+# --- Astra Pro ---------------------------------------------------------------
+# Recommended: keep the licence key in a root-owned file (mode 0600) and never
+# on the command line (it would be visible in "ps").
+#: "${ASTRA_KEY_FILE:=/etc/wp-maintenance/astra.key}"
+#: "${ASTRA_KEY:=}"                # discouraged, prefer ASTRA_KEY_FILE
+
+# --- Multisite ---------------------------------------------------------------
+# Force --url for every WP-CLI call when it cannot be read from wp-config.php.
+#: "${SITE_URL:=https://example.com}"
