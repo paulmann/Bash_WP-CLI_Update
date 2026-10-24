@@ -59,6 +59,17 @@ npm install -g bash-wp-cli-update
 wp-cli-update --version                      # must print the same version
 ```
 
+### Two things that look like failures and are not
+
+- **`npm view <name>` returns 404 for a few seconds after a successful publish.** The
+  publish goes to the write side of the registry; reads come from a replica. `npm publish`
+  printing `+ bash-wp-cli-update@X.Y.Z` is the success signal — wait a minute and ask
+  again before concluding anything went wrong. Measured on 8.0.4: 404 at 11:45:50, the
+  document answered at 11:46:46 with `dist-tags.latest` already correct.
+- **The version list contains `0.0.0-stage`, with `"stub": true`.** That is npm's own
+  placeholder, created at publish time while the tarball is scanned. It is not something
+  this project published and it can never be reached through the `latest` tag.
+
 ## 4. What must not drift
 
 | Pair | Checked by |
