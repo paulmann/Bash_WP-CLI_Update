@@ -15,6 +15,9 @@ on:
 
 permissions:
   contents: write
+  # Trusted publishing: npm exchanges this for short-lived publish rights, so no token
+  # is stored anywhere. Without it, `npm publish` has nothing to authenticate with.
+  id-token: write
 
 jobs:
   release:
@@ -25,6 +28,18 @@ jobs:
         with:
           fetch-depth: 0
           ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: npm new enough for trusted publishing
+        # OIDC publishing needs npm 11.5+. The node bundled with the runner is older, and
+        # the failure it produces ("E404 ... you do not have permission") reads like a
+        # permissions problem rather than a version one.
+        run: |
+          npm install -g npm@latest
+          npm --version
 
       - name: install shellcheck
         run: |
@@ -90,3 +105,17 @@ jobs:
               --notes "$notes" \
               dist/*.tar.gz dist/SHA256SUMS
           fi
+
+      - name: publish to npm over OpenID Connect
+        # Trusted publishing (npmjs.com → package → Settings → Trusted Publisher):
+        # GitHub mints a short-lived OIDC token, npm swaps it for publish rights, and the
+        # tarball gets a provenance statement naming this repository, workflow and commit.
+        # No secret is involved, so nothing here can leak one.
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          if npm view "bash-wp-cli-update@${version}" version >/dev/null 2>&1; then
+            echo "bash-wp-cli-update@${version} is already on the registry; nothing to publish"
+            exit 0
+          fi
+          npm publish --provenance --access public
+          npm view bash-wp-cli-update version dist-tags.latest

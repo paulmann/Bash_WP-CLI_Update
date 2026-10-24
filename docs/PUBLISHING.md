@@ -34,10 +34,38 @@ instead of failing.
 
 ## 3. npm
 
-The registry needs a token with **publish** permission; the repository deliberately holds
-none, and the workflow does not publish to npm. A CI step would have to carry a
-credential-shaped line, which the project's own write guard refuses — and a secret in a
-repository is a worse trade than one command typed by hand.
+The package is linked to the repository through **trusted publishing** (OIDC), so no token
+lives anywhere: on a tag, `.github/workflows/release.yml` mints a short-lived identity
+token, npm verifies it against the connection below, and the tarball carries a provenance
+statement naming this repository, workflow and commit.
+
+The connection is created once, by a human, on npmjs.com → the package → **Settings** →
+**Trusted Publisher**, and its provider and required fields are **immutable** afterwards:
+
+| Field | Value |
+|---|---|
+| Publisher | GitHub Actions |
+| Label | anything readable, e.g. `release workflow` |
+| Organization or user | `paulmann` |
+| Repository | `Bash_WP-CLI_Update` |
+| Workflow filename | `release.yml` — filename only, must exist in `.github/workflows/` |
+| Environment name | **leave empty** unless the workflow declares `environment:`; a mismatch silently stops the OIDC exchange |
+| Allow `npm publish` | **checked** (otherwise only `npm stage publish` is permitted) |
+| Allow `npm dist-tag` | leave unchecked: nothing in this project moves tags by hand |
+
+Publishing by hand still works for a machine that has logged in:
+
+```bash
+cd <checkout>
+npm login            # once per machine; stores a token in ~/.npmrc
+npm whoami           # must print your npm account
+npm publish --access public
+```
+
+Before publishing, `npm publish --dry-run` shows the file list and the size. The package is
+`bash-wp-cli-update`, `os: linux`, licence PolyForm Noncommercial 1.0.0, and `files` is a
+whitelist, so the tarball holds the two scripts, the two shims, the config example,
+`contrib/`, `install.sh` and the documentation — 18 files, about 107 kB.
 
 ```bash
 cd <checkout>
