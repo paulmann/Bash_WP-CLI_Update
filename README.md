@@ -517,4 +517,10 @@ PROJECT_MAP.md               file map
 
 ## 15. License
 
-PolyForm Noncommercial 1.0.0 — see [LICENSE](LICENSE).
+PolyForm Noncommercial 1.0.0 — see [LICENSE](LICENSE). The licence is not OSI-approved,
+and commercial use requires a separate licence from the copyright holder.
+
+GitHub reports the licence as `NOASSERTION` through its API (checked 2026-11-06), because
+its detector does not map this licence text to an entry; the authoritative SPDX identifier
+`PolyForm-Noncommercial-1.0.0` is stated in [LICENSE](LICENSE), `package.json` and
+[CITATION.cff](CITATION.cff).

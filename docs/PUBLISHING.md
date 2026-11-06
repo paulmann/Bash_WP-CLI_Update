@@ -12,7 +12,7 @@ before it.
 | `Bash_WP-CLI_Update.sh` | `# Version:` in the header **and** `SCRIPT_VERSION=` |
 | `package.json` | `"version"` (the npm package) |
 | `README.md` | the `Version:` line and the archive name in §3 |
-| `CHANGELOG.md` | a `## [X.Y.Z / 2.1.0]` section — the release notes are cut from it |
+| `CHANGELOG.md` | a `## [X.Y.Z] - YYYY-MM-DD` section — the release notes are cut from it |
 | `AGENTS.md`, `wp-cli-update.conf.example`, `PROJECT_MAP.md` | the version they mention |
 
 Then run the suites: `bash tests/run_tests.sh` (on Linux, as root or under `unshare -r`).
