@@ -5,7 +5,7 @@ written in POSIX-friendly bash 4.2+.
 
 [![CI](https://github.com/paulmann/Bash_WP-CLI_Update/actions/workflows/ci.yml/badge.svg)](https://github.com/paulmann/Bash_WP-CLI_Update/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/paulmann/Bash_WP-CLI_Update?label=release)](https://github.com/paulmann/Bash_WP-CLI_Update/releases)
-[![License: PolyForm Noncommercial 1.0.0](https://img.shields.io/badge/license-PolyForm%20Noncommercial%201.0.0-blue)](LICENSE)
+[![PolyForm Noncommercial 1.0.0](https://img.shields.io/badge/license-PolyForm%20Noncommercial%201.0.0-blue)](LICENSE)
 [![bash 4.2+](https://img.shields.io/badge/bash-4.2%2B-4EAA25)](https://www.gnu.org/software/bash/)
 [![npm](https://img.shields.io/npm/v/bash-wp-cli-update?label=npm)](https://www.npmjs.com/package/bash-wp-cli-update)
 
