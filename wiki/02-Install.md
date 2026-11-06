@@ -1,7 +1,8 @@
 # Install
 
 Three routes, one result: a manager on `PATH`, a finder on `PATH`, the directories the tool
-writes to, and a configuration file only root can read.
+writes to, and a configuration file only root can read. The tool is released under the MIT
+licence since 8.1.0.
 
 ## Route 1: npm
 
@@ -17,7 +18,7 @@ install time, and root is still needed at run time.
 ## Route 2: the installer from the release archive
 
 ```bash
-curl -LO https://github.com/paulmann/Bash_WP-CLI_Update/releases/latest/download/bash-wp-cli-update-8.0.4.tar.gz
+curl -LO https://github.com/paulmann/Bash_WP-CLI_Update/releases/latest/download/bash-wp-cli-update-8.1.0.tar.gz
 sudo ./install.sh --dry-run     # show every step
 sudo ./install.sh --systemd     # perform them, plus the nightly timer
 ```
@@ -87,16 +88,38 @@ Do not skip a step, and do not start with a mutating mode.
 |---|---|---|
 | 1 | `sudo wp-cli-update --doctor` | the `wp` binary it will use, the user-switch mechanism, optional tools, paths, free space, config permissions, policy in force |
 | 2 | `sudo wp-cli-update --check` | exit 0 and a `✓` per site; it changes nothing |
-| 3 | `sudo wp-cli-update --health` | a table: core version, pending plugin and theme updates, database size |
-| 4 | `sudo wp-cli-update --full --site /var/www/example.com --dry-run` | the exact commands it would run, exit 0, nothing changed |
-| 5 | `sudo wp-cli-update --full --site /var/www/example.com --backup db` | exit 0, and a summary that counts one site |
-| 6 | `sudo wp-cli-update --status` | the last run summary and the log sizes |
+| 3 | `sudo wp-cli-update --health` | a table: core version, pending plugin and theme updates, database size, and the `safe` / `UPDATE` / `?` verdict for CVE-2026-119977 |
+| 4 | `sudo wp-cli-update --security --json-lines` | one `{"type":"security",...}` object per site; exit 0 when every site is at or above the fixed release, 1 when one is exposed or its version cannot be read |
+| 5 | `sudo wp-cli-update --full --site /var/www/example.com --dry-run` | the exact commands it would run, exit 0, nothing changed |
+| 6 | `sudo wp-cli-update --full --site /var/www/example.com --backup db` | exit 0, and a summary that counts one site |
+| 7 | `sudo wp-cli-update --status` | the last run summary and the log sizes |
 
 Only after that, run the fleet:
 
 ```bash
 sudo wp-cli-update --full --jobs 4 --backup db --report /var/log/wp-cli-update/run.json
 ```
+
+## Security: assess first, harden second
+
+Once the host checks pass, the first thing to run against the fleet is the read-only
+assessment, and the second is the hardening pass:
+
+```bash
+# 1. read-only: which sites are exposed to CVE-2026-119977 (exit 1 when one is)
+sudo wp-cli-update --security --json-lines
+
+# 2. deny web access to wp-content/upgrade/ on Apache and LiteSpeed
+sudo wp-cli-update --harden
+```
+
+`--security` takes no lock and no backup, so it is safe to run on a live host and safe to
+repeat. `--harden` is a writing mode: it backs up each site's `.htaccess` once to
+`.htaccess.wp-cli-update.bak`, is idempotent, and prints the nginx directive at the end of
+the run because nginx ignores `.htaccess`. Neither replaces updating WordPress; they make
+the state visible and the upgrade directory unreachable while the update happens. The
+advisory, the fleet commands and an agent prompt are on
+[Security: CVE-2026-119977](09-Security-CVE-2026-119977).
 
 ## Upgrade from 6.x
 

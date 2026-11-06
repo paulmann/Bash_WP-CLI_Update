@@ -1,11 +1,11 @@
-# Bash WP-CLI Update 8.0.4
+# Bash WP-CLI Update 8.1.0
 
 Maintenance automation for a fleet of WordPress installations, driven by WP-CLI and
 written in POSIX-friendly bash 4.2+.
 
 [![CI](https://github.com/paulmann/Bash_WP-CLI_Update/actions/workflows/ci.yml/badge.svg)](https://github.com/paulmann/Bash_WP-CLI_Update/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/paulmann/Bash_WP-CLI_Update?label=release)](https://github.com/paulmann/Bash_WP-CLI_Update/releases)
-[![PolyForm Noncommercial 1.0.0](https://img.shields.io/badge/license-PolyForm%20Noncommercial%201.0.0-blue)](LICENSE)
+[![MIT licensed](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![bash 4.2+](https://img.shields.io/badge/bash-4.2%2B-4EAA25)](https://www.gnu.org/software/bash/)
 [![npm](https://img.shields.io/npm/v/bash-wp-cli-update?label=npm)](https://www.npmjs.com/package/bash-wp-cli-update)
 
@@ -28,12 +28,12 @@ JSON report, a change log and a restore path:
 Bash_WP-CLI_Update.sh --full --backup db --jobs 4 --report /var/log/wp/report.json
 ```
 
-* Version: **8.0.4** (finder 2.1.0)
+* Version: **8.1.0** (finder 2.1.0)
 * Requires: `bash >= 4.2`, GNU coreutils/findutils, WP-CLI, `root` (to switch into
   site owners), one of `runuser` / `sudo` / `su`
 * Optional: `flock`, `timeout` (or `perl`), `tar`, `gzip`, `nice`, `ionice`, `curl`,
   `mail`
-* Released under the **PolyForm Noncommercial 1.0.0** licence — see [LICENSE](LICENSE)
+* Released under the **MIT** licence — see [LICENSE](LICENSE)
 
 ## Contents
 
@@ -51,11 +51,22 @@ Bash_WP-CLI_Update.sh --full --backup db --jobs 4 --report /var/log/wp/report.js
 - [12. Tests](#12-tests)
 - [13. Upgrading from 6.x](#13-upgrading-from-6x)
 - [14. Project layout](#14-project-layout)
-- [15. License](#15-license)
+- [15. Security: CVE-2026-119977](#15-security-cve-2026-119977)
+- [16. License](#16-license)
 
 ---
 
 ## 1. What changed in 8.0.0
+
+> **8.1.0 makes the tool CVE-aware and moves the licence to MIT.** `--security`
+> compares every site's WordPress core version with the fixed releases for
+> [CVE-2026-119977](#15-security-cve-2026-119977) and exits 1 when a site needs an
+> update — read-only, so it is safe to gate a pipeline on it. `--harden`, the
+> `--harden-upgrade-dir` flag and the `HARDEN_UPGRADE_DIR=1` key append a marked deny
+> block for `wp-content/upgrade/` to each site's `.htaccess` (Apache/LiteSpeed) and
+> print the nginx directive, because nginx ignores `.htaccess`. `--health` gained a
+> CVE column, and a core run that leaves a site below the fixed release says so.
+> The licence is now MIT, so commercial use no longer needs a separate agreement.
 
 > **8.0.2 is a patch on this release.** A configuration file that set a mode-restricted
 > key — `SKIP_IF_NO_UPDATES`, `HOLD_PLUGINS`, `EXCLUDE_THEMES` — made `--doctor`,
@@ -136,7 +147,7 @@ Three ways, same result. Pick one:
 npm install -g bash-wp-cli-update
 
 # 2. the installer from the archive
-curl -LO https://github.com/paulmann/Bash_WP-CLI_Update/releases/latest/download/bash-wp-cli-update-8.0.4.tar.gz
+curl -LO https://github.com/paulmann/Bash_WP-CLI_Update/releases/latest/download/bash-wp-cli-update-8.1.0.tar.gz
 sudo ./install.sh --dry-run     # show every step
 sudo ./install.sh --systemd     # does it, plus the nightly timer
 ```
@@ -227,8 +238,10 @@ Exactly one mode per run.
 | `--verify` | | `core verify-checksums` and `plugin verify-checksums --all` | no |
 | `--health` | | core version, pending plugin/theme updates, database size | no |
 | `--secrets` | | secret constants in `wp-config.php` by name, permissions, stale copies | no |
+| `--security` | | CVE-2026-119977 assessment: core version against the fixed releases; exit 1 when a site needs an update | no |
 | `--list-backups` | | backup files per site, newest first | no |
 | `--restore-db FILE` | | import FILE into the database (needs `--yes`) | yes |
+| `--harden` | | append the `wp-content/upgrade/` deny block to each site's `.htaccess` and print the nginx directive | yes |
 | `--check` | | environment plus every site in the list, changes nothing | no |
 | `--status` | | last run summary and log sizes | no |
 | `--doctor` | | host diagnosis, no site list needed | no |
@@ -341,6 +354,7 @@ The keys:
 | `BACKUP`, `BACKUP_DIR`, `KEEP_BACKUPS` | `off`, `<script dir>/backups`, `3` | backups |
 | `BACKUP_AGE_DAYS`, `BACKUP_COMPRESS` | `0`, `0` | retention and compression |
 | `MIN_FREE_MB` | `0` | disk guard |
+| `HARDEN_UPGRADE_DIR` | `0` | add the `wp-content/upgrade/` deny block to `.htaccess` before updating |
 | `ONLY_ACTIVE` | `0` | update only active plugins with updates |
 | `EXCLUDE_PLUGINS`, `EXCLUDE_THEMES` | empty | leave out of `--plugins`/`--themes`/`--full` |
 | `HOLD_PLUGINS`, `HOLD_THEMES` | empty | pinned; never updated, always logged |
@@ -398,6 +412,11 @@ Legacy 6.1 names are accepted with a warning: `WP_TIMEOUT` → `TIMEOUT`,
 | 4 | configuration error (unreadable or rejected config file) |
 | 130 / 143 / 131 | interrupted (SIGINT / SIGTERM / SIGHUP); a partial summary is still printed and the JSON report is still written |
 
+`--security` uses the same contract for a different question: exit 1 means at least one
+site is below the fixed release for CVE-2026-119977 or its core version could not be
+read; exit 0 means every site is safe. It is read-only, so it can gate a pipeline or run
+from monitoring without taking the lock.
+
 ---
 
 ## 11. Deploying it
@@ -435,6 +454,7 @@ RETRY=2
 RETRY_DELAY=30
 MAX_FAILURES=5
 SKIP_IF_NO_UPDATES=1
+HARDEN_UPGRADE_DIR=1
 FAIL_ON=any
 REPORT_FILE=/var/log/wp-cli-update/last-run.json
 LOG_JSON=1
@@ -465,6 +485,7 @@ TEST_SITE_USER=www-data bash tests/run_tests.sh
 | `test_fleet.sh` | parallelism, counters, JSON Lines, config security |
 | `test_secretguard.sh` | `tools/scan-secrets.sh` |
 | `test_v7.sh` | read-only modes, restore, retries, circuit breaker, guards, report, policy lists, config aliases |
+| `test_cve.sh` | `--security` verdicts and exit codes, `--harden` idempotence and backup, `--harden-upgrade-dir`/`HARDEN_UPGRADE_DIR`, nginx notice, absence of writes in read-only modes |
 
 Checks that need root or a switchable account report `SKIP` with the reason instead of
 `FAIL`, so the same suite is usable on a laptop and on the server.
@@ -515,12 +536,83 @@ CHANGELOG.md                 release history
 PROJECT_MAP.md               file map
 ```
 
-## 15. License
+## 15. Security: CVE-2026-119977
 
-PolyForm Noncommercial 1.0.0 — see [LICENSE](LICENSE). The licence is not OSI-approved,
-and commercial use requires a separate licence from the copyright holder.
+WordPress core 4.7 through 7.1.3 contains a race condition in the core update
+mechanism: while a site is updating, an unauthenticated attacker can execute code on
+the server. CVSS 8.1; added to CISA KEV on 2026-11-03; mass scanning observed. Fixed
+releases: 7.1.4 (recommended), 7.0.8 on the 7.0 branch, 6.9.11 on the 6.9 branch and
+4.7.39 on the 4.7 branch. 4.6 and older receive no fix: upgrade to 7.1.4 or retire the
+site.
 
-GitHub reports the licence as `NOASSERTION` through its API (checked 2026-11-06), because
-its detector does not map this licence text to an entry; the authoritative SPDX identifier
-`PolyForm-Noncommercial-1.0.0` is stated in [LICENSE](LICENSE), `package.json` and
-[CITATION.cff](CITATION.cff).
+The tool answers both halves of the response: which sites are exposed, and how to close
+the upgrade directory while they are updated.
+
+```bash
+# read-only: per-site verdict; exit 1 when any site needs an update
+wp-cli-update --security --json-lines
+
+# update the fleet, back up first, and harden each site in the same pass
+wp-cli-update --full -j 4 --backup db --harden-upgrade-dir \
+  --report /var/log/wp-cli-update/cve-run.json
+
+# verify that the versions really moved
+wp-cli-update --security --json-lines
+```
+
+`--harden` (or `HARDEN_UPGRADE_DIR=1` in the configuration) appends a marked block to
+each site's root `.htaccess`:
+
+```apache
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+    RewriteRule ^wp-content/upgrade/ - [F,L]
+</IfModule>
+```
+
+The block is idempotent, an existing `.htaccess` is copied once to
+`.htaccess.wp-cli-update.bak` before the first change, and Apache and LiteSpeed honour
+it. A core run that leaves a site below the fixed release says so, and `--security`
+keeps exiting 1, so a half-finished fleet cannot look done.
+
+**nginx does not read `.htaccess`.** On an nginx host add this to every `server` block:
+
+```nginx
+location ^~ /wp-content/upgrade/ { deny all; }
+```
+
+The tool prints that directive at the end of a hardening run; it never edits a server
+configuration itself.
+
+### Agent prompt
+
+Hand this to an AI agent that has shell access to the host:
+
+```text
+You are responding to WordPress CVE-2026-119977: a race condition in the core update
+mechanism affecting WordPress core 4.7 through 7.1.3 (CVSS 8.1, CISA KEV since
+2026-11-03). Use Bash WP-CLI Update on this host; do not improvise with ad-hoc wp calls.
+
+1. Assess, read-only: wp-cli-update --security --json-lines
+2. Back up before changing anything: the run below dumps each database first
+   (--backup db) and refuses to update a site whose dump failed.
+3. Update the exposed sites to the fixed release for their branch: 7.1.4, or 7.0.8 on
+   the 7.0 branch, 6.9.11 on the 6.9 branch, 4.7.39 on the 4.7 branch; 4.6 and older
+   must go to 7.1.4. Use:
+   wp-cli-update --full -j 4 --backup db --harden-upgrade-dir --report /var/log/wp-cli-update/cve-run.json
+4. Verify: run wp-cli-update --security --json-lines again and require exit 0; the core
+   version of every updated site must have changed.
+5. If nginx serves the sites, add "location ^~ /wp-content/upgrade/ { deny all; }" to
+   every server block; .htaccess does nothing there.
+6. Report the before and after version per site, the sites that still need an update,
+   the .htaccess backup paths, and the nginx change you made. Do not call a site patched
+   without the --security verdict.
+```
+
+The wiki has the long-form runbook:
+[Security: CVE-2026-119977](https://github.com/paulmann/Bash_WP-CLI_Update/wiki/09-Security-CVE-2026-119977).
+
+## 16. License
+
+MIT — see [LICENSE](LICENSE). Use, modification, distribution and commercial use are
+permitted under the MIT terms; the software is provided "as is", without warranty.

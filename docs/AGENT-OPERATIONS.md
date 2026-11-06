@@ -79,3 +79,57 @@ monitoring and from the report.
   non-root account they report `SKIP` with the reason, and that is the correct result.
 * Do not change `FAIL_ON`, `JOBS` or `BACKUP` "temporarily" and forget it: `--print-config`
   is the way to see what is actually in force.
+
+## 5. Security advisory: CVE-2026-119977
+
+A race condition in the WordPress core updater lets an unauthenticated attacker execute
+code while a site is updating (CVSS 8.1; CISA KEV since 2026-11-03). Affected core:
+4.7 through 7.1.3. Fixed: 7.1.4, 7.0.8 on the 7.0 branch, 6.9.11 on the 6.9 branch,
+4.7.39 on the 4.7 branch; 4.6 and older have no fix and must be upgraded or retired.
+
+The tool answers the two questions that matter, and the operator should not improvise
+around it:
+
+```bash
+# 1. read-only verdict per site; exit 1 when any site is exposed
+sudo wp-cli-update --security --json-lines
+
+# 2. update the exposed fleet, dumping each database first, and harden in the same pass
+sudo wp-cli-update --full -j 4 --backup db --harden-upgrade-dir \
+  --report /var/log/wp-cli-update/cve-run.json
+
+# 3. prove the versions moved
+sudo wp-cli-update --security --json-lines
+```
+
+`--harden` writes a marker-guarded block into each site's root `.htaccess` for Apache
+and LiteSpeed, keeps the original as `.htaccess.wp-cli-update.bak`, and is idempotent.
+**nginx ignores `.htaccess`**: add this to every nginx `server` block instead, by hand
+or by an agent:
+
+```nginx
+location ^~ /wp-content/upgrade/ { deny all; }
+```
+
+A site that stays below the fixed release is reported, not hidden: the `--core`/`--full`
+run logs it, `--health` keeps its CVE column at `UPDATE`, and `--security` keeps exiting
+1 until it is fixed. Also look for stray `.php` files under `wp-content/upgrade/` on any
+site that may have been exposed, and treat a find as an incident, not a cleanup task.
+
+Agent prompt for a host where this advisory is being worked:
+
+```text
+You are responding to WordPress CVE-2026-119977 (core 4.7-7.1.3, race condition in the
+core updater; CVSS 8.1; CISA KEV since 2026-11-03). Use Bash WP-CLI Update; do not
+improvise with ad-hoc wp calls.
+1. Assess read-only: wp-cli-update --security --json-lines
+2. Update the exposed sites with a database dump first:
+   wp-cli-update --full -j 4 --backup db --harden-upgrade-dir --report /var/log/wp-cli-update/cve-run.json
+3. Verify: wp-cli-update --security --json-lines must exit 0, and the core version of
+   every updated site must have changed.
+4. On nginx hosts add "location ^~ /wp-content/upgrade/ { deny all; }" to every server
+   block; .htaccess does nothing there.
+5. Report before/after versions, sites that still need an update, the .htaccess backup
+   paths and the nginx change. Never call a site patched without the --security verdict.
+```
+

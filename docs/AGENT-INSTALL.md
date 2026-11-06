@@ -114,20 +114,24 @@ not remove that marker to "fix" a missing site, ask the owner.
 ```bash
 sudo wp-cli-update --doctor        # host: wp, switch, tools, paths, disk, policy
 sudo wp-cli-update --check         # every site in the list, changes nothing
-sudo wp-cli-update --health        # what is pending, per site
+sudo wp-cli-update --health        # what is pending, per site (CVE column included)
+sudo wp-cli-update --security --json-lines   # CVE-2026-119977 verdict; exit 1 if a site needs an update
 sudo wp-cli-update --full --site /var/www/example.com --dry-run
 sudo wp-cli-update --full --site /var/www/example.com --backup db
 sudo wp-cli-update --status        # last run summary
 ```
 
 Expected: `--doctor` names the `wp` binary and the user-switch mechanism; `--check`
-exits 0 with a `✓` per site; `--health` prints a table; the dry run lists the exact
-commands; the real run on one site exits 0 and the summary counts one site.
+exits 0 with a `✓` per site; `--health` prints a table with a CVE column; `--security`
+exits 0 only when every core version is at or above the fixed release for its branch;
+the dry run lists the exact commands; the real run on one site exits 0 and the summary
+counts one site.
 
 Only after that:
 
 ```bash
-sudo wp-cli-update --full --jobs 4 --backup db --report /var/log/wp-cli-update/run.json
+sudo wp-cli-update --full --jobs 4 --backup db --harden-upgrade-dir \
+  --report /var/log/wp-cli-update/run.json
 ```
 
 ## 4. What to report back

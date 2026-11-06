@@ -169,7 +169,16 @@ case "$cmd" in
 esac
 
 case "$cmd $sub" in
-    'core version') echo '6.4.3' ;;
+    'core version')
+        # FAKE_CORE_VERSION is a file hook, not an environment variable: the
+        # manager runs the stub in a clean environment, and a test must be able
+        # to say "this site is on 7.1.4" without changing the stub's defaults.
+        if [ -f "${LOG}.core-version" ]; then
+            cat -- "${LOG}.core-version"
+        else
+            echo '6.4.3'
+        fi
+        ;;
     'core check-update')
         if [ "${FAKE_CORE_UPDATE:-0}" = '1' ]; then
             echo '+---------------------+-------------+'

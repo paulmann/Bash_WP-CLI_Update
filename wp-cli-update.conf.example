@@ -1,4 +1,4 @@
-# Configuration example for Bash_WP-CLI_Update.sh 8.0.4
+# Configuration example for Bash_WP-CLI_Update.sh 8.1.0
 #
 # Copy it to one of these places and edit:
 #
@@ -221,6 +221,16 @@ IONICE_CLASS=none
 # free (0 = no guard). A dump that fills the disk takes the database server down
 # with it, so 200-500 is a reasonable production value.
 MIN_FREE_MB=0
+
+# ------------------------------------------------- security (CVE-2026-119977)
+# 1 = before updating a site, append a deny block for /wp-content/upgrade/ to the
+# site's root .htaccess (Apache and LiteSpeed read it). The block is guarded by
+# markers, so it is written once; an existing .htaccess is copied to
+# .htaccess.wp-cli-update.bak before the first change. The same can be done
+# without an update by running --harden. nginx ignores .htaccess, so on an nginx
+# host add this to each server block instead:
+#     location ^~ /wp-content/upgrade/ { deny all; }
+HARDEN_UPGRADE_DIR=0
 
 # ------------------------------------------------------------------ retention
 # Also drop backups older than this many days (0 = keep by count only).

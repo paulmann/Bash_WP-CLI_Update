@@ -14,6 +14,9 @@
 | "licence arrived empty" | the Astra key file is unreadable by the site owner | set `WP_CLI_UPDATE_LICENCE` for one invocation, or check the key file mode |
 | the backup is missing | `BACKUP=off`, or the disk guard refused | check the log for "refusing to export"; lower `MIN_FREE_MB` only after freeing space |
 | a restore refuses to run | no `--yes` | add `--yes`; a safety dump is taken automatically |
+| `--security` reports `UPDATE` | the site's core is below the fixed release for its branch | update core to the release the row names (7.1.4, or 7.0.8 / 6.9.11 / 4.7.39 on those branches), then run `--security` again; a branch the tool has no fixed release for is reported as needing an upgrade to 7.1.4 rather than assumed safe |
+| `--harden` cannot write `.htaccess` | the file is not writable by the site owner or has a read-only flag, or the copy to `.htaccess.wp-cli-update.bak` failed — the log names the file | `chown` it to the site owner and `chmod 644`, clear the read-only flag, then re-run `--harden`; a site with no `.htaccess` is not the cause, the block is appended to a new file |
+| nginx still serves `wp-content/upgrade/` | nginx never reads `.htaccess`, so the deny block cannot apply there | add `location ^~ /wp-content/upgrade/ { deny all; }` to every `server` block and reload nginx; the tool prints the directive but does not edit nginx configuration |
 
 The first two share a code but not a cause: "must run as root" is a privilege problem,
 "another run holds" is a lock problem. Read the message, not the number.
@@ -73,6 +76,23 @@ A missing backup has two causes and the log distinguishes them:
 
 A failed backup stops the site instead of updating it unprotected. That is the designed
 behaviour, not a bug, and `--fail-on never` is the wrong way to get past it.
+
+## The CVE-2026-119977 verdicts
+
+`--security` and the `--health` CVE column answer with three values, and only one of them
+is good news:
+
+* `safe` — the core version is at or above the fixed release for its branch.
+* `UPDATE` — below it; `--security` prints the release to reach, `--health` shows `UPDATE`.
+  Update core, then ask again.
+* `?` / `UNKNOWN` — the version could not be read. Treat it as exposed: the tool cannot
+  prove the site safe, and it exits 1 for exactly that reason.
+
+A `--core` or `--full` run that finishes with the site still below the fixed release logs
+that another core update is required. That is not a duplicate message: a pinned version, a
+failed download or a core update that silently did nothing all end this way, and the site
+is still exposed. The advisory is on
+[Security: CVE-2026-119977](09-Security-CVE-2026-119977).
 
 ## Multisite
 

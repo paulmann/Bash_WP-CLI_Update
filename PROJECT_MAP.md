@@ -2,7 +2,7 @@
 
 File-by-file map of the repository, with the direction of every dependency.
 
-**Files: 71** · generated 2026-11-06 · `tests/test_static.sh` verifies the count
+**Files: 73** · generated 2026-11-06 · `tests/test_static.sh` verifies the count
 against `git ls-files`, so this document cannot go stale silently the way the
 auto-generated map of an earlier revision did (it declared 5 files while the
 branch shipped 11, in a second language, with a content fingerprint that did not
@@ -21,7 +21,7 @@ same commit.
 
 | File | Version | Purpose | Depends on |
 |---|---|---|---|
-| `Bash_WP-CLI_Update.sh` | 8.0.4 | Runs WP-CLI maintenance over every site in the list, each as its owner. Modes (mutating, read-only and diagnostic), configuration layers, locking, logging, timeouts, licence handoff, backups and restore, retries and the circuit breaker, JSON reports and notifications, rendering. | `Find_WP_Senior.sh` (only when the site list is missing and `AUTO_DISCOVER` is on) · `wp` · `runuser`/`sudo`/`su` · `flock`, `timeout` or `perl` (optional) · `gzip`, `nice`, `ionice`, `curl`, `mail` (optional) |
+| `Bash_WP-CLI_Update.sh` | 8.1.0 | Runs WP-CLI maintenance over every site in the list, each as its owner. Modes (mutating, read-only, diagnostic and security), configuration layers, locking, logging, timeouts, licence handoff, backups and restore, retries and the circuit breaker, JSON reports and notifications, the CVE-2026-119977 assessment and the `wp-content/upgrade/` hardening, rendering. | `Find_WP_Senior.sh` (only when the site list is missing and `AUTO_DISCOVER` is on) · `wp` · `runuser`/`sudo`/`su` · `flock`, `timeout` or `perl` (optional) · `gzip`, `nice`, `ionice`, `curl`, `mail` (optional) |
 | `Find_WP_Senior.sh` | 2.1.0 | Scans named web roots for WordPress installations, honours `.no_wp_cli` and exclusions, deduplicates, enriches with metadata, writes the list atomically. | `find`, `sort`, `stat`, `mktemp` |
 | `wp-cli-update.conf.example` | — | Every manager setting with its default and the reason it exists. Copy to `/etc/wp-cli-update.conf` or next to the script. | read by `Bash_WP-CLI_Update.sh` |
 
@@ -55,6 +55,7 @@ trailing whitespace) and the `--output` / `--sites` flags.
 | `tests/test_manager.sh` | Per-mode argv, `--skip-plugins` and `--allow-root` policies, dry run, four list formats, `--fields`, `--name` filtering, slug resolution, ambiguity refusal, delete confirmation, injection attempts, licence containment, `--check`, `--status`, failure counting, `--fail-on`, timeouts, concurrency, stale locks, config precedence, config rejection, log rotation, colour policy, no writes into the repository. | `tests/harness.sh` |
 | `tests/test_secretguard.sh` | Planted values in five name conventions, masking by default, `--strict`, the allowlist, `--history` for a value that was committed and then removed, false-positive classes, `--min-length`, `--quiet`, target arguments. | `tests/harness.sh`, `git` (SKIPs without it) |
 | `tests/test_v7.sh` | The 8.0.0 feature set: `--health` (read-only: no dump, no backup, no lock), `--secrets` (names, never values; permissions; stale copies), `--doctor`, `--completion`, `--report` (valid JSON), the change log, retries and their count, the circuit breaker, `--skip-if-no-updates`, plugin/theme policy lists, `--restore-db` (refuses without `--yes`, dumps first), the disk guard, age-based retention, `--url` detection, `--nice`/`--ionice`, config aliases and the new keys. | `tests/harness.sh`, `python3` (optional, validates the report) |
+| `tests/test_cve.sh` | The 8.1.0 security set: `--security` verdicts and exit codes for exposed and fixed versions, its JSON Lines records, the `--health` CVE column, `--harden` writing one marked block and backing up `.htaccess`, idempotence, `--harden-upgrade-dir` and `HARDEN_UPGRADE_DIR` applying it from a writing mode, the printed nginx directive, the refusal of the flag in read-only modes, and the post-run warning for a site that stays below the fixed release. | `tests/harness.sh` |
 
 ## Documentation and repository hygiene
 
@@ -76,7 +77,7 @@ trailing whitespace) and the `--output` / `--sites` flags.
 | `CODE_OF_CONDUCT.md`, `SUPPORT.md`, `CITATION.cff` | Contributor Covenant 2.1, the support routes, and the machine-readable citation. |
 | `.github/ISSUE_TEMPLATE/`, `PULL_REQUEST_TEMPLATE.md`, `CODEOWNERS`, `dependabot.yml` | Bug and feature forms plus contact links, the PR checklist, the reviewer and the weekly Actions update. |
 | `.ghagent.json` | Repository-local configuration for `ghagent`: owner/repo, document paths, the wiki, and the deliberately excluded `legacy/` archive. |
-| `SECURITY.md` | Threat model of a root tool, supported versions, how to report, known non-issues, hardening checklist. |
+| `SECURITY.md` | Threat model of a root tool, the current CVE-2026-119977 advisory, supported versions, how to report, known non-issues, hardening checklist. |
 | `package.json` | npm packaging: name, version, `bin` shims, `files` whitelist, `os: linux`, licence. `prepublishOnly` re-checks the syntax of all four shell files. |
 | `bin/wp-cli-update`, `bin/wp-find` | The npm shims: resolve their real path through the symlink npm creates, then `exec bash` the script with the same arguments. |
 | `install.sh` | Idempotent installer: code, symlinks, log/backup/state directories, config (only if absent), optional systemd units. `--dry-run`, `--uninstall`. |
@@ -91,7 +92,7 @@ trailing whitespace) and the `--output` / `--sites` flags.
 | `PROJECT_MAP.md` | This file. |
 | `.gitignore` | Generated and local files: the site list, logs, lock files, key files, backups, `dist/`, the RAGRAF index, the frozen snapshots. |
 | `.gitattributes` | Line-ending policy. The scripts run on Linux; a CR byte becomes part of the last word on every line and silently breaks pattern matching, `case` labels and the generated site list. |
-| `LICENSE` | PolyForm Noncommercial 1.0.0. |
+| `LICENSE` | MIT. |
 
 ## Data flow
 

@@ -5,6 +5,7 @@
 ```bash
 bash tests/run_tests.sh              # every suite
 bash tests/run_tests.sh v7           # one suite
+bash tests/run_tests.sh cve          # the 8.1.0 security suite
 TEST_SITE_USER=www-data bash tests/run_tests.sh
 unshare -r bash tests/run_tests.sh   # borrow uid 0 in a private namespace
 ```
@@ -33,6 +34,14 @@ names the expected and the actual value. Measured results, as the project record
 | `tests/test_fleet.sh` | parallelism, counters, JSON Lines, config security |
 | `tests/test_secretguard.sh` | `tools/scan-secrets.sh` |
 | `tests/test_v7.sh` | read-only modes, restore, retries, circuit breaker, guards, report, policy lists, config aliases |
+| `tests/test_cve.sh` | the 8.1.0 security set: `--security` verdicts and exit codes, the `.htaccess` deny block, `--harden-upgrade-dir`, the `--health` CVE column |
+
+`tests/test_cve.sh` is the gate for the CVE-2026-119977 work, and it enforces the rules that
+are easy to lose: a read-only mode never writes `.htaccess`, never exports a database and
+never takes the lock; `--security` exits 1 exactly when a site's core is below the fixed
+release and 0 when it is at or above it; `--harden` is idempotent, keeps the original file
+and backs it up once; and the nginx directive is printed, because nginx cannot be fixed
+from `.htaccess`. Its fixture is a stub `wp`, so the suite runs without WordPress.
 
 ## The two static gates
 
@@ -61,8 +70,8 @@ The order is fixed, and it is the same order as `docs/DEVELOPMENT.md`:
    never into an `if` chain that duplicates the dispatch;
 4. document it in `--help` (the static suite checks the option is mentioned) and in
    `README.md`;
-5. add a check to `tests/test_v7.sh`, or a new `tests/test_<area>.sh` registered in
-   `tests/run_tests.sh`;
+5. add a check to `tests/test_v7.sh` (or `tests/test_cve.sh` for the security surface), or a
+   new `tests/test_<area>.sh` registered in `tests/run_tests.sh`;
 6. run `bash tests/run_tests.sh` and `shellcheck`, then bump the version together.
 
 Rules for the code itself:
@@ -84,12 +93,19 @@ clean fix.
 ## Version consistency
 
 The manager, the finder and the documentation move together, and the finder is versioned
-separately (2.1.0 from 6.2.0 onwards). A bump touches `SCRIPT_VERSION` in
-`Bash_WP-CLI_Update.sh`, the `Version:` line and the archive name in `README.md`,
-`package.json`, the `CHANGELOG.md` section, and the version mentioned in `AGENTS.md`,
-`wp-cli-update.conf.example` and `PROJECT_MAP.md`. `tests/test_static.sh` fails if
-`SCRIPT_VERSION` and `package.json` disagree, the release workflow fails if the tag and
-`SCRIPT_VERSION` disagree, and the release notes are cut from the changelog section.
+separately (2.1.0 from 6.2.0 onwards). The current release is 8.1.0 with finder 2.1.0. A
+bump touches `SCRIPT_VERSION` in `Bash_WP-CLI_Update.sh`, the `Version:` line and the
+archive name in `README.md`, `package.json`, the `CHANGELOG.md` section, and the version
+mentioned in `AGENTS.md`, `wp-cli-update.conf.example` and `PROJECT_MAP.md`.
+`tests/test_static.sh` fails if `SCRIPT_VERSION` and `package.json` disagree, the release
+workflow fails if the tag and `SCRIPT_VERSION` disagree, and the release notes are cut from
+the changelog section.
+
+Since 8.1.0 the GitHub wiki is versioned next to the code in `wiki/`: the pages and
+`wiki.json` are the sources, and `ghagent wiki build` and `ghagent wiki verify` are run on
+a change to them, so a page cannot be published with a broken link or an unlisted page. A
+bump that changes a number a page states has to change the page in the same commit; no
+static check enforces that yet.
 
 ## The release, in one paragraph
 
@@ -100,7 +116,9 @@ builds `dist/bash-wp-cli-update-X.Y.Z.tar.gz` with `SHA256SUMS`, and attaches bo
 release (re-uploading the assets if the release already exists). The same workflow publishes
 the npm package `bash-wp-cli-update` over OpenID Connect trusted publishing, so no token is
 stored anywhere; verify from a clean machine with `sha256sum -c SHA256SUMS`,
-`npm view bash-wp-cli-update version` and `wp-cli-update --version`.
+`npm view bash-wp-cli-update version` and `wp-cli-update --version`. 8.1.0 is the worked
+example of that order: the security modes, the `HARDEN_UPGRADE_DIR` key, the CVE column in
+`--health`, the MIT licence and the wiki sources all landed in the release commit.
 
 ## Reporting a problem
 

@@ -16,12 +16,32 @@ draft of 8.0.0 — is in [docs/RELEASE-HISTORY.md](docs/RELEASE-HISTORY.md).
 
 ## [Unreleased]
 
-Repository maintenance. No product change: the manager, the finder, every mode, every
-option, every configuration key and the exit-code contract are exactly what 8.0.4
-shipped, and no tag is cut for this work.
+## [8.1.0] - 2026-11-06
+
+Security release for CVE-2026-119977, with the licence changed to MIT. The repository
+documentation work staged under [Unreleased] before this release ships in the same
+commit and is listed here rather than hidden in the git log.
 
 ### Added
 
+- **`--security`** (read-only): reads each site's WordPress core version, compares it
+  with the fixed releases for CVE-2026-119977 and prints a per-site verdict. Exit 1
+  means at least one site is exposed (or its version cannot be read); exit 0 means
+  every site is at or above the fixed release for its branch. It takes no lock and no
+  backup, so monitoring can call it every minute.
+- **`--harden`**: appends a marker-guarded block to each site's root `.htaccess`
+  denying web access to `wp-content/upgrade/`
+  (`RewriteRule ^wp-content/upgrade/ - [F,L]`), for Apache and LiteSpeed. The block is
+  idempotent and an existing `.htaccess` is copied once to
+  `.htaccess.wp-cli-update.bak` before the first change. The nginx directive
+  (`location ^~ /wp-content/upgrade/ { deny all; }`) is printed at the end of the run,
+  because nginx ignores `.htaccess`.
+- **`--harden-upgrade-dir` / `--no-harden-upgrade-dir`** and the **`HARDEN_UPGRADE_DIR`**
+  configuration key: apply the same block as part of every writing mode (default 0).
+  `--security`, `--health` and `--check` refuse the flag with exit 2, because they are
+  read-only.
+- **A CVE column in `--health`** (`safe`, `UPDATE` or `?`) and the `cve_2026_119977`
+  field in its JSON Lines record.
 - **The GitHub wiki as versioned sources.** `wiki/` holds the pages and the manifest;
   `ghagent wiki build|verify|publish` renders the sidebar and footer and pushes the
   built tree to the wiki repository, so a page cannot be published with a broken link.
@@ -36,12 +56,17 @@ shipped, and no tag is cut for this work.
 
 ### Changed
 
+- **The licence is MIT.** `LICENSE`, `package.json`, `CITATION.cff`, the README badge
+  and the wiki now say MIT; commercial use no longer needs a separate agreement. The
+  `legacy/` archive keeps the licence text it was published under.
+- **A `--core`/`--full` run reports a site that stays below the fixed release** instead
+  of assuming the update did its job: the log names the CVE and the release to reach.
 - **`AGENTS.md` is now a map.** It keeps the two overriding rules, the file table, the
   verification order in brief and the absolute do-nots, and links to the detailed
   documents — the length a reader, and an agent, can afford on every request.
-- **`README.md`** gained the current version in the title (it said 8.0.0), a badge row,
-  the social preview, a navigation row, a table of contents and a "For agents"
-  pointer; every code fence now carries a language tag.
+- **`README.md`** gained the current version in the title, a badge row, the social
+  preview, a navigation row, a table of contents, the security section and a "For
+  agents" pointer; every code fence now carries a language tag.
 - **`CHANGELOG.md`** uses `## [x.y.z] - YYYY-MM-DD` headings throughout (the finder
   version moved into this preamble), has an `[Unreleased]` section and canonical change
   types; the release-lineage table moved to `docs/RELEASE-HISTORY.md`.
@@ -50,7 +75,7 @@ shipped, and no tag is cut for this work.
 - The npm author field no longer carries a personal e-mail address; the repository
   profile is the contact route.
 - The published wiki is now generated from `wiki/`; the placeholder Home page is
-  replaced by the manual.
+  replaced by the manual, including the CVE-2026-119977 runbook.
 
 ### Fixed
 
@@ -65,9 +90,17 @@ shipped, and no tag is cut for this work.
   value is now assembled at run time; the address is described, not repeated.
 - `tests/test_secretguard.sh` used an unroutable `example.invalid` git identity; it is
   now `example.com`, the reserved documentation domain, which needs no exception.
-- The tree-level secret scan no longer reports the SPDX licence identifier in
-  `CITATION.cff`; it is allowlisted as metadata, with the reason recorded in
-  `tools/secret-allowlist.txt`.
+- The temporary secret-scan allowlist entry for `CITATION.cff` is gone with the licence
+  change: `license: MIT` is below the scanner's minimum value length.
+
+### Security
+
+- **WordPress CVE-2026-119977** (race condition in the core updater; CVSS 8.1; CISA KEV
+  since 2026-11-03): affected core 4.7 through 7.1.3; fixed releases 7.1.4, 7.0.8 on
+  the 7.0 branch, 6.9.11 on the 6.9 branch and 4.7.39 on the 4.7 branch; 4.6 and older
+  have no fix. The tool now detects exposed sites (`--security`, the `--health` CVE
+  column) and can close the upgrade directory on Apache and LiteSpeed (`--harden`,
+  `HARDEN_UPGRADE_DIR`), printing the nginx directive that nginx needs instead.
 
 ## [8.0.4] - 2026-10-21
 
@@ -595,7 +628,8 @@ without output, `--help` is not a flag, commands are built by string
 concatenation, no lock, no log rotation, no dry run, and the Astra key is edited
 into the script.
 
-[Unreleased]: https://github.com/paulmann/Bash_WP-CLI_Update/compare/v8.0.4...HEAD
+[Unreleased]: https://github.com/paulmann/Bash_WP-CLI_Update/compare/v8.1.0...HEAD
+[8.1.0]: https://github.com/paulmann/Bash_WP-CLI_Update/compare/v8.0.4...v8.1.0
 [8.0.4]: https://github.com/paulmann/Bash_WP-CLI_Update/compare/v8.0.3...v8.0.4
 [8.0.3]: https://github.com/paulmann/Bash_WP-CLI_Update/compare/v8.0.2...v8.0.3
 [8.0.2]: https://github.com/paulmann/Bash_WP-CLI_Update/compare/v8.0.1...v8.0.2

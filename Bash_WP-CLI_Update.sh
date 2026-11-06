@@ -14,8 +14,8 @@
 # File:        Bash_WP-CLI_Update.sh
 # Project:     Bash WP-CLI Update
 # Repository:  https://github.com/paulmann/Bash_WP-CLI_Update
-# License:     PolyForm Noncommercial 1.0.0 (see LICENSE)
-# Version:     8.0.4
+# License:     MIT (see LICENSE)
+# Version:     8.1.0
 #
 # Purpose
 #   Run WP-CLI maintenance operations (core, plugins, themes, database, cron,
@@ -103,7 +103,7 @@ shopt -s inherit_errexit 2>/dev/null || true
 ###############################################################################
 
 PROG_NAME="${0##*/}"
-SCRIPT_VERSION='8.0.4'
+SCRIPT_VERSION='8.1.0'
 
 # A literal backtick, spelled by code point: the config parser has to reject it,
 # and writing the character directly would make this file fail the project's own
@@ -170,6 +170,17 @@ DEFAULT_NOTIFY_TIMEOUT=10
 DEFAULT_URL_DETECT=1                 # derive --url from wp-config.php when able
 DEFAULT_LOG_JSON=0                   # 1 = one JSON object per log line
 DEFAULT_SKIP_IF_NO_UPDATES=0         # skip a site whose plugins/themes/core are current
+DEFAULT_HARDEN_UPGRADE_DIR=0         # 1 = ensure the wp-content/upgrade/ deny block in .htaccess
+
+# CVE-2026-119977: a race condition in the WordPress core update mechanism lets an
+# unauthenticated attacker execute code while a site is being updated (CVSS 8.1,
+# CISA KEV since 2026-11-03). A site is exposed while its core version is below
+# the fixed release for its branch. Only the fixed releases that can be stated
+# with a source are listed; a branch that is not listed is reported as needing an
+# upgrade rather than assumed safe, because a false "safe" is the expensive error.
+CVE_2026_119977='CVE-2026-119977'
+CVE_FIXED_LATEST='7.1.4'
+CVE_FIXED_BRANCHES='7.1=7.1.4 7.0=7.0.8 6.9=6.9.11 4.7=4.7.39'
 
 # Environment variables that may carry configuration. The list is explicit: an
 # arbitrary variable is never read, so a hostile environment cannot inject a
@@ -186,6 +197,8 @@ CONFIG_KEYS=(
     RETRY RETRY_DELAY MAX_FAILURES RUN_TIMEOUT LOCK_WAIT BACKUP_AGE_DAYS
     BACKUP_COMPRESS DEFAULT_USER NOTIFY_WEBHOOK NOTIFY_ON NOTIFY_TIMEOUT MAIL_TO
     REPORT_FILE LOG_JSON DRY_RUN SKIP_IF_NO_UPDATES URL_DETECT WP_GLOBAL_ARGS
+    # 8.1.0 additions
+    HARDEN_UPGRADE_DIR
 )
 
 # Configuration keys accepted under an older name, with the name to use instead.
@@ -706,7 +719,8 @@ config_validate_layer() {
                 require_non_negative_int_conf "$key" "${CONF[$key]}" ;;
             IONICE_CLASS) require_choice_conf "$key" "${CONF[$key]}" idle best-effort none ;;
             NOTIFY_ON) require_choice_conf "$key" "${CONF[$key]}" never failure always ;;
-            BACKUP_COMPRESS | LOG_JSON | SKIP_IF_NO_UPDATES | URL_DETECT | DRY_RUN)
+            BACKUP_COMPRESS | LOG_JSON | SKIP_IF_NO_UPDATES | URL_DETECT | DRY_RUN | \
+                HARDEN_UPGRADE_DIR)
                 require_bool_conf "$key" "${CONF[$key]}" ;;
         esac
     done
@@ -771,6 +785,7 @@ config_apply_all() {
     apply_conf SKIP_IF_NO_UPDATES       SKIP_IF_NO_UPDATES
     apply_conf URL_DETECT               URL_DETECT
     apply_conf WP_GLOBAL_ARGS           WP_GLOBAL_ARGS
+    apply_conf HARDEN_UPGRADE_DIR       HARDEN_UPGRADE_DIR
 
     require_positive_int      LOG_MAX_BYTES            "$LOG_MAX_BYTES"
     require_non_negative_int  LOG_KEEP                 "$LOG_KEEP"
@@ -808,6 +823,7 @@ config_apply_all() {
     DRY_RUN="$(require_bool DRY_RUN "$DRY_RUN")"
     SKIP_IF_NO_UPDATES="$(require_bool SKIP_IF_NO_UPDATES "$SKIP_IF_NO_UPDATES")"
     URL_DETECT="$(require_bool URL_DETECT "$URL_DETECT")"
+    HARDEN_UPGRADE_DIR="$(require_bool HARDEN_UPGRADE_DIR "$HARDEN_UPGRADE_DIR")"
 
     # Values have passed validation, so they are pure digits -- but they may
     # carry leading zeros ('08', '007'). Every later use is arithmetic, and
@@ -977,6 +993,8 @@ LOG_JSON="$DEFAULT_LOG_JSON"
 SKIP_IF_NO_UPDATES="$DEFAULT_SKIP_IF_NO_UPDATES"
 URL_DETECT="$DEFAULT_URL_DETECT"
 WP_GLOBAL_ARGS=''
+HARDEN_UPGRADE_DIR="$DEFAULT_HARDEN_UPGRADE_DIR"
+HARDEN_NOTICE_SHOWN='false'
 RESTORE_SOURCE=''             # --restore-db FILE
 COMPLETION_SHELL=''
 TRACK_CHANGES='false'         # --report or --json-lines asked for the change log
@@ -2224,6 +2242,12 @@ maybe_backup() { # SITE USER
         log_debug 'read-only mode: no backup'
         return 0
     fi
+    # --harden edits one file per site and copies that file first; a database dump
+    # would be pure cost.
+    if [ "$MODE" = 'harden' ]; then
+        log_debug 'hardening mode: no database backup'
+        return 0
+    fi
     case "$BACKUP_MODE" in
         db) backup_database "$site" "$user" || return 1 ;;
         full) backup_site_tree "$site" "$user" || return 1 ;;
@@ -2237,7 +2261,7 @@ maybe_backup() { # SITE USER
 mode_is_readonly() {
     case "$MODE" in
         list-plugins | verify | health | secrets | list-backups) return 0 ;;
-        check | status | doctor | completion) return 0 ;;
+        security | check | status | doctor | completion) return 0 ;;
     esac
     return 1
 }
@@ -2333,6 +2357,209 @@ backup_plugin() { # SITE SLUG
     fi
     return 0
 }
+
+###############################################################################
+# 12c. CVE-2026-119977: assessment and upgrade-directory hardening
+###############################################################################
+
+# version_ge A B -> true when A >= B. Dotted numeric versions only; a build or
+# pre-release suffix is ignored, because the advisory names plain releases.
+version_ge() { # A B
+    local a="${1%%-*}" b="${2%%-*}" i n x y
+    local -a av=() bv=()
+    IFS=. read -r -a av <<<"$a"
+    IFS=. read -r -a bv <<<"$b"
+    n=${#av[@]}
+    ((${#bv[@]} > n)) && n=${#bv[@]}
+    for ((i = 0; i < n; i++)); do
+        x="${av[i]:-0}"
+        y="${bv[i]:-0}"
+        [[ "$x" =~ ^[0-9]+$ ]] || x=0
+        [[ "$y" =~ ^[0-9]+$ ]] || y=0
+        ((10#$x > 10#$y)) && return 0
+        ((10#$x < 10#$y)) && return 1
+    done
+    return 0
+}
+
+# cve_fixed_for_branch MAJOR.MINOR -> the fixed release recorded for it, or nothing.
+cve_fixed_for_branch() { # BRANCH
+    local pair
+    for pair in $CVE_FIXED_BRANCHES; do
+        if [ "${pair%%=*}" = "$1" ]; then
+            printf '%s' "${pair#*=}"
+            return 0
+        fi
+    done
+    return 1
+}
+
+# cve_core_status VERSION -> "safe", "update FIXED" or "unknown".
+#
+# A branch that is not in the table is reported as needing an upgrade rather than
+# assumed safe: the tool can only vouch for the fixed releases it knows.
+cve_core_status() { # VERSION
+    local v="${1:-}" branch fixed
+    if [ -z "$v" ] || ! [[ "$v" =~ ^[0-9]+(\.[0-9]+)*$ ]]; then
+        printf 'unknown'
+        return 0
+    fi
+    if version_ge "$v" "$CVE_FIXED_LATEST"; then
+        printf 'safe'
+        return 0
+    fi
+    branch="$(printf '%s' "$v" | awk -F. 'NF >= 2 { print $1 "." $2; exit } { print $1 }')"
+    fixed=''
+    if cve_fixed_for_branch "$branch" >/dev/null 2>&1; then
+        fixed="$(cve_fixed_for_branch "$branch")"
+        if version_ge "$v" "$fixed"; then
+            printf 'safe'
+            return 0
+        fi
+    fi
+    printf 'update %s' "${fixed:-$CVE_FIXED_LATEST}"
+    return 0
+}
+
+# site_core_version SITE USER -> the core version on stdout, empty when unreadable.
+site_core_version() { # SITE USER
+    local site="$1" user="$2"
+    info_wp "$site" "$user" core version
+    if [ "$WP_STATUS" = '0' ]; then
+        printf '%s' "$WP_OUTPUT" | tr -d '\r' | head -n 1
+    fi
+}
+
+# The block is guarded by a marker pair, so appending it twice is impossible and
+# an operator can see which lines this tool owns.
+HARDEN_BEGIN='# BEGIN Bash WP-CLI Update - deny web access to wp-content/upgrade/ (CVE-2026-119977)'
+HARDEN_END='# END Bash WP-CLI Update - deny web access to wp-content/upgrade/'
+
+harden_block() {
+    cat <<'EOS'
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+    RewriteRule ^wp-content/upgrade/ - [F,L]
+</IfModule>
+EOS
+}
+
+# harden_upgrade_dir SITE USER
+#
+# Apache and LiteSpeed read .htaccess; nginx does not, which is why the operator
+# is told separately what to add there. The original .htaccess is copied once to
+# .htaccess.wp-cli-update.bak before the first modification, so the change is
+# reversible without git.
+harden_upgrade_dir() { # SITE USER
+    local site="$1" user="$2" file="${1}/.htaccess" backup="${1}/.htaccess.wp-cli-update.bak"
+    if [ ! -d "$site" ]; then
+        log_error "${site}: not a directory"
+        return 1
+    fi
+    if [ -f "$file" ] && grep -Fq -- "$HARDEN_BEGIN" "$file" 2>/dev/null; then
+        log_debug "${site}: .htaccess already carries the upgrade-directory deny block"
+        return 0
+    fi
+    if [ "$DRY_RUN" = 'true' ]; then
+        log_info "[dry-run] (${user}@$(basename -- "$site")) would append the ${CVE_2026_119977} deny block to ${file}"
+        return 0
+    fi
+    if [ -f "$file" ] && [ ! -f "$backup" ]; then
+        if cp -p -- "$file" "$backup" 2>/dev/null; then
+            log_debug "${site}: .htaccess backup: ${backup}"
+        else
+            log_warn "${site}: cannot back up ${file}; leaving it unmodified"
+            return 1
+        fi
+    fi
+    if [ -f "$file" ] && [ -s "$file" ] && [ -n "$(tail -c 1 -- "$file" 2>/dev/null)" ]; then
+        if ! printf '\n' >>"$file" 2>/dev/null; then
+            log_warn "${site}: cannot append to ${file}"
+            return 1
+        fi
+    fi
+    if ! { printf '%s\n' "$HARDEN_BEGIN"; harden_block; printf '%s\n' "$HARDEN_END"; } >>"$file" 2>/dev/null; then
+        log_warn "${site}: cannot write ${file}; the upgrade directory is still reachable over the web"
+        return 1
+    fi
+    if [ "$(id -u)" -eq 0 ]; then
+        chown "$user" "$file" 2>/dev/null || true
+    fi
+    chmod 644 "$file" 2>/dev/null || true
+    log_ok "${site}: .htaccess now denies web access to wp-content/upgrade/ (${CVE_2026_119977})"
+    return 0
+}
+
+mode_harden() { # SITE USER
+    harden_upgrade_dir "$1" "$2"
+}
+
+# nginx ignores .htaccess entirely, so the tool can only print the directive the
+# server block needs; it is the job of the operator (or an agent) to add it.
+nginx_hardening_notice() {
+    [ "$HARDEN_NOTICE_SHOWN" = 'true' ] && return 0
+    HARDEN_NOTICE_SHOWN='true'
+    log_note 'nginx does not read .htaccess: add "location ^~ /wp-content/upgrade/ { deny all; }" to every nginx server block (the wiki page Security / CVE-2026-119977 has an agent prompt for this)'
+}
+
+SECURITY_HEADER='false'
+security_header() {
+    [ "$SECURITY_HEADER" = 'true' ] && return 0
+    SECURITY_HEADER='true'
+    printf '%-34s %-10s %-8s %s\n' 'SITE' 'CORE' 'CVE' 'STATUS'
+    printf -- '------------------------------------------------------------------------------\n'
+}
+
+security_remediation() { # SITE FIX
+    log_info "update ${1}: wp-cli-update --site ${1} --core --backup db --harden-upgrade-dir"
+    log_info "  (or --full to update plugins and themes in the same pass; the wiki runbook has the fleet command)"
+}
+
+# security_check SITE USER -> 0 safe, 1 needs an update or the version is unknown.
+mode_security() { # SITE USER
+    local site="$1" user="$2" core status fix name
+    name="$(basename -- "$site")"
+    core="$(site_core_version "$site" "$user")"
+    status="$(cve_core_status "$core")"
+    case "$status" in
+        safe)
+            if [ "$JSON_LINES" = 'true' ] || [ "$OUTPUT_FORMAT" = 'json' ]; then
+                printf '{"type":"security","site":"%s","core":"%s","cve":"%s","status":"safe"}\n' \
+                    "$(json_escape "$site")" "$(json_escape "$core")" "$CVE_2026_119977"
+                return 0
+            fi
+            security_header
+            printf '%-34s %-10s %-8s %s\n' "$name" "$core" 'safe' '-'
+            return 0
+            ;;
+        unknown)
+            log_error "${site}: cannot read the WordPress core version; ${CVE_2026_119977} cannot be ruled out"
+            if [ "$JSON_LINES" = 'true' ] || [ "$OUTPUT_FORMAT" = 'json' ]; then
+                printf '{"type":"security","site":"%s","core":"","cve":"%s","status":"unknown"}\n' \
+                    "$(json_escape "$site")" "$CVE_2026_119977"
+                return 1
+            fi
+            security_header
+            printf '%-34s %-10s %-8s %s\n' "$name" '?' '?' 'UNKNOWN'
+            return 1
+            ;;
+        *)
+            fix="${status#update }"
+            log_warn "${site}: core ${core} is affected by ${CVE_2026_119977}; update to ${fix} or newer"
+            security_remediation "$site" "$fix"
+            if [ "$JSON_LINES" = 'true' ] || [ "$OUTPUT_FORMAT" = 'json' ]; then
+                printf '{"type":"security","site":"%s","core":"%s","cve":"%s","status":"needs-update","fix":"%s"}\n' \
+                    "$(json_escape "$site")" "$(json_escape "$core")" "$CVE_2026_119977" "$(json_escape "$fix")"
+                return 1
+            fi
+            security_header
+            printf '%-34s %-10s %-8s %s\n' "$name" "$core" 'UPDATE' "${fix}"
+            return 1
+            ;;
+    esac
+}
+
+
 
 ###############################################################################
 # 13. WP-CLI operations
@@ -2585,8 +2812,8 @@ HEALTH_HEADER='false'
 health_header() {
     [ "$HEALTH_HEADER" = 'true' ] && return 0
     HEALTH_HEADER='true'
-    printf '%-34s %-9s %-8s %-8s %-10s\n' 'SITE' 'CORE' 'PLUGINS' 'THEMES' 'DB MiB'
-    printf -- '-------------------------------------------------------------------------------\n'
+    printf '%-34s %-9s %-8s %-8s %-10s %-6s\n' 'SITE' 'CORE' 'PLUGINS' 'THEMES' 'DB MiB' 'CVE'
+    printf -- '-----------------------------------------------------------------------------------------\n'
 }
 
 # pending_count SITE USER KIND -> a number on stdout.
@@ -2606,7 +2833,7 @@ pending_count() { # SITE USER KIND
 }
 
 mode_health() { # SITE USER
-    local site="$1" user="$2" core='?' cp=0 tp=0 db='?' name
+    local site="$1" user="$2" core='?' cp=0 tp=0 db='?' name cve status fix
     name="$(basename -- "$site")"
     info_wp "$site" "$user" core version
     [ "$WP_STATUS" = '0' ] && core="$(printf '%s' "$WP_OUTPUT" | tr -d '\r' | head -n 1)"
@@ -2615,13 +2842,25 @@ mode_health() { # SITE USER
     info_wp "$site" "$user" db size --size_format=mb
     [ "$WP_STATUS" = '0' ] && db="$(printf '%s' "$WP_OUTPUT" | tr -dc '0-9.')"
     cp="${cp:-0}"; tp="${tp:-0}"
+    status="$(cve_core_status "$core")"
+    case "$status" in
+        safe) cve='safe' ;;
+        unknown) cve='?' ;;
+        *)
+            fix="${status#update }"
+            cve='UPDATE'
+            log_warn "${site}: core ${core} is affected by ${CVE_2026_119977}; update to ${fix} or newer"
+            ;;
+    esac
     if [ "$JSON_LINES" = 'true' ] || [ "$OUTPUT_FORMAT" = 'json' ]; then
-        printf '{"type":"health","site":"%s","core":"%s","plugins_pending":%s,"themes_pending":%s,"db_mb":"%s"}\n' \
-            "$(json_escape "$site")" "$(json_escape "$core")" "$cp" "$tp" "$(json_escape "$db")"
+        printf '{"type":"health","site":"%s","core":"%s","plugins_pending":%s,"themes_pending":%s,"db_mb":"%s","cve_2026_119977":"%s"%s}\n' \
+            "$(json_escape "$site")" "$(json_escape "$core")" "$cp" "$tp" "$(json_escape "$db")" \
+            "$(json_escape "$cve")" \
+            "$([ "$cve" = 'UPDATE' ] && printf ',"cve_fix":"%s"' "$(json_escape "$fix")")"
         return 0
     fi
     health_header
-    printf '%-34s %-9s %-8s %-8s %-10s\n' "$name" "$core" "$cp" "$tp" "$db"
+    printf '%-34s %-9s %-8s %-8s %-10s %-6s\n' "$name" "$core" "$cp" "$tp" "$db" "$cve"
     return 0
 }
 
@@ -2734,10 +2973,10 @@ _wp_cli_update() {
     local cur prev modes opts
     cur="${COMP_WORDS[COMP_CWORD]}"
     prev="${COMP_WORDS[COMP_CWORD-1]}"
-    modes='full core plugins themes db-optimize db-fix cron astra list-plugins plugin-manage verify health secrets check status doctor list-sites list-backups restore-db'
+    modes='full core plugins themes db-optimize db-fix cron astra list-plugins plugin-manage verify health secrets security harden check status doctor list-sites list-backups restore-db completion'
     # Every mode and every option, generated from parse_args; the static suite
     # fails if this list drifts from --help.
-    opts='--action --allow-root --astra --astra-key --astra-slug --backup --backup-age-days --backup-compress --backup-dir --check --color --completion --config --core --cron --db-fix --db-optimize --debug --default-user --doctor --dry-run --error-log-file --exclude-plugins --exclude-themes --fail-on --fields --force --format --full --health --help --hold-plugins --hold-themes --ionice --jobs --json --json-lines --json-log --keep-backups --kill-after --list-backups --list-modes --list-plugins --list-sites --lock-file --lock-wait --log-dir --log-file --log-level --mail-to --max-failures --max-sites --min-free-mb --name --nice --no-backup --no-color --no-discover --no-lock --no-notify --no-url-detect --no-user-switch --notify --notify-on --only-active --option --page-limit --plugin-manage --plugins --print-config --quiet --report --restore-db --retry --retry-delay --run-timeout --secrets --signal --site --sites --sites-file --skip-if-no-updates --skip-plugins --skip-plugins-for-listing --status --strict --themes --timeout --url --user --user-env --verbose --verify --version --wp --wp-bin --wp-cli --yes'
+    opts='--action --allow-root --astra --astra-key --astra-slug --backup --backup-age-days --backup-compress --backup-dir --check --color --completion --config --core --cron --db-fix --db-optimize --debug --default-user --doctor --dry-run --error-log-file --exclude-plugins --exclude-themes --fail-on --fields --force --format --full --harden-upgrade-dir --health --help --hold-plugins --hold-themes --ionice --jobs --json --json-lines --json-log --keep-backups --kill-after --list-backups --list-modes --list-plugins --list-sites --lock-file --lock-wait --log-dir --log-file --log-level --mail-to --max-failures --max-sites --min-free-mb --name --nice --no-backup --no-color --no-discover --no-harden-upgrade-dir --no-lock --no-notify --no-url-detect --no-user-switch --notify --notify-on --only-active --option --page-limit --plugin-manage --plugins --print-config --quiet --report --restore-db --retry --retry-delay --run-timeout --secrets --security --signal --site --sites --sites-file --skip-if-no-updates --skip-plugins --skip-plugins-for-listing --status --strict --themes --timeout --url --user --user-env --verbose --verify --version --wp --wp-bin --wp-cli --yes --harden'
     case "$prev" in
         --format) COMPREPLY=($(compgen -W 'table json csv tsv' -- "$cur")); return ;;
         --color|--allow-root) COMPREPLY=($(compgen -W 'auto always never' -- "$cur")); return ;;
@@ -2759,8 +2998,8 @@ EOS
 #compdef Bash_WP-CLI_Update.sh
 _wp_cli_update() {
     local -a modes opts
-    modes=(full core plugins themes db-optimize db-fix cron astra list-plugins plugin-manage verify health secrets check status doctor list-sites list-backups restore-db)
-    opts=(--action --allow-root --astra --astra-key --astra-slug --backup --backup-age-days --backup-compress --backup-dir --check --color --completion --config --core --cron --db-fix --db-optimize --debug --default-user --doctor --dry-run --error-log-file --exclude-plugins --exclude-themes --fail-on --fields --force --format --full --health --help --hold-plugins --hold-themes --ionice --jobs --json --json-lines --json-log --keep-backups --kill-after --list-backups --list-modes --list-plugins --list-sites --lock-file --lock-wait --log-dir --log-file --log-level --mail-to --max-failures --max-sites --min-free-mb --name --nice --no-backup --no-color --no-discover --no-lock --no-notify --no-url-detect --no-user-switch --notify --notify-on --only-active --option --page-limit --plugin-manage --plugins --print-config --quiet --report --restore-db --retry --retry-delay --run-timeout --secrets --signal --site --sites --sites-file --skip-if-no-updates --skip-plugins --skip-plugins-for-listing --status --strict --themes --timeout --url --user --user-env --verbose --verify --version --wp --wp-bin --wp-cli --yes)
+    modes=(full core plugins themes db-optimize db-fix cron astra list-plugins plugin-manage verify health secrets security harden check status doctor list-sites list-backups restore-db completion)
+    opts=(--action --allow-root --astra --astra-key --astra-slug --backup --backup-age-days --backup-compress --backup-dir --check --color --completion --config --core --cron --db-fix --db-optimize --debug --default-user --doctor --dry-run --error-log-file --exclude-plugins --exclude-themes --fail-on --fields --force --format --full --harden --harden-upgrade-dir --health --help --hold-plugins --hold-themes --ionice --jobs --json --json-lines --json-log --keep-backups --kill-after --list-backups --list-modes --list-plugins --list-sites --lock-file --lock-wait --log-dir --log-file --log-level --mail-to --max-failures --max-sites --min-free-mb --name --nice --no-backup --no-color --no-discover --no-harden-upgrade-dir --no-lock --no-notify --no-url-detect --no-user-switch --notify --notify-on --only-active --option --page-limit --plugin-manage --plugins --print-config --quiet --report --restore-db --retry --retry-delay --run-timeout --secrets --security --signal --site --sites --sites-file --skip-if-no-updates --skip-plugins --skip-plugins-for-listing --status --strict --themes --timeout --url --user --user-env --verbose --verify --version --wp --wp-bin --wp-cli --yes)
     _arguments '*: :->args'
     compadd -- "${modes[@]}" "${opts[@]}"
 }
@@ -3374,6 +3613,12 @@ ${C_BOLD}Modes (exactly one):${C_RESET}
                          updates, database size (safe for monitoring)
       --secrets          read-only scan of wp-config.php: secret constant names are
                          listed, the values never are; world-readable files fail
+      --security         read-only: compare each site's core version with the fixed
+                         releases for CVE-2026-119977; exit 1 when a site needs an
+                         update (safe for monitoring and for a pre-update gate)
+      --harden           append a deny block for /wp-content/upgrade/ to each site's
+                         .htaccess (Apache/LiteSpeed), then print the directive nginx
+                         needs; the original .htaccess is copied first
       --list-backups     list the backups this tool has written for each site
       --restore-db FILE  import FILE into the database of each site; --yes is
                          mandatory and a fresh dump is taken first
@@ -3440,6 +3685,11 @@ ${C_BOLD}Backups:${C_RESET}
       --backup-age-days N
                          also drop backups older than N days (0 = never, default 0)
       --backup-compress  gzip a database dump after the export
+      --harden-upgrade-dir
+                         also add the wp-content/upgrade/ deny block to each site's
+                         .htaccess on every writing mode (same as HARDEN_UPGRADE_DIR=1)
+      --no-harden-upgrade-dir
+                         disable HARDEN_UPGRADE_DIR for this run
       --min-free-mb N    refuse to write a dump when the filesystem has less than N
                          MiB free (0 = no guard, default 0; 200 is a good production value)
 
@@ -3474,6 +3724,17 @@ ${C_BOLD}Notifications:${C_RESET}
       --notify-on WHEN   never | failure | always (default ${DEFAULT_NOTIFY_ON})
       --mail-to ADDR     also mail the summary (needs a working mail(1))
       --no-notify        disable every notification for this run
+
+${C_BOLD}Security (${CVE_2026_119977}):${C_RESET}
+  A race condition in the WordPress core update mechanism is exploited in the wild
+  (CVSS 8.1, CISA KEV since 2026-11-03). Affected: core 4.7 up to 7.1.3. Fixed
+  releases recorded by this tool: 7.1.4, 7.0.8, 6.9.11 and 4.7.39; any other
+  branch below 7.1.4 is reported as needing an upgrade rather than assumed safe.
+    --security         report the per-site status and exit 1 when an update is needed
+    --harden           write the .htaccess deny block, then print the nginx directive
+    HARDEN_UPGRADE_DIR=1  do both as part of every writing mode
+  nginx ignores .htaccess, so a site served by nginx also needs, in its server block:
+    location ^~ /wp-content/upgrade/ { deny all; }
 
 ${C_BOLD}Configuration:${C_RESET}
   -C, --config FILE      read settings from FILE (default: ${CONFIG_LOCAL} or ${CONFIG_GLOBAL})
@@ -3543,7 +3804,7 @@ version_info() { printf '%s %s\n' "$PROG_NAME" "$SCRIPT_VERSION"; }
 
 list_modes() {
     printf '%s\n' full core plugins themes db-optimize db-fix cron astra \
-        list-plugins plugin-manage verify check status health secrets doctor \
+        list-plugins plugin-manage verify check status health secrets security harden doctor \
         list-sites list-backups restore-db completion
 }
 
@@ -3578,6 +3839,7 @@ print_config() {
         RETRY RETRY_DELAY MAX_FAILURES RUN_TIMEOUT LOCK_WAIT BACKUP_AGE_DAYS
         BACKUP_COMPRESS DEFAULT_USER NOTIFY_WEBHOOK NOTIFY_ON NOTIFY_TIMEOUT MAIL_TO
         REPORT_FILE LOG_JSON SKIP_IF_NO_UPDATES URL_DETECT WP_GLOBAL_ARGS
+        HARDEN_UPGRADE_DIR
     )
     local -a vars=(
         WP_CLI_PATH SITES_FILE DISCOVER_SCRIPT LOG_FILE ERROR_LOG_FILE LOCK_FILE
@@ -3590,6 +3852,7 @@ print_config() {
         RETRY RETRY_DELAY MAX_FAILURES RUN_TIMEOUT LOCK_WAIT BACKUP_AGE_DAYS
         BACKUP_COMPRESS DEFAULT_USER NOTIFY_WEBHOOK NOTIFY_ON NOTIFY_TIMEOUT MAIL_TO
         REPORT_FILE LOG_JSON SKIP_IF_NO_UPDATES URL_DETECT WP_GLOBAL_ARGS
+        HARDEN_UPGRADE_DIR
     )
     local i value
     printf '\n%-24s %-34s %-14s %s\n' 'SETTING' 'EFFECTIVE VALUE' 'FROM' 'CLI OVERRIDE'
@@ -3675,6 +3938,8 @@ parse_args() {
             -l | --list-plugins) set_mode list-plugins; CLI_SET[MODE]=1 ;;
             -m | --plugin-manage) set_mode plugin-manage; CLI_SET[MODE]=1 ;;
             --verify) set_mode verify; CLI_SET[MODE]=1 ;;
+            --security) set_mode security; NO_ACTION='true'; CLI_SET[MODE]=1 ;;
+            --harden) set_mode harden; CLI_SET[MODE]=1 ;;
             --health) set_mode health; NO_ACTION='true'; CLI_SET[MODE]=1 ;;
             --secrets) set_mode secrets; NO_ACTION='true'; CLI_SET[MODE]=1 ;;
             --list-backups) set_mode list-backups; NO_ACTION='true'; CLI_SET[MODE]=1 ;;
@@ -3758,6 +4023,8 @@ parse_args() {
             --ionice) need_value "$arg" "${2:-}"; IONICE_CLASS="${OPT_VALUE,,}"; shift; CLI_SET[IONICE_CLASS]=1 ;;
             --backup-age-days) need_value "$arg" "${2:-}"; BACKUP_AGE_DAYS="$OPT_VALUE"; shift; CLI_SET[BACKUP_AGE_DAYS]=1 ;;
             --backup-compress) BACKUP_COMPRESS='true'; CLI_SET[BACKUP_COMPRESS]=1 ;;
+            --harden-upgrade-dir) HARDEN_UPGRADE_DIR='true'; CLI_SET[HARDEN_UPGRADE_DIR]=1 ;;
+            --no-harden-upgrade-dir) HARDEN_UPGRADE_DIR='false'; CLI_SET[HARDEN_UPGRADE_DIR]=1 ;;
             --report) need_value "$arg" "${2:-}"; REPORT_FILE="$OPT_VALUE"; shift; CLI_SET[REPORT_FILE]=1 ;;
             --json-log) LOG_JSON='true'; CLI_SET[LOG_JSON]=1 ;;
             --no-url-detect) URL_DETECT='false'; CLI_SET[URL_DETECT]=1 ;;
@@ -3876,6 +4143,9 @@ validate_args() {
             *) usage_error '--skip-if-no-updates only applies to --core, --plugins, --themes and --full' ;;
         esac
     fi
+    if [ "${CLI_SET[HARDEN_UPGRADE_DIR]-}" = 1 ] && mode_is_readonly; then
+        usage_error '--harden-upgrade-dir/--no-harden-upgrade-dir need a writing mode; --security, --health and --check never modify a site'
+    fi
     if [ -n "$COMPLETION_SHELL" ]; then
         case "$COMPLETION_SHELL" in
             bash | zsh) ;;
@@ -3893,7 +4163,7 @@ validate_args() {
     if [ "$LIST_MODES" = 'true' ] || [ "$LIST_SITES" = 'true' ] || [ "$DOCTOR" = 'true' ] ||
        [ -n "$COMPLETION_SHELL" ]; then return 0; fi
     if [ -z "$MODE" ]; then
-        usage_error 'no mode given; pass one of --full, --core, --plugins, --themes, --db-optimize, --db-fix, --cron, --astra, --list-plugins, --plugin-manage, --verify, --health, --secrets, --list-backups, --restore-db, --check, --status, --doctor (try --help)'
+        usage_error 'no mode given; pass one of --full, --core, --plugins, --themes, --db-optimize, --db-fix, --cron, --astra, --list-plugins, --plugin-manage, --verify, --health, --secrets, --security, --harden, --list-backups, --restore-db, --check, --status, --doctor (try --help)'
     fi
     if [ "$MODE" = 'restore-db' ]; then
         [ -n "$RESTORE_SOURCE" ] || usage_error '--restore-db requires a file (for example --restore-db /var/backups/db-20261021-030000.sql)'
@@ -4154,6 +4424,8 @@ run_mode() { # SITE USER
         plugin-manage) mode_plugin_manage "$site" "$user" || rc=1 ;;
         verify) mode_verify "$site" "$user" || rc=1 ;;
         health) mode_health "$site" "$user" || rc=1 ;;
+        security) mode_security "$site" "$user" || rc=1 ;;
+        harden) mode_harden "$site" "$user" || rc=1 ;;
         secrets) mode_secrets "$site" "$user" || rc=1 ;;
         list-backups) mode_list_backups "$site" "$user" || rc=1 ;;
         restore-db) restore_database "$site" "$user" "$RESTORE_SOURCE" || rc=1 ;;
@@ -4199,7 +4471,7 @@ site_has_pending_updates() { # SITE USER
             ;;
     esac
     case "$MODE" in
-        db-optimize | db-fix | cron | astra | plugin-manage | restore-db) pending=1 ;;
+        db-optimize | db-fix | cron | astra | plugin-manage | restore-db | harden) pending=1 ;;
     esac
     ((pending > 0))
 }
@@ -4296,6 +4568,14 @@ process_site() { # SITE USER
             return 1
         fi
     fi
+    # The upgrade-directory hardening is protective, so it happens before the
+    # update. A failure is reported as a warning instead of skipping the site: the
+    # database backup has already been taken, and refusing to update a site
+    # because .htaccess is read-only would be the wrong trade.
+    if [ "$HARDEN_UPGRADE_DIR" = 'true' ] && ! mode_is_readonly && [ "$MODE" != 'harden' ]; then
+        harden_upgrade_dir "$site" "$user" ||
+            log_warn "${site}: could not add the ${CVE_2026_119977} deny block; continuing with the update"
+    fi
     local before_p='' after_p='' before_t='' after_t='' before_c='' after_c=''
     if [ "$TRACK_CHANGES" = 'true' ] && [ "$DRY_RUN" != 'true' ]; then
         before_p="$(mktemp "${TMPDIR:-/tmp}/wpu-before-p.XXXXXX" 2>/dev/null)" || before_p=''
@@ -4330,6 +4610,24 @@ process_site() { # SITE USER
         log_warn "${site}: attempt ${attempt} failed; retrying in ${RETRY_DELAY}s (${attempt} of $((RETRY + 1)) attempts)"
         sleep "$RETRY_DELAY"
     done
+    # An update that finished is not the same as a site that is no longer exposed:
+    # a site can stay on an unfixed release (a failed core update, a pinned
+    # version, a manual copy). Say so, in the log, on the same run.
+    if ((rc == 0)) && [ "$DRY_RUN" != 'true' ]; then
+        case "$MODE" in
+            core | full)
+                local core_after status_after
+                core_after="$(site_core_version "$site" "$user")"
+                status_after="$(cve_core_status "$core_after")"
+                case "$status_after" in
+                    safe | unknown) ;;
+                    *)
+                        log_info "${site}: core ${core_after} is still below ${status_after#update } (${CVE_2026_119977}); another core update is required"
+                        ;;
+                esac
+                ;;
+        esac
+    fi
     if ((rc == 0)) && [ "$TRACK_CHANGES" = 'true' ] && [ "$DRY_RUN" != 'true' ]; then
         case "$MODE" in
             plugins | full)
@@ -4470,6 +4768,9 @@ banner() {
         fi
         if [ "$BACKUP_MODE" != 'off' ]; then
             printf '  %-16s %s\n' 'backup:' "${BACKUP_MODE} -> $(backup_dir_of)"
+        fi
+        if [ "$HARDEN_UPGRADE_DIR" = 'true' ] || [ "$MODE" = 'harden' ]; then
+            printf '  %-16s %s\n' 'hardening:' '.htaccess deny block for wp-content/upgrade/'
         fi
         if [ -n "$SITE_URL" ]; then
             printf '  %-16s %s\n' 'url:' "$SITE_URL"
@@ -4646,6 +4947,15 @@ main() {
 
     local rc=0
     run_fleet || rc=1
+
+    if [ "$MODE" = 'security' ] && ((STATS_SITES_FAILED > 0)); then
+        log_warn "${STATS_SITES_FAILED} site(s) need a core update for ${CVE_2026_119977}; the remediation lines above name each one"
+        log_info "fleet command: wp-cli-update --core -j 4 --backup db --harden-upgrade-dir --report /var/log/wp-cli-update/security-run.json"
+        nginx_hardening_notice
+    fi
+    if [ "$MODE" = 'harden' ] || { [ "$HARDEN_UPGRADE_DIR" = 'true' ] && ! mode_is_readonly; }; then
+        nginx_hardening_notice
+    fi
 
     local code=0
     final_exit_code || code="$EXIT_ERROR"

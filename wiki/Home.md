@@ -11,16 +11,30 @@ and it does not need PHP.
 Bash_WP-CLI_Update.sh --full --backup db --jobs 4 --report /var/log/wp/report.json
 ```
 
+## Security advisory: CVE-2026-119977
+
+A race condition in the WordPress core update mechanism is exploited in the wild. Core
+4.7 through 7.1.3 is affected; 7.1.4 is the fixed release, and 4.6 and older get no fix.
+Version 8.1.0 answers it with two modes and a configuration key: `--security` reports
+each site's core version against the fixed releases and exits non-zero when a site is
+exposed, `--harden` closes `wp-content/upgrade/` on Apache and LiteSpeed, and
+`HARDEN_UPGRADE_DIR=1` does the same during every writing mode. nginx ignores
+`.htaccess`, so an nginx host needs one directive in its server block.
+
+The advisory, the fleet commands, the nginx directive and a copy-paste agent prompt are
+on [Security: CVE-2026-119977](09-Security-CVE-2026-119977). Read it before the next
+maintenance run, not after.
+
 ## At a glance
 
 | Item | Value |
 |---|---|
-| Version | 8.0.4 |
+| Version | 8.1.0 |
 | Finder version | 2.1.0 (`Find_WP_Senior.sh`) |
 | Runtime | bash 4.2+, GNU coreutils and findutils, WP-CLI |
 | Privileges | root, plus one of `runuser` / `sudo` / `su` |
 | Optional tools | `flock`, `timeout` (or `perl`), `tar`, `gzip`, `nice`, `ionice`, `curl`, `mail` |
-| Licence | PolyForm Noncommercial 1.0.0 |
+| Licence | MIT |
 | npm package | `bash-wp-cli-update` (delivery only; it installs nothing else) |
 | Platform | Linux; the npm package declares `os: linux`, and macOS ships bash 3.2, below the floor |
 | Entry points | `Bash_WP-CLI_Update.sh` (the manager), `Find_WP_Senior.sh` (the site finder) |
@@ -38,6 +52,7 @@ Bash_WP-CLI_Update.sh --full --backup db --jobs 4 --report /var/log/wp/report.js
 | [Exit codes](06-Exit-Codes) | the 0/1/2/3/4/130/143/131 contract and how a run reports an interruption |
 | [Troubleshooting](07-Troubleshooting) | symptom, real cause, action; the diagnosis paths; the absolute do-nots |
 | [Development](08-Development) | test suites, the two static gates, the fixed order for a feature, the release process |
+| [Security: CVE-2026-119977](09-Security-CVE-2026-119977) | the advisory, affected and fixed versions, what to do now, the fleet commands, the agent prompt |
 
 ## Two rules that override everything else
 

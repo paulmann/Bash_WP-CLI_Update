@@ -24,6 +24,11 @@ Measured on Debian 12 with `unshare -r`: 634 passed, 0 failed, 7 skipped. On a p
 non-root account the user-switch checks in `test_manager.sh` fail with exit 3, which is
 the product's own refusal, not a test defect.
 
+The 8.1.0 security suite is `tests/test_cve.sh`: it proves the `--security` verdicts and
+exit codes, the `--harden` block being written once with the original `.htaccess` kept
+and backed up, `--harden-upgrade-dir` and `HARDEN_UPGRADE_DIR` applying it from a writing
+mode, the printed nginx directive, and that no read-only mode writes `.htaccess`.
+
 Static checks that must pass before a commit:
 
 ```bash

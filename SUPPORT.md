@@ -72,9 +72,12 @@ Quoted from [SECURITY.md](SECURITY.md), with the 6.x and 5.x rows collapsed into
 
 | Version | Supported |
 |---|---|
-| 8.0.x | yes |
+| 8.1.x | yes (CVE-2026-119977 assessment and hardening are 8.1.0 features) |
+| 8.0.x | security fixes only; it has no `--security`/`--harden` |
 | 7.0.x | security fixes only (the modular `src/` tree, kept as its own release) |
 | 6.x and older | no (`legacy/` is kept for citations, not for use) |
 
-A report against an unsupported version may be closed with a pointer to 8.0.x. Upgrading
-is a file copy; `CHANGELOG.md` names what moved.
+A report against an unsupported version may be closed with a pointer to 8.1.x. Upgrading
+is a file copy; `CHANGELOG.md` names what moved. If the report is about
+CVE-2026-119977, read [SECURITY.md](SECURITY.md) first: it names the affected and fixed
+releases and what the tool can verify for you.

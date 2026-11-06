@@ -5,6 +5,9 @@ Exactly one mode per run. Every option that takes a value accepts both spellings
 
 ## Modes
 
+The table lists 23 modes and inspection commands. `--list-modes` prints the names a
+completion script needs and does not list itself.
+
 | Mode | Short | What it does | Mutating |
 |---|---|---|---|
 | `--full` | `-f` | core + plugins + themes + database schema + optimize/repair + cron (+ Astra if licensed) | yes |
@@ -18,8 +21,10 @@ Exactly one mode per run. Every option that takes a value accepts both spellings
 | `--list-plugins` | `-l` | plugin inventory as table, JSON, CSV or TSV | no |
 | `--plugin-manage` | `-m` | activate / deactivate / delete one plugin (delete needs `--yes` or a terminal) | yes |
 | `--verify` | | `core verify-checksums` and `plugin verify-checksums --all` | no |
-| `--health` | | core version, pending plugin/theme updates, database size | no |
+| `--health` | | core version, pending plugin/theme updates, database size, and the CVE-2026-119977 verdict | no |
 | `--secrets` | | secret constants in `wp-config.php` by name, permissions, stale copies | no |
+| `--security` | | read-only CVE-2026-119977 assessment: each site's core version against the fixed releases, as a table or as JSON Lines | no |
+| `--harden` | | append the marked deny block for `wp-content/upgrade/` to each site's `.htaccess`, then print the nginx directive | yes |
 | `--list-backups` | | backup files per site, newest first | no |
 | `--restore-db FILE` | | import FILE into the database (needs `--yes`) | yes |
 | `--check` | | environment plus every site in the list, changes nothing | no |
@@ -97,6 +102,47 @@ imports, then runs `wp db check` and reports the result.
 | `--exclude-plugins LIST` (`-e`) | leave them out of `--plugins` / `--full`; implies enumeration, matching is case-insensitive on slug or display name, never a pattern |
 | `--exclude-themes LIST` | leave them out of `--themes` / `--full` |
 | `--only-active` | update only active plugins that have an update available |
+
+## Security: CVE-2026-119977
+
+Two modes and one configuration key were added in 8.1.0 for the WordPress core race
+condition CVE-2026-119977. The advisory itself is on
+[Security: CVE-2026-119977](09-Security-CVE-2026-119977).
+
+`--security` is read-only. It reads each site's core version and prints a table with
+`SITE`, `CORE`, `CVE` and `STATUS` columns, where the CVE column carries the verdict
+`safe`, `UPDATE` or `?` and `STATUS` names the release to reach (`-` when the site is
+safe). With `--json-lines` it emits one `{"type":"security",...}` object per site instead.
+It exits 1 when at least one site needs an update or its version cannot be read, and 0 when
+every site is at or above the fixed release for its branch. It takes no lock and no
+backup, so monitoring may call it as often as it likes.
+
+`--harden` is a writing mode. It appends a marker-guarded block to each site's root
+`.htaccess`, which is read by Apache and LiteSpeed:
+
+```apache
+# BEGIN Bash WP-CLI Update - deny web access to wp-content/upgrade/ (CVE-2026-119977)
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+    RewriteRule ^wp-content/upgrade/ - [F,L]
+</IfModule>
+# END Bash WP-CLI Update - deny web access to wp-content/upgrade/
+```
+
+It copies an existing `.htaccess` once to `.htaccess.wp-cli-update.bak`, is idempotent (a
+file that already carries the markers is left alone), and prints the directive nginx needs
+at the end of the run, because nginx never reads `.htaccess`. It takes no database backup:
+one file is copied before it is edited.
+
+| Option | Meaning |
+|---|---|
+| `--harden-upgrade-dir` | apply the deny block during any writing mode (same as `HARDEN_UPGRADE_DIR=1`) |
+| `--no-harden-upgrade-dir` | disable `HARDEN_UPGRADE_DIR` for one run |
+| `HARDEN_UPGRADE_DIR` | configuration key, boolean, default `0` |
+
+A read-only mode (`--security`, `--health`, `--check`) refuses both flags with exit 2:
+it never modifies a site. The per-site remediation line and the fleet command are in
+[Operations](05-Operations), together with the nginx directive.
 
 ## Plugin listing and completion
 

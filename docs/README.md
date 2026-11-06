@@ -31,6 +31,7 @@
 | understand an exit code | README §10, AGENT-OPERATIONS.md §2 |
 | read the result of a run | README §9 (`--report`, `--json-lines`, `--json-log`) |
 | handle a failed run | AGENT-OPERATIONS.md §3, then the report in `REPORT_FILE` |
+| respond to CVE-2026-119977 | SECURITY.md, AGENT-OPERATIONS.md §5, and the wiki page Security / CVE-2026-119977 |
 | restore a database | README §7 (`--list-backups`, `--restore-db --yes`) |
 | add a mode or a key | DEVELOPMENT.md §2, then CONTRIBUTING.md |
 | run the tests | DEVELOPMENT.md §1, README §12 |

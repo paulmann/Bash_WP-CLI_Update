@@ -63,19 +63,7 @@ npm publish --access public
 ```
 
 Before publishing, `npm publish --dry-run` shows the file list and the size. The package is
-`bash-wp-cli-update`, `os: linux`, licence PolyForm Noncommercial 1.0.0, and `files` is a
-whitelist, so the tarball holds the two scripts, the two shims, the config example,
-`contrib/`, `install.sh` and the documentation — 18 files, about 107 kB.
-
-```bash
-cd <checkout>
-npm login            # once per machine; stores a token in ~/.npmrc
-npm whoami           # must print your npm account
-npm publish --access public
-```
-
-Before publishing, `npm publish --dry-run` shows the file list and the size. The package is
-`bash-wp-cli-update`, `os: linux`, licence PolyForm Noncommercial 1.0.0, and `files` is a
+`bash-wp-cli-update`, `os: linux`, licence MIT, and `files` is a
 whitelist, so the tarball holds the two scripts, the two shims, the config example,
 `contrib/`, `install.sh` and the documentation — 18 files, about 107 kB.
 

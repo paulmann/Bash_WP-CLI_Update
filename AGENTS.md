@@ -1,4 +1,4 @@
-# AGENTS.md — install and operate Bash WP-CLI Update 8.0.4
+# AGENTS.md — install and operate Bash WP-CLI Update 8.1.0
 
 Instructions for an LLM agent (or a careful human) who installs, configures and verifies
 this tool on a Linux host. This file is a map: the detailed procedures live in `docs/`
@@ -13,9 +13,8 @@ Two rules override every other consideration:
 
 ## Contents
 
-[Product](#what-the-product-is) · [Install](#install-and-configure) · [Verify](#verify) ·
-[Operate](#operate) · [Rules](#non-negotiable-rules) · [Do not](#do-not) ·
-[Report back](#report-back) · [Help](#help-the-project)
+[Product](#what-the-product-is) · [Install](#install-and-configure) · [Verify](#verify) · [Operate](#operate) ·
+[Rules](#non-negotiable-rules) · [Do not](#do-not) · [Report](#report-back) · [Help](#help-the-project)
 
 ## What the product is
 
@@ -63,19 +62,21 @@ Run these in order; the expected answers are in
 ```bash
 sudo wp-cli-update --doctor        # host: wp, user switch, tools, paths, disk, policy
 sudo wp-cli-update --check         # every site in the list, changes nothing
-sudo wp-cli-update --health        # what is pending, per site
+sudo wp-cli-update --health        # what is pending, per site (CVE column included)
+sudo wp-cli-update --security --json-lines   # CVE-2026-119977: exit 1 if a site needs an update
 sudo wp-cli-update --full --site /var/www/example.com --dry-run
 sudo wp-cli-update --full --site /var/www/example.com --backup db
 # only after those pass:
-sudo wp-cli-update --full --jobs 4 --backup db --report /var/log/wp-cli-update/run.json
+sudo wp-cli-update --full --jobs 4 --backup db --harden-upgrade-dir --report /var/log/wp-cli-update/run.json
 ```
 
 ## Operate
 
-Scheduling, reading the JSON report, notifications, the failure table and the full
-do-not list are in [docs/AGENT-OPERATIONS.md](docs/AGENT-OPERATIONS.md). Exit codes:
-`0` success, `1` operational failure, `2` usage error, `3` environment error, `4`
-configuration error, `130`/`143` interrupted (a partial summary is still printed).
+Scheduling, reading the JSON report, notifications, the failure table, the
+CVE-2026-119977 runbook (including the nginx directive) and the full do-not list are
+in [docs/AGENT-OPERATIONS.md](docs/AGENT-OPERATIONS.md). Exit codes: `0` success, `1`
+operational failure, `2` usage error, `3` environment error, `4` configuration error,
+`130`/`143` interrupted (a partial summary is still printed).
 
 ## Non-negotiable rules
 

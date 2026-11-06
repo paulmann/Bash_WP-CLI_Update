@@ -2,10 +2,10 @@
   "repo": "paulmann/Bash_WP-CLI_Update",
   "branch": "main",
   "title": "Bash WP-CLI Update",
-  "footer": "PolyForm Noncommercial 1.0.0",
+  "footer": "MIT",
   "groups": [
     {"title": "Start", "pages": ["Home.md", "01-Why.md", "02-Install.md"]},
     {"title": "Reference", "pages": ["03-Modes.md", "04-Configuration.md", "05-Operations.md", "06-Exit-Codes.md"]},
-    {"title": "Operate", "pages": ["07-Troubleshooting.md", "08-Development.md"]}
+    {"title": "Operate", "pages": ["07-Troubleshooting.md", "08-Development.md", "09-Security-CVE-2026-119977.md"]}
   ]
 }

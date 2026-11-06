@@ -80,6 +80,25 @@ instead of the two defaults; `--print-config` prints every value with the layer 
 | `SKIP_PLUGINS`, `SKIP_PLUGINS_FOR_LISTING` | empty, `0` | `--skip-plugins` value; whether listings get it too |
 | `ASTRA_SLUG`, `LICENCE` | `astra-addon`, empty | the add-on slug; the licence, better kept in `WP_CLI_UPDATE_LICENCE` |
 
+## Security (CVE-2026-119977)
+
+| Key | Default | Meaning |
+|---|---|---|
+| `HARDEN_UPGRADE_DIR` | `0` | boolean. Before a writing mode updates a site, append the marker-guarded deny block for `wp-content/upgrade/` to its root `.htaccess` (Apache and LiteSpeed); the same block `--harden` writes, applied automatically. An existing `.htaccess` is copied once to `.htaccess.wp-cli-update.bak` first, and the block is written once per site. `--harden-upgrade-dir` sets it for one run, `--no-harden-upgrade-dir` clears it for one run |
+
+The block is not a substitute for updating: a site below the fixed release stays exposed
+until WordPress core is updated. nginx never reads `.htaccess`, so an nginx host needs the
+directive below in each server block, in addition to the key or instead of it:
+
+```nginx
+location ^~ /wp-content/upgrade/ { deny all; }
+```
+
+`--security`, `--health` and `--check` are read-only and ignore the key. The flag on the
+command line with one of those modes is a usage error (exit 2), because the run is not
+allowed to modify a site. The advisory and the runbook are on
+[Security: CVE-2026-119977](09-Security-CVE-2026-119977).
+
 ## Reporting and notifications
 
 | Key | Default | Meaning |
@@ -114,10 +133,17 @@ RETRY_DELAY=30
 MAX_FAILURES=5
 SKIP_IF_NO_UPDATES=1
 FAIL_ON=any
+HARDEN_UPGRADE_DIR=1
 REPORT_FILE=/var/log/wp-cli-update/last-run.json
 LOG_JSON=1
 ```
 
+`HARDEN_UPGRADE_DIR=1` closes `wp-content/upgrade/` on Apache and LiteSpeed before each
+site is updated. On an nginx host add the `location` line above to every server block as
+well; the key cannot do it for you.
+
 Without these paths the defaults point at the script directory, and a scheduled run looks
 for a site list that is not there (exit 3). See [Operations](05-Operations) for the schedule
-and [Exit codes](06-Exit-Codes) for the contract.
+and [Exit codes](06-Exit-Codes) for the contract. The annotated reference for every key,
+including the 8.1.0 security key, is
+[wp-cli-update.conf.example](https://github.com/paulmann/Bash_WP-CLI_Update/blob/main/wp-cli-update.conf.example).

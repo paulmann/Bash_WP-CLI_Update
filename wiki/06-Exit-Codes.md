@@ -20,6 +20,32 @@ The distinction matters on a schedule: exit 3 on a nightly host usually means th
 or the `wp` path moved, exit 4 means somebody edited the configuration, and neither is a
 WordPress problem.
 
+## `--security`: exit 1 is a verdict, not a crash
+
+`--security` is read-only, so its exit code is the answer rather than a report of work:
+
+| Code | Meaning |
+|---|---|
+| `0` | every site is at or above the fixed release for its branch (CVE-2026-119977) |
+| `1` | at least one site is below the fixed release, or its core version cannot be read |
+| `2` | usage error, for example `--security` with `--harden-upgrade-dir`, which a read-only mode refuses |
+| `3` | environment error: `wp` missing or not executable, or no site list to work from |
+
+An unreadable version is a failure, not a pass: `?` in the table and `UNKNOWN` in the
+status column mean the tool could not prove the site safe, and a false "safe" is the
+expensive error. Because the code composes with the usual policy, `--fail-on never` turns
+the verdict back into `0` — do not use it on a gate.
+
+## `--harden` returns 1 when it cannot write
+
+`--harden` edits one file per site, the root `.htaccess`. A site whose file cannot be
+backed up or written is counted as a failed site and the run exits 1 under the default
+`--fail-on any`, with the path and the reason in the log. The failure is deliberately not
+swallowed: a site that was meant to be hardened and was not is the one an operator needs
+to hear about. When the same block is applied by `--harden-upgrade-dir` during a writing
+mode, the failure is a warning instead — the update proceeds, because refusing to update a
+site over a read-only `.htaccess` would be the wrong trade.
+
 ## `--fail-on`: when a partial fleet run is a failure
 
 | Value | Exits non-zero when | Right for |
