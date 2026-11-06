@@ -546,7 +546,12 @@ say 'the loop continues after a failing site'
 half_stub="${WORK}/bin/wp-half"
 cat >"$half_stub" <<STUB
 #!/usr/bin/env bash
-{ printf 'HALF:'; for a in "\$@"; do printf ' [%s]' "\$a"; done; printf '\n'; } >>"${LOG_DIR}/half.log"
+# One record, one write: a redirected group of printf calls is not atomic, and
+# concurrent workers would merge two records into one line. test_fleet.sh hit
+# exactly that under -j; keep the shape identical here so the bug cannot spread.
+line='HALF:'
+for a in "\$@"; do line="\${line} [\$a]"; done
+printf '%s\n' "\${line}" >>"${LOG_DIR}/half.log"
 for a in "\$@"; do
     case "\$a" in --path=*second.org*) echo "Error: only the second site fails" >&2; exit 1 ;; esac
 done

@@ -15,7 +15,7 @@ Bash_WP-CLI_Update.sh --full --backup db --jobs 4 --report /var/log/wp/report.js
 
 A race condition in the WordPress core update mechanism is exploited in the wild. Core
 4.7 through 7.1.3 is affected; 7.1.4 is the fixed release, and 4.6 and older get no fix.
-Version 8.1.0 answers it with two modes and a configuration setting: `--security` reports
+Version 8.1.1 answers it with two modes and a configuration setting: `--security` reports
 each site's core version against the fixed releases and exits non-zero when a site is
 exposed, `--harden` closes `wp-content/upgrade/` on Apache and LiteSpeed, and
 `HARDEN_UPGRADE_DIR=1` does the same during every writing mode. nginx ignores
@@ -29,7 +29,7 @@ maintenance run, not after.
 
 | Item | Value |
 |---|---|
-| Version | 8.1.0 |
+| Version | 8.1.1 |
 | Finder version | 2.1.0 (`Find_WP_Senior.sh`) |
 | Runtime | bash 4.2+, GNU coreutils and findutils, WP-CLI |
 | Privileges | root, plus one of `runuser` / `sudo` / `su` |

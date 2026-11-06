@@ -77,8 +77,9 @@ so the comparison stays checkable instead of being overwritten. The table is mai
 | `v7.0.1` | `QWEN-Agent_Mode` | a modular tree (`src/manager`, `src/finder`) built into one script |
 | `v8.0.0` | this tree | the merge: read-only modes, restore, fleet control, guards, reports |
 
-The current release is 8.1.0: the security work described above, and the point at which
-the licence moved to MIT, so commercial use no longer needs a separate agreement.
+The current release is 8.1.1, a test-only patch on 8.1.0: the security work described
+above, and the point at which the licence moved to MIT, so commercial use no longer
+needs a separate agreement.
 
 The three-way comparison measured the baselines before choosing one. The 6.0 tree
 (`main`) was 59 084 B, 1 569 lines, about 24 functions, 4 files and no test suite.

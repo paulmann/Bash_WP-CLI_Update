@@ -15,7 +15,7 @@
 # Project:     Bash WP-CLI Update
 # Repository:  https://github.com/paulmann/Bash_WP-CLI_Update
 # License:     MIT (see LICENSE)
-# Version:     8.1.0
+# Version:     8.1.1
 #
 # Purpose
 #   Run WP-CLI maintenance operations (core, plugins, themes, database, cron,
@@ -103,7 +103,7 @@ shopt -s inherit_errexit 2>/dev/null || true
 ###############################################################################
 
 PROG_NAME="${0##*/}"
-SCRIPT_VERSION='8.1.0'
+SCRIPT_VERSION='8.1.1'
 
 # A literal backtick, spelled by code point: the config parser has to reject it,
 # and writing the character directly would make this file fail the project's own

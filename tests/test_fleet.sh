@@ -68,7 +68,14 @@ chmod 755 "$SLEEP_WP"
 HALF_WP="${WORK}/bin/wp-half"
 cat >"$HALF_WP" <<'STUB'
 #!/usr/bin/env bash
-{ printf 'ARGV:'; for a in "$@"; do printf ' [%s]' "$a"; done; printf '\n'; } >>"${MOCK_LOG:-/dev/null}"
+# One record, one write. Building the line with four separate printf calls inside
+# a redirected group is not atomic: with -j N the workers append concurrently and
+# two records can land on one line, so the check that counts invocations sees four
+# where five ran. That is exactly what happened in CI ("the batch stopped early:
+# 4 invocation(s), expected 5"); the SLEEP_WP stub above already carries the fix.
+line='ARGV:'
+for a in "$@"; do line="${line} [${a}]"; done
+printf '%s\n' "$line" >>"${MOCK_LOG:-/dev/null}"
 for a in "$@"; do
     case "$a" in
         --path=*fourth.example*) echo 'Error: this one site is broken' >&2; exit 1 ;;

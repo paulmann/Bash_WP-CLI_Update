@@ -24,7 +24,7 @@ body:
     attributes:
       label: Version
       description: The output of ./Bash_WP-CLI_Update.sh --version
-      placeholder: Bash WP-CLI Update 8.1.0
+      placeholder: Bash WP-CLI Update 8.1.1
     validations:
       required: true
 

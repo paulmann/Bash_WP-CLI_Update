@@ -51,7 +51,7 @@ inode for hours. The manager also rotates by size on its own (`LOG_MAX_BYTES` 52
 and the change list:
 
 ```json
-{"run":{"version":"8.1.0","mode":"full","dry_run":false,"host":"web01","duration_s":412,
+{"run":{"version":"8.1.1","mode":"full","dry_run":false,"host":"web01","duration_s":412,
         "sites_total":42,"sites_ok":41,"sites_failed":1,"sites_skipped":0,
         "ops_ok":180,"ops_failed":1,"warnings":0,"retries":1,"changes":6,"exit":1},
  "sites":[{"path":"/var/www/a","status":"OK"},{"path":"/var/www/b","status":"FAILED"}],

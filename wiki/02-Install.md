@@ -18,7 +18,7 @@ install time, and root is still needed at run time.
 ## Route 2: the installer from the release archive
 
 ```bash
-curl -LO https://github.com/paulmann/Bash_WP-CLI_Update/releases/latest/download/bash-wp-cli-update-8.1.0.tar.gz
+curl -LO https://github.com/paulmann/Bash_WP-CLI_Update/releases/latest/download/bash-wp-cli-update-8.1.1.tar.gz
 sudo ./install.sh --dry-run     # show every step
 sudo ./install.sh --systemd     # perform them, plus the nightly timer
 ```

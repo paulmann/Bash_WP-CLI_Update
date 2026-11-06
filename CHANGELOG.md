@@ -16,6 +16,23 @@ draft of 8.0.0 — is in [docs/RELEASE-HISTORY.md](docs/RELEASE-HISTORY.md).
 
 ## [Unreleased]
 
+## [8.1.1] - 2026-11-06
+
+Test-only patch. No manager, finder, mode, option, configuration key or exit code
+changed; the release exists because the test suite's own recorder made CI flaky.
+
+### Fixed
+
+- **`test_fleet.sh` could report "the batch stopped early: 4 invocation(s), expected
+  5".** The fake `wp` that records its argv built the line with four separate
+  `printf` calls inside a redirected group. That is not atomic: with `-j 5` the
+  workers append concurrently and two records can land on one line, so the check
+  that counts invocations sees four where five ran. The record is now assembled in
+  a variable and written with one `printf`, the shape the sleeping stub in the same
+  file already used after an earlier occurrence of the same bug.
+- `test_manager.sh` carried the same multi-write recorder in its `wp-half` stub; it
+  is sequential today, but the shape is fixed so the bug cannot reappear there.
+
 ## [8.1.0] - 2026-11-06
 
 Security release for CVE-2026-119977, with the licence changed to MIT. The repository
@@ -628,7 +645,8 @@ without output, `--help` is not a flag, commands are built by string
 concatenation, no lock, no log rotation, no dry run, and the Astra key is edited
 into the script.
 
-[Unreleased]: https://github.com/paulmann/Bash_WP-CLI_Update/compare/v8.1.0...HEAD
+[Unreleased]: https://github.com/paulmann/Bash_WP-CLI_Update/compare/v8.1.1...HEAD
+[8.1.1]: https://github.com/paulmann/Bash_WP-CLI_Update/compare/v8.1.0...v8.1.1
 [8.1.0]: https://github.com/paulmann/Bash_WP-CLI_Update/compare/v8.0.4...v8.1.0
 [8.0.4]: https://github.com/paulmann/Bash_WP-CLI_Update/compare/v8.0.3...v8.0.4
 [8.0.3]: https://github.com/paulmann/Bash_WP-CLI_Update/compare/v8.0.2...v8.0.3

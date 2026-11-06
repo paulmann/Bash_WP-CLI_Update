@@ -1,4 +1,4 @@
-# Bash WP-CLI Update 8.1.0
+# Bash WP-CLI Update 8.1.1
 
 Maintenance automation for a fleet of WordPress installations, driven by WP-CLI and
 written in POSIX-friendly bash 4.2+.
@@ -28,7 +28,7 @@ JSON report, a change log and a restore path:
 Bash_WP-CLI_Update.sh --full --backup db --jobs 4 --report /var/log/wp/report.json
 ```
 
-* Version: **8.1.0** (finder 2.1.0)
+* Version: **8.1.1** (finder 2.1.0)
 * Requires: `bash >= 4.2`, GNU coreutils/findutils, WP-CLI, `root` (to switch into
   site owners), one of `runuser` / `sudo` / `su`
 * Optional: `flock`, `timeout` (or `perl`), `tar`, `gzip`, `nice`, `ionice`, `curl`,
@@ -67,6 +67,10 @@ Bash_WP-CLI_Update.sh --full --backup db --jobs 4 --report /var/log/wp/report.js
 > print the nginx directive, because nginx ignores `.htaccess`. `--health` gained a
 > CVE column, and a core run that leaves a site below the fixed release says so.
 > The licence is now MIT, so commercial use no longer needs a separate agreement.
+> **8.1.1 is a test-only patch.** The fake `wp` in the fleet suite built its argv
+> record from several `write()` calls, so concurrent workers could merge two records
+> into one line and the invocation count flaked ("the batch stopped early"); the record
+> is now a single write. No manager behaviour changed.
 
 > **8.0.2 is a patch on this release.** A configuration file that set a mode-restricted
 > key — `SKIP_IF_NO_UPDATES`, `HOLD_PLUGINS`, `EXCLUDE_THEMES` — made `--doctor`,
@@ -147,7 +151,7 @@ Three ways, same result. Pick one:
 npm install -g bash-wp-cli-update
 
 # 2. the installer from the archive
-curl -LO https://github.com/paulmann/Bash_WP-CLI_Update/releases/latest/download/bash-wp-cli-update-8.1.0.tar.gz
+curl -LO https://github.com/paulmann/Bash_WP-CLI_Update/releases/latest/download/bash-wp-cli-update-8.1.1.tar.gz
 sudo ./install.sh --dry-run     # show every step
 sudo ./install.sh --systemd     # does it, plus the nightly timer
 ```
