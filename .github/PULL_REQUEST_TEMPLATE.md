@@ -10,7 +10,7 @@
 
 | Command | Result |
 |---|---|
-| `bash tests/run_tests.sh` | <!-- e.g. 634 passed, 0 failed, 7 skipped --> |
+| `bash tests/run_tests.sh` | <!-- e.g. 693 passed, 0 failed, 7 skipped --> |
 | `shellcheck Bash_WP-CLI_Update.sh Find_WP_Senior.sh tests/*.sh tools/scan-secrets.sh` | <!-- clean, or the remaining warnings --> |
 | `./Bash_WP-CLI_Update.sh --help` | <!-- the mode or option is documented --> |
 

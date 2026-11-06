@@ -11,21 +11,21 @@
   <text x="48" y="172" font-family="Consolas, 'DejaVu Sans Mono', monospace" font-size="76" font-weight="700" fill="#e6edf3" text-anchor="start"><tspan x="48"><tspan fill="#4f9cf9">B</tspan>ash</tspan><tspan x="243">WP-CLI</tspan><tspan x="521">Update</tspan></text>
   <text x="48" y="242" font-family="'Segoe UI', 'DejaVu Sans', sans-serif" font-size="30" font-weight="700" fill="#e6edf3" text-anchor="start">One bash script updates core, plugins, themes, the database and cron on every</text>
   <text x="48" y="280" font-family="'Segoe UI', 'DejaVu Sans', sans-serif" font-size="30" font-weight="700" fill="#e6edf3" text-anchor="start">WordPress site in a list - with backups, a JSON report and a restore path.</text>
-  <text x="48" y="342" font-family="'Segoe UI', 'DejaVu Sans', sans-serif" font-size="20" fill="#96a4b2" text-anchor="start">bash 4.2+ - root - WP-CLI</text>
+  <text x="48" y="342" font-family="'Segoe UI', 'DejaVu Sans', sans-serif" font-size="20" fill="#96a4b2" text-anchor="start">bash 4.2+ - root - WP-CLI - MIT</text>
   <rect x="48" y="368" width="123" height="36" rx="18" fill="#141d29" stroke="#2a3848" stroke-width="1"/>
-  <text x="66" y="392" font-family="'Segoe UI', 'DejaVu Sans', sans-serif" font-size="18" fill="#96a4b2" text-anchor="start">634 checks</text>
+  <text x="66" y="392" font-family="'Segoe UI', 'DejaVu Sans', sans-serif" font-size="18" fill="#96a4b2" text-anchor="start">693 checks</text>
   <rect x="183" y="368" width="116" height="36" rx="18" fill="#141d29" stroke="#2a3848" stroke-width="1"/>
-  <text x="201" y="392" font-family="'Segoe UI', 'DejaVu Sans', sans-serif" font-size="18" fill="#96a4b2" text-anchor="start">20 modes</text>
+  <text x="201" y="392" font-family="'Segoe UI', 'DejaVu Sans', sans-serif" font-size="18" fill="#96a4b2" text-anchor="start">23 modes</text>
   <rect x="311" y="368" width="96" height="36" rx="18" fill="#141d29" stroke="#2a3848" stroke-width="1"/>
-  <text x="329" y="392" font-family="'Segoe UI', 'DejaVu Sans', sans-serif" font-size="18" fill="#96a4b2" text-anchor="start">7 suites</text>
+  <text x="329" y="392" font-family="'Segoe UI', 'DejaVu Sans', sans-serif" font-size="18" fill="#96a4b2" text-anchor="start">8 suites</text>
   <rect x="48" y="416" width="1184" height="154" rx="16" fill="#0a1018" stroke="#22303f" stroke-width="1"/>
   <circle cx="68" cy="438" r="6" fill="#ff5f56"/>
   <circle cx="90" cy="438" r="6" fill="#ffbd2e"/>
   <circle cx="112" cy="438" r="6" fill="#27c93f"/>
   <line x1="48" y1="460" x2="1232" y2="460" stroke="#22303f" stroke-width="1"/>
   <text x="144" y="443" font-family="Consolas, 'DejaVu Sans Mono', monospace" font-size="15" fill="#96a4b2" text-anchor="start">Bash WP-CLI Update · github.com/paulmann/Bash_WP-CLI_Update#readme</text>
-  <text x="76" y="486" font-family="Consolas, 'DejaVu Sans Mono', monospace" font-size="17" fill="#e6edf3" text-anchor="start"><tspan fill="#4f9cf9">$ </tspan>wp-cli-update --full --backup db --jobs 4</text>
-  <text x="76" y="513" font-family="Consolas, 'DejaVu Sans Mono', monospace" font-size="17" fill="#96a4b2" text-anchor="start">634 passed, 0 failed, 7 skipped</text>
+  <text x="76" y="486" font-family="Consolas, 'DejaVu Sans Mono', monospace" font-size="17" fill="#e6edf3" text-anchor="start"><tspan fill="#4f9cf9">$ </tspan>wp-cli-update --security --json-lines</text>
+  <text x="76" y="513" font-family="Consolas, 'DejaVu Sans Mono', monospace" font-size="17" fill="#96a4b2" text-anchor="start">693 passed, 0 failed, 7 skipped</text>
   <text x="48" y="606" font-family="'Segoe UI', 'DejaVu Sans', sans-serif" font-size="19" font-weight="700" fill="#e6edf3" text-anchor="start">git+https://github.com/paulmann/Bash_WP-CLI_Update.git</text>
   <text x="1232" y="606" font-family="'Segoe UI', 'DejaVu Sans', sans-serif" font-size="19" font-weight="700" fill="#e6edf3" text-anchor="end">github.com/paulmann/Bash_WP-CLI_Update#readme</text>
   <circle cx="739.0" cy="599" r="5" fill="#3fb950"/>

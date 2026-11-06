@@ -21,7 +21,7 @@ names the expected and the actual value. Measured results, as the project record
 
 | Environment | Result |
 |---|---|
-| Debian 12, `unshare -r` (uid 0, no switchable account) | 634 passed, 0 failed, 7 skipped |
+| Debian 12, `unshare -r` (uid 0, no switchable account) | 693 passed, 0 failed, 7 skipped |
 | Windows host, Git Bash, non-root | 0 failures outside the root-only checks; `chmod`, `ionice` and user-switch checks skip |
 | Plain non-root account | the user-switch checks in `test_manager.sh` fail with exit 3, which is the manager refusing to run |
 

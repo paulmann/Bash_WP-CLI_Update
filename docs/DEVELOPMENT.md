@@ -20,7 +20,7 @@ still cannot run — no switchable account, no `ionice` — reports `SKIP` with 
 Any `FAIL` is a real regression: read the message, it names the expected and the
 actual value.
 
-Measured on Debian 12 with `unshare -r`: 634 passed, 0 failed, 7 skipped. On a plain
+Measured on Debian 12 with `unshare -r`: 693 passed, 0 failed, 7 skipped. On a plain
 non-root account the user-switch checks in `test_manager.sh` fail with exit 3, which is
 the product's own refusal, not a test defect.
 
