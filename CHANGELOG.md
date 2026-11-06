@@ -65,6 +65,9 @@ shipped, and no tag is cut for this work.
   value is now assembled at run time; the address is described, not repeated.
 - `tests/test_secretguard.sh` used an unroutable `example.invalid` git identity; it is
   now `example.com`, the reserved documentation domain, which needs no exception.
+- The tree-level secret scan no longer reports the SPDX licence identifier in
+  `CITATION.cff`; it is allowlisted as metadata, with the reason recorded in
+  `tools/secret-allowlist.txt`.
 
 ## [8.0.4] - 2026-10-21
 
