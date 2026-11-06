@@ -1,0 +1,24 @@
+cff-version: 1.2.0
+message: "If you use this software in a runbook, a report or a publication, cite it as below."
+title: "Bash WP-CLI Update"
+abstract: >-
+  Fleet maintenance for WordPress installations through WP-CLI: core, plugin and theme
+  updates, database repair and optimisation, a database dump before anything changes, a
+  restore path and JSON reports, driven by one bash script that runs as root.
+authors:
+  - family-names: Deynekin
+    given-names: Mikhail
+    alias: paulmann
+    website: "https://github.com/paulmann"
+repository-code: "https://github.com/paulmann/Bash_WP-CLI_Update"
+url: "https://github.com/paulmann/Bash_WP-CLI_Update"
+license: PolyForm-Noncommercial-1.0.0
+version: "8.0.4"
+date-released: "2026-10-21"
+keywords:
+  - wordpress
+  - wp-cli
+  - maintenance
+  - bash
+  - cli
+  - fleet

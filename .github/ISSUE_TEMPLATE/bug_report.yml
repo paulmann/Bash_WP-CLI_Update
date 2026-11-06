@@ -1,0 +1,110 @@
+name: Bug report
+description: A mode, an option or an exit code does not behave as the documentation says
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This tool runs as root and changes live WordPress sites, so a report has to be
+        safe to read in public.
+
+        Do not paste a secret: no Astra licence value, no database password, no
+        `wp-config.php` constant value, no complete `wp-config.php`, no real site
+        content. Keep the key names and replace every value with `REDACTED`.
+
+        `./Bash_WP-CLI_Update.sh --secrets` reports constant names and never their
+        values; a report should follow the same rule.
+
+        Read [SUPPORT.md](https://github.com/paulmann/Bash_WP-CLI_Update/blob/main/SUPPORT.md) first for what a useful report contains, and
+        [SECURITY.md](https://github.com/paulmann/Bash_WP-CLI_Update/blob/main/SECURITY.md) if the problem can become code execution as root.
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: The output of ./Bash_WP-CLI_Update.sh --version
+      placeholder: Bash WP-CLI Update 8.0.4
+    validations:
+      required: true
+
+  - type: textarea
+    id: command-line
+    attributes:
+      label: Exact command line
+      description: Copy it rather than retyping it, and keep every flag and path. Redact a licence, a token or a password.
+      render: shell
+      placeholder: sudo wp-cli-update --full --site /var/www/example.com --backup db --dry-run
+    validations:
+      required: true
+
+  - type: input
+    id: exit-code
+    attributes:
+      label: Exit code
+      description: The number the command returned. The contract is 0 success, 1 operational failure, 2 usage, 3 environment, 4 configuration, 130 or 143 interrupted.
+      placeholder: "3"
+    validations:
+      required: true
+
+  - type: textarea
+    id: bash-version
+    attributes:
+      label: Distribution and bash version
+      description: The distribution and release, then the first line of `bash --version`.
+      render: shell
+      placeholder: Debian 12.5 / GNU bash, version 5.2.15(1)-release
+    validations:
+      required: true
+
+  - type: textarea
+    id: configuration
+    attributes:
+      label: Configuration keys involved
+      description: The key names you changed or rely on, with every value replaced by REDACTED. The LICENCE value, a MAIL_TO address and a webhook token must never be pasted.
+      placeholder: |
+        BACKUP=db
+        MIN_FREE_MB=500
+        WP_CLI_PATH=/usr/local/bin/wp
+        LICENCE=REDACTED
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected-actual
+    attributes:
+      label: Expected and actual behaviour
+      description: What the documentation says should happen, and what happened instead. Name the README section when the documentation is the reference.
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Numbered steps, starting from a site list. Say whether a second site or a second run reproduces it.
+      placeholder: |
+        1. Build the site list with wp-find.
+        2. Run --doctor, then --check.
+        3. Run the command above for one site.
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant log lines
+      description: From ERROR_LOG_FILE, the first lines of the failing command with its argv. Redact paths, values and site content.
+      render: shell
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: hygiene
+    attributes:
+      label: Nothing sensitive was pasted
+      options:
+        - label: This report contains no credential, no licence value, no database password and no site content.
+          required: true
+        - label: I searched the existing issues and did not find the same report.
+          required: true

@@ -8,34 +8,65 @@ This is a user-facing document. An internal agent log is not a changelog: entrie
 of the form “script (backup v3) - refactor” were published by two earlier
 revisions and told the reader nothing they could act on.
 
-## Release history of this repository
+Versions in square brackets are the manager version. The finder
+(`Find_WP_Senior.sh`) is versioned separately: 2.0.0 in the 6.0 line and 2.1.0 from
+6.2.0 onwards. The lineage of the 5.x–8.x lines — which branch became which release,
+what each one was, and why 7.0.1 is a separate architecture rather than an earlier
+draft of 8.0.0 — is in [docs/RELEASE-HISTORY.md](docs/RELEASE-HISTORY.md).
 
-The 8.0.0 line was built by folding every earlier line of work into `main`, one commit
-and one release at a time, so that each attempt stays readable instead of being
-overwritten. Each step's tree is byte-identical to the branch it came from, and each
-branch is preserved as an annotated tag `llm/<branch>`:
+## [Unreleased]
 
-| Release | Source | What it was |
-|---|---|---|
-| `v5.0.0` | `main` (before the chain) | the original monolith: two scripts, no lock, no backups, no tests |
-| `v5.1.0` | `rewrite-v5.0.0` | first rewrite with test suites and documentation |
-| `v6.0.0` | `v6.0.0-ragraf` | RAGRAF + Flash revision of the 6.0 line |
-| `v6.0.1` | `v6.0.0-deepseek` | DeepSeek 4 Pro revision of the same line |
-| `v6.0.2` | `AutoClaw-GLM-5.3-RAGRAF` | GLM 5.3 revision; adds a secret guard |
-| `v6.0.3` | `SagaAI_DeepSeeek_Flash` | SagaAI sync of the 6.0 sources |
-| `v6.1.0` | `DeepSeek_Hybrid` | `--health`, `--secrets`, site URL detection, short options |
-| `v6.2.0` | `QWEN_Hybrid` | fleet release; the base of 8.0.0 |
-| `v7.0.1` | `QWEN-Agent_Mode` | a modular tree (`src/manager`, `src/finder`) built into one script |
-| `v8.0.0` | this tree | the merge: read-only modes, restore, fleet control, guards, reports |
+Repository maintenance. No product change: the manager, the finder, every mode, every
+option, every configuration key and the exit-code contract are exactly what 8.0.4
+shipped, and no tag is cut for this work.
 
-Notes for a reader of this file: the entries below start at 6.2.0 because that is the
-tree 8.0.0 was built on. The changelog of each earlier release lives in that release's
-own tree (`CHANGELOG.md` at the tag) and in its GitHub release notes. 7.0.1 is a
-different architecture, not an earlier draft of 8.0.0: it is preserved as its own
-release and is not a superset of it (it has no restore path, no disk guard and no
-circuit breaker; 8.0.0 has no modular `src/` tree).
+### Added
 
-## [8.0.4 / 2.1.0] - 2026-10-21
+- **The GitHub wiki as versioned sources.** `wiki/` holds the pages and the manifest;
+  `ghagent wiki build|verify|publish` renders the sidebar and footer and pushes the
+  built tree to the wiki repository, so a page cannot be published with a broken link.
+- **Community files**: `CODE_OF_CONDUCT.md`, `SUPPORT.md`, `CITATION.cff`,
+  `.github/ISSUE_TEMPLATE/` (bug and feature forms plus contact links),
+  `.github/PULL_REQUEST_TEMPLATE.md`, `.github/CODEOWNERS` and
+  `.github/dependabot.yml`.
+- **A rendered banner and social preview** (`assets/social-preview.png` and `.svg`),
+  and a `.ghagent.json` that records how the repository is checked.
+- **`docs/AGENT-INSTALL.md`, `docs/AGENT-OPERATIONS.md` and `docs/DEVELOPMENT.md`**:
+  the install, operations and development material that used to live in `AGENTS.md`.
+
+### Changed
+
+- **`AGENTS.md` is now a map.** It keeps the two overriding rules, the file table, the
+  verification order in brief and the absolute do-nots, and links to the detailed
+  documents — the length a reader, and an agent, can afford on every request.
+- **`README.md`** gained the current version in the title (it said 8.0.0), a badge row,
+  the social preview, a navigation row, a table of contents and a "For agents"
+  pointer; every code fence now carries a language tag.
+- **`CHANGELOG.md`** uses `## [x.y.z] - YYYY-MM-DD` headings throughout (the finder
+  version moved into this preamble), has an `[Unreleased]` section and canonical change
+  types; the release-lineage table moved to `docs/RELEASE-HISTORY.md`.
+- `docs/README.md` indexes the new documents; `CONTRIBUTING.md` points at
+  `docs/DEVELOPMENT.md` for the extension procedure.
+- The npm author field no longer carries a personal e-mail address; the repository
+  profile is the contact route.
+- The published wiki is now generated from `wiki/`; the placeholder Home page is
+  replaced by the manual.
+
+### Fixed
+
+- The README title said **8.0.0** while the tree shipped 8.0.4, and `PROJECT_MAP.md`
+  had a truncated table row — a dependency list cut in the middle of a word.
+- **`README.md` §7 and `SECURITY.md` still described the pre-8.0.3 backup layout**
+  (`1777` with the sticky bit). The code has created the tree `0700` and moved the dump
+  in as `root:root 0640` since 8.0.3; both documents now say so, and `REFACTORING.md`
+  marks its 6.2.0 entry as superseded.
+- The privacy check found a fake GitHub token literal in `tests/test_secretguard.sh`
+  and a third-party e-mail address quoted in `ANALYSIS.md` and in this file. The test
+  value is now assembled at run time; the address is described, not repeated.
+- `tests/test_secretguard.sh` used an unroutable `example.invalid` git identity; it is
+  now `example.com`, the reserved documentation domain, which needs no exception.
+
+## [8.0.4] - 2026-10-21
 
 Distribution release. Nothing in the manager, the finder or any mode changed; the tool is
 now also installable from npm.
@@ -61,7 +92,7 @@ now also installable from npm.
 - `.gitignore` no longer ignores `bin/`: it now holds the shims, and a shim that is not
   committed cannot be published.
 
-## [8.0.3 / 2.1.0] - 2026-10-21
+## [8.0.3] - 2026-10-21
 
 Found by installing 8.0.2 on the production host and running one site for real. This one
 would have made the nightly job useless while reporting nothing worse than a warning.
@@ -90,7 +121,7 @@ Verified on the host: one site updated end to end (7 operations, dump `db-…sql
 `root:root 0640`, exit 0), and the licence is read from
 `/etc/wp-cli-update/astra.key` and redacted in the log as `<licence>`.
 
-## [8.0.2 / 2.1.0] - 2026-10-21
+## [8.0.2] - 2026-10-21
 
 Patch release. Found while installing 8.0.1 on a production host with the configuration
 section §11 of the README recommends.
@@ -110,7 +141,7 @@ section §11 of the README recommends.
   must not break `--doctor` or `--list-modes`, and an explicit flag with the wrong mode
   must still exit 2.
 
-### Fixed in the test bench (the reason CI went red twice)
+#### Fixed in the test bench (the reason CI went red twice)
 
 - **`cmd | grep -q` under `set -o pipefail` reports success as failure.** `grep` exits at
   the first match, the producer gets SIGPIPE, and the pipeline status is 141. Three
@@ -126,10 +157,24 @@ section §11 of the README recommends.
   as this test's leak. Each parallel check now runs with its own `TMPDIR` and inspects
   only that directory.
 
-## [8.0.1 / 2.1.0] - 2026-10-21
+## [8.0.1] - 2026-10-21
 
 Patch release. No behaviour change: the manager, the finder and every mode are exactly
 what 8.0.0 shipped.
+
+### Changed
+
+- `SHA256SUMS` lists bare file names, not `dist/...`. The release archive is downloaded
+  next to the checksum file, so `sha256sum -c SHA256SUMS` used to fail on a fresh
+  download with “No such file or directory” — verified now on both 8.0.0 and 8.0.1.
+- `.gitattributes` covers the file types 8.0.0 introduced: `*.service`, `*.timer`,
+  `*.yml`, `Makefile`, `.editorconfig`, `LICENSE`, `*.example`, plus `*.tar.gz`
+  marked binary. A CR byte in a systemd `[Timer]` section is an error an operator sees
+  only at enable time, which is why the unit files are listed explicitly.
+- `legacy/README.md` now names the release (`v5.0.0`) and the blob each original is
+  frozen at, and explains why the directory stays even though every earlier line of
+  work is a release plus an `llm/<branch>` tag. It also pointed at `REFACTORING.md`
+  for the line-number citations, while the citations live in `ANALYSIS.md`.
 
 ### Fixed
 
@@ -146,21 +191,7 @@ what 8.0.0 shipped.
   1.0.0 text, a copyright line and the SPDX identifier. This matters for anyone who
   took 8.0.0: the archive's `LICENSE` contradicted its own README.
 
-### Changed
-
-- `SHA256SUMS` lists bare file names, not `dist/...`. The release archive is downloaded
-  next to the checksum file, so `sha256sum -c SHA256SUMS` used to fail on a fresh
-  download with “No such file or directory” — verified now on both 8.0.0 and 8.0.1.
-- `.gitattributes` covers the file types 8.0.0 introduced: `*.service`, `*.timer`,
-  `*.yml`, `Makefile`, `.editorconfig`, `LICENSE`, `*.example`, plus `*.tar.gz`
-  marked binary. A CR byte in a systemd `[Timer]` section is an error an operator sees
-  only at enable time, which is why the unit files are listed explicitly.
-- `legacy/README.md` now names the release (`v5.0.0`) and the blob each original is
-  frozen at, and explains why the directory stays even though every earlier line of
-  work is a release plus an `llm/<branch>` tag. It also pointed at `REFACTORING.md`
-  for the line-number citations, while the citations live in `ANALYSIS.md`.
-
-## [8.0.0 / 2.1.0] - 2026-10-21
+## [8.0.0] - 2026-10-21
 
 One product built from three lines of work: `main` (the 5.x monolith), `QWEN_Hybrid`
 (6.2.0, the code this is based on) and `DeepSeek_Hybrid` (6.1.0). The comparison, the
@@ -175,7 +206,9 @@ share. That branch keeps its own release (7.0.1) and is not lost: it is tagged
 secrets, completion) are re-implemented here; the two implementations differ in shape,
 and the comparison document says how.
 
-### Added — read-only modes
+### Added
+
+#### Read-only modes
 
 - `--health`: core version, pending plugin and theme updates, database size, per site.
   Takes no lock, no backup, writes nothing. Safe to call from monitoring every minute.
@@ -187,13 +220,13 @@ and the comparison document says how.
 - `--list-backups`: what this tool has written for each site, newest first.
 - `--completion bash|zsh`: a completion script covering every mode and option.
 
-### Added — restore path
+#### Restore path
 
 - `--restore-db FILE --yes`: imports a dump, takes a safety dump of the live database
   first, and runs `wp db check` afterwards. Without `--yes` every site refuses.
   A tool that takes backups and cannot restore them is half a tool.
 
-### Added — fleet control
+#### Fleet control
 
 - `--retry N` and `--retry-delay SEC`: re-run a failed site. Worth it for a timed-out
   download or a busy lock, not for a wrong `--url`; the default stays 0.
@@ -205,7 +238,7 @@ and the comparison document says how.
 - `--skip-if-no-updates`: ask the cheap read-only question first and skip sites whose
   core, plugins and themes are current.
 
-### Added — production guards
+#### Production guards
 
 - `--min-free-mb N`: refuse to write a dump when free space is below N MiB. The guard
   runs before the export, not after it failed.
@@ -217,7 +250,7 @@ and the comparison document says how.
 - Read-only modes no longer take a backup. Exporting a database before `--list-plugins`
   costs seconds per site and fills the disk for nothing.
 
-### Added — observability
+#### Observability
 
 - `--report FILE`: one JSON document per run — counters, per-site status and the change
   list (`plugin jetpack 13.0 -> 13.5`), written atomically.
@@ -227,7 +260,7 @@ and the comparison document says how.
 - Change tracking: before/after version snapshots of plugins, themes and core when a
   report or `--json-lines` is requested.
 
-### Added — policy and targeting
+#### Policy and targeting
 
 - `--exclude-themes`, `--hold-plugins`, `--hold-themes`. A hold is a pin, not a filter:
   the log says the plugin was held, so a stale plugin is visible instead of silent.
@@ -235,17 +268,26 @@ and the comparison document says how.
 - `-u`, `-C`, `-T`, `-L`, `-k` short forms; `--wp-bin` alias.
 - `WP_GLOBAL_ARGS`: extra global flags for `wp` (for example `--skip-themes`).
 
-### Added — multisite
+#### Multisite
 
 - `--url` is derived from `WP_HOME`/`WP_SITEURL` in `wp-config.php` when it is not given.
   Without it WP-CLI refuses to pick a site on a multisite install. `--no-url-detect`
   turns the behaviour off, and a multisite without `WP_HOME` is reported once.
 
-### Added — compatibility
+#### Compatibility
 
 - 6.1 configuration names are accepted with a single warning instead of being ignored:
   `WP_TIMEOUT` -> `TIMEOUT`, `WP_CLI_BIN` -> `WP_CLI_PATH`, `SITE_URL` -> `URL`,
   `BACKUP_KEEP` -> `KEEP_BACKUPS`, `DEFAULT_JOBS` -> `JOBS`.
+
+#### Tests
+
+- New `tests/test_v7.sh`: 111 checks over the read-only modes, the restore path, retries,
+  the circuit breaker, the guards, the report, the change log, the policy lists,
+  `--url` detection, `--nice`/`--ionice` and the config aliases.
+- `tests/stub/wp` learned `--format=csv|count`, `--update=available`, `db size`,
+  `db import`, `db check`, `--version`, and two failure hooks (`FAKE_FAIL_ONCE`,
+  `FAKE_FAIL_ALWAYS`) plus `FAKE_NO_UPDATES` and `FAKE_VERSION_BUMP`.
 
 ### Changed
 
@@ -266,22 +308,14 @@ and the comparison document says how.
 - A failing site no longer counts its backup as "no backup": the site is stopped and
   reported instead of being updated unprotected.
 
-### Tests
-
-- New `tests/test_v7.sh`: 111 checks over the read-only modes, the restore path, retries,
-  the circuit breaker, the guards, the report, the change log, the policy lists,
-  `--url` detection, `--nice`/`--ionice` and the config aliases.
-- `tests/stub/wp` learned `--format=csv|count`, `--update=available`, `db size`,
-  `db import`, `db check`, `--version`, and two failure hooks (`FAKE_FAIL_ONCE`,
-  `FAKE_FAIL_ALWAYS`) plus `FAKE_NO_UPDATES` and `FAKE_VERSION_BUMP`.
-
-## [6.2.0 / 2.1.0] - 2026-10-08
+## [6.2.0] - 2026-10-08
 
 Fleet release. Everything here was taken from the `SagaAI_DeepSeeek_Flash`
 revision (`3904a73`) after a comparative measurement showed it ahead of this tree
 on four counts, plus one archive idea and one documentation idea. What was
-deliberately **not** taken is listed at the bottom, with the measurement that
-decided it. `REFACTORING.md` records the audit in full.
+deliberately **not** taken, with the measurement that decided it, is recorded in
+[`docs/COMPARISON.md` §5](docs/COMPARISON.md#5-what-was-rejected-and-why).
+`REFACTORING.md` records the audit in full.
 
 ### Added
 
@@ -392,16 +426,7 @@ decided it. `REFACTORING.md` records the audit in full.
   decided the value, so a command-line override was reported as coming from the
   file. An `effective_source` column and a `CLI OVERRIDE` column replaced it.
 
-### Not adopted, deliberately
-
-| From `SagaAI` | Why not |
-|---|---|
-| Passing the Astra licence as an argument to `wp` | Measured: the value lands in the child's argv and is visible in `ps` for the duration of the call. Their own `ANALYSIS.md` §10 discloses this, and their own script header forbids it. This tree keeps the temporary-file handoff, where the value is never an argument of any process. |
-| `source` for the configuration file | Their guard refuses group/world-writable files and that guard works, but a root-owned 0644 file is still root code execution. Measured: a payload in such a file ran. This tree parses `KEY=VALUE` and rejects any line with a metacharacter. |
-| `shell_join` on `printf %q` for the `su` fallback | Correct *there*, because `-s /bin/sh` is explicit — that is precisely the mistake `v6.0.0-deepseek` made. But `%q` emits `$'…'` for strings with control characters, which POSIX `sh` does not understand. The positional-parameter runner needs no quoting at all and has no such edge. |
-| The author's plugin list as the default `--skip-plugins` | One installation's requirement shipped as everybody's default. The default here is empty and the list lives in `wp-cli-update.conf.example` as a comment. |
-
-## [6.1.0 / 2.1.0] - 2026-10-07
+## [6.1.0] - 2026-10-07
 
 Consolidated release. It merges the four 2026 revisions
 (`rewrite-v5.0.0`, `v6.0.0-ragraf`, `v6.0.0-deepseek`,
@@ -532,8 +557,8 @@ branch where the defect was observed.
   parenthesised group, because `-prune` evaluates to true even for a plain file.
   Four variants were measured; the working one is documented in
   `build_find_args`.
-- Personal data removed from the shipped code: the third-party address
-  `paul@pmtech.com`, host-specific paths, and the author's plugin list.
+- Personal data removed from the shipped code: a third-party e-mail address, the
+  host-specific paths, and the author's plugin list.
 - Site lists with CRLF line endings, leading/trailing whitespace and `#` comments
   are handled; previously a CR made every path invalid.
 - The colour policy is honoured in the log files: no ANSI escapes are written to
@@ -552,13 +577,13 @@ branch where the defect was observed.
   line, log line, dry-run listing and error box; the internal marker is replaced
   with `<licence>` so it never reaches an operator-facing message.
 
-## [6.0.0 / 2.0.0] - 2026-10-07
+## [6.0.0] - 2026-10-07
 
 Four independent revisions of `main` produced on branches `rewrite-v5.0.0`,
 `v6.0.0-ragraf`, `v6.0.0-deepseek` and `AutoClaw-GLM-5.3-RAGRAF`. None was
 merged. Superseded by 6.1.0.
 
-## [5.0 / 2.0.0] - 2026-04-07
+## [5.0.0] - 2026-04-07
 
 Baseline on `main` (`8c720e6`): `Bash_WP-CLI_Update.sh` 5.0 and
 `Find_WP_Senior.sh` 2.0.0. Ten operation modes, per-site user switching, table
@@ -566,3 +591,14 @@ rendering, progress output. Known defects, all fixed in 6.1.0: the finder exits 
 without output, `--help` is not a flag, commands are built by string
 concatenation, no lock, no log rotation, no dry run, and the Astra key is edited
 into the script.
+
+[Unreleased]: https://github.com/paulmann/Bash_WP-CLI_Update/compare/v8.0.4...HEAD
+[8.0.4]: https://github.com/paulmann/Bash_WP-CLI_Update/compare/v8.0.3...v8.0.4
+[8.0.3]: https://github.com/paulmann/Bash_WP-CLI_Update/compare/v8.0.2...v8.0.3
+[8.0.2]: https://github.com/paulmann/Bash_WP-CLI_Update/compare/v8.0.1...v8.0.2
+[8.0.1]: https://github.com/paulmann/Bash_WP-CLI_Update/compare/v8.0.0...v8.0.1
+[8.0.0]: https://github.com/paulmann/Bash_WP-CLI_Update/compare/v7.0.1...v8.0.0
+[6.2.0]: https://github.com/paulmann/Bash_WP-CLI_Update/compare/v6.1.0...v6.2.0
+[6.1.0]: https://github.com/paulmann/Bash_WP-CLI_Update/compare/v6.0.3...v6.1.0
+[6.0.0]: https://github.com/paulmann/Bash_WP-CLI_Update/compare/v5.1.0...v6.0.0
+[5.0.0]: https://github.com/paulmann/Bash_WP-CLI_Update/releases/tag/v5.0.0

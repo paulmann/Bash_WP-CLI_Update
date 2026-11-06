@@ -117,6 +117,18 @@ From **DeepSeek_Hybrid**:
 | Retry on by default | A retry hides a real failure for as long as the delay allows and doubles the time a broken fleet takes to fail. Default 0; the operator decides. |
 | `--fail-on never` as a way to "keep going" | It hides failures from the report and from monitoring. `--max-failures` stops the run honestly instead. |
 
+### Not adopted from `SagaAI_DeepSeeek_Flash` (6.2.0)
+
+The same rule applied to the revision 6.2.0 was measured against: it was ahead on four
+counts, and these four ideas were rejected with their own evidence.
+
+| From `SagaAI` | Why not |
+|---|---|
+| Passing the Astra licence as an argument to `wp` | Measured: the value lands in the child's argv and is visible in `ps` for the duration of the call. Their own `ANALYSIS.md` §10 discloses this, and their own script header forbids it. This tree keeps the temporary-file handoff, where the value is never an argument of any process. |
+| `source` for the configuration file | Their guard refuses group/world-writable files and that guard works, but a root-owned 0644 file is still root code execution. Measured: a payload in such a file ran. This tree parses `KEY=VALUE` and rejects any line with a metacharacter. |
+| `shell_join` on `printf %q` for the `su` fallback | Correct *there*, because `-s /bin/sh` is explicit — that is precisely the mistake `v6.0.0-deepseek` made. But `%q` emits `$'…'` for strings with control characters, which POSIX `sh` does not understand. The positional-parameter runner needs no quoting at all and has no such edge. |
+| The author's plugin list as the default `--skip-plugins` | One installation's requirement shipped as everybody's default. The default here is empty and the list lives in `wp-cli-update.conf.example` as a comment. |
+
 ## 6. Defects found and fixed while merging
 
 | Defect | Where | Fix |

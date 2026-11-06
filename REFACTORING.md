@@ -3,7 +3,7 @@
 What this tree took from each of the five revisions of the project, what it
 rejected and why, and what broke on the way.
 
-The originals are in [`legacy/`](legacy), byte-exact and verified with
+The originals are in [`legacy/`](legacy/README.md), byte-exact and verified with
 `git hash-object`, so every citation of the form `main:396` below is checkable
 without git history. The audit of the **original** code — the defects that made a
 rewrite necessary, with a reproduced proof of concept for the command injection —
@@ -73,7 +73,7 @@ reader will re-add it.
 `SagaAI` calls `run_wp … brainstormforce license activate astra-addon "${ASTRA_KEY}"`.
 Measured with a stub that records its own argv:
 
-```
+```text
 ARGV: [--path=…] [--allow-root] [brainstormforce] [license] [activate] [astra-addon] [SAGA-SECRET-KEY-1234567890]
 ```
 
@@ -98,7 +98,7 @@ the licence arrives **empty** — measured), `runuser -m` has no equivalent unde
 works — measured, a 0664 config is refused with exit 2. But a **root-owned 0644**
 config is still root code execution, and measured, the payload ran:
 
-```
+```text
 $ printf 'SKIP_PLUGINS=a; touch /tmp/PWNED\n' > evil.conf   # 0644, root:root
 $ Bash_WP-CLI_Update.sh --print-config -C evil.conf
 …
@@ -162,7 +162,7 @@ were introduced or uncovered here.
 | 12 | **`--strict` did not fire on an empty fleet** | The "nothing to do" path exited 0 before `final_exit_code`, so the run a cron job most needs to hear about was the one it never reported | The empty path now consults `final_exit_code` |
 | 13 | **`--print-config` named the wrong layer** | It printed the config-layer source, so a command-line override was reported as `file:…` — a diagnostic tool that looks like the bug it is diagnosing | `effective_source` plus a `CLI OVERRIDE` column |
 | 14 | `--skip-plugins` reached `plugin list` | It hid the very plugins being listed | Applied only to operations that change plugins or themes; listings only under `--skip-plugins-for-listing on` |
-| 15 | **The backup directory was created by the manager, but written by the site owner** | `mkdir -p` gave it the manager's umask — 0755 root. After the user switch `wp db export` died with *Permission denied*, and the run reported "database backup failed … the site is still going to be updated" followed by "backup failed; skipping the site". Every site, every mode with `--backup`. Invisible to the whole suite, because the suite runs `--no-user-switch` | `backup_ensure_dir` creates 1777 with the sticky bit, exactly like `/tmp`: any local user may create a file inside, and the sticky bit stops one user from deleting another's dump. The dumps themselves stay 0640. Asserted in `test_fleet.sh` |
+| 15 | **The backup directory was created by the manager, but written by the site owner** | `mkdir -p` gave it the manager's umask — 0755 root. After the user switch `wp db export` died with *Permission denied*, and the run reported "database backup failed … the site is still going to be updated" followed by "backup failed; skipping the site". Every site, every mode with `--backup`. Invisible to the whole suite, because the suite runs `--no-user-switch` | `backup_ensure_dir` creates 1777 with the sticky bit, exactly like `/tmp`: any local user may create a file inside, and the sticky bit stops one user from deleting another's dump. The dumps themselves stay 0640. Asserted in `test_fleet.sh`. Superseded in 8.0.3: the tree is `0700`, the dump is written into a private directory owned by the site owner and moved in by root as `root:root 0640` (see CHANGELOG 8.0.3) |
 
 Four of these (#7, #8, #9, #15) are in code written during this integration, and
 each was caught only because a test measured something rather than asserting that
@@ -229,10 +229,10 @@ Stated plainly, because the alternative is that somebody finds them in productio
 | [`tests/test_manager.sh`](tests/test_manager.sh) | per-site behaviour, injection, licence containment |
 | [`tests/test_fleet.sh`](tests/test_fleet.sh) | parallelism, backups, fleet-wide reporting |
 | [`tests/test_secretguard.sh`](tests/test_secretguard.sh) | the guard, including planted values and history mode |
-| [`legacy/`](legacy) | byte-exact originals from `main` |
+| [`legacy/`](legacy/README.md) | byte-exact originals from `main` |
 | [`ANALYSIS.md`](ANALYSIS.md) | audit of the original code, with the PoC |
 | [`REFACTORING.md`](REFACTORING.md) | this file |
-| [`AGENT.md`](AGENT.md) | binding rules for changing these scripts |
+| [`AGENT.md`](AGENT.md) | pointer to `AGENTS.md`, the agent rules for changing these scripts |
 | [`PROJECT_MAP.md`](PROJECT_MAP.md) | file-by-file map with dependencies |
 | [`CHANGELOG.md`](CHANGELOG.md) | Keep a Changelog |
 | [`wp-cli-update.conf.example`](wp-cli-update.conf.example) | every setting, with its default and its reason |

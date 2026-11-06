@@ -29,6 +29,9 @@ LICENSE             text eol=lf
 *.service           text eol=lf
 *.timer             text eol=lf
 *.yml               text eol=lf
+*.yaml              text eol=lf
+*.json              text eol=lf
+*.cff               text eol=lf
 
 # Generated at run time and must never be committed (see .gitignore). Marked -text
 # so that if one is ever added by force, git does not rewrite its endings.

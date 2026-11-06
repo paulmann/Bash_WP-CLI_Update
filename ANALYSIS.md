@@ -51,7 +51,7 @@ output=$(su - "${user}" -c "${full_command}" 2>&1) || exit_code=$?
 
 **Что показано замером.** Debug-вывод самого скрипта печатает собранную строку:
 
-```
+```text
 🔧 full_command: cd "/srv/wp/alpha;touch /tmp/PWNED2;echo " && export DOCUMENT_URI="PWNED2;echo " && …
 🎯 EXECUTING COMMAND: su - "wptest" -c "cd "/srv/wp/alpha;touch /tmp/PWNED2;echo " && …"
 ```
@@ -62,7 +62,7 @@ output=$(su - "${user}" -c "${full_command}" 2>&1) || exit_code=$?
 
 ### 2.2 `Find_WP_Senior.sh` не работает вообще — `finder:367–369`
 
-```
+```text
 $ ./Find_WP_Senior.sh --output /srv/out.txt /srv/wp
 INFO: WordPress discovery started...
 INFO: Cleaned up temporary files.
@@ -76,7 +76,7 @@ wc: /srv/out.txt: No such file or directory
 
 ### 2.3 `--help` у дискавера — это каталог для поиска — `finder:361`
 
-```
+```text
 $ ./Find_WP_Senior.sh --help
 INFO: WordPress discovery started...
 ```
@@ -95,7 +95,7 @@ readonly ASTRA_KEY="${ASTRA_KEY:-YOUR_KEY}"   # never commit the key; export AST
 
 Если владельца сайта определить не удалось, сайт пропускается, а итог печатает:
 
-```
+```text
 │ Sites processed:  1
 │ Successful ops:   0
 │ Errors:           0
@@ -122,7 +122,7 @@ $ echo $?
 | 3.8 | Цвета пишутся всегда | `main:88–104` | ANSI-коды в лог-файле и в выводе CI; `echo -e` (98 вызовов) непереносим |
 | 3.9 | Маски исключений по умолчанию отсекают боевые сайты | `finder:77–101` | `*/old*`, `*/test*`, `*/tests*`, `*/backup*`, `*/staging*` молча исключают `/var/www/olddomain.com` и `/var/www/testimonials` |
 | 3.10 | Прогресс-бар и таблицы пишутся через `echo -e` и `printf` с управляющими последовательностями | `main:138–166` | мусор в C-локали и в перенаправленном выводе |
-| 3.11 | Посторонний e-mail и персональные пути | `finder:47` (`paul@pmtech.com`), история `main` (`/var/www/md/data/www/paulman.ru/...`) | чужие персональные данные в публичном репозитории |
+| 3.11 | Посторонний e-mail и персональные пути | `finder:47` (адрес третьей стороны, удалён из кода), история `main` (`/var/www/md/data/www/paulman.ru/...`) | чужие персональные данные в публичном репозитории |
 | 3.12 | Русскоязычный комментарий в коде | `main:1495` (`# ✅ Подсчёт сайтов`) | два языка в одном файле при английском UI |
 
 ---

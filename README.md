@@ -1,22 +1,57 @@
-# Bash WP-CLI Update 8.0.0
+# Bash WP-CLI Update 8.0.4
 
 Maintenance automation for a fleet of WordPress installations, driven by WP-CLI and
 written in POSIX-friendly bash 4.2+.
 
+[![CI](https://github.com/paulmann/Bash_WP-CLI_Update/actions/workflows/ci.yml/badge.svg)](https://github.com/paulmann/Bash_WP-CLI_Update/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/paulmann/Bash_WP-CLI_Update?label=release)](https://github.com/paulmann/Bash_WP-CLI_Update/releases)
+[![License: PolyForm Noncommercial 1.0.0](https://img.shields.io/badge/license-PolyForm%20Noncommercial%201.0.0-blue)](LICENSE)
+[![bash 4.2+](https://img.shields.io/badge/bash-4.2%2B-4EAA25)](https://www.gnu.org/software/bash/)
+[![npm](https://img.shields.io/npm/v/bash-wp-cli-update?label=npm)](https://www.npmjs.com/package/bash-wp-cli-update)
+
+<img src="https://github.com/paulmann/Bash_WP-CLI_Update/raw/main/assets/social-preview.png"
+     alt="Bash WP-CLI Update — fleet maintenance for WordPress through WP-CLI"
+     width="100%">
+
+[**Installation**](#3-install) · [**Quick start**](#4-quick-start) · [**Modes**](#5-modes) · [**Configuration**](#8-configuration) · [**Wiki**](https://github.com/paulmann/Bash_WP-CLI_Update/wiki) · [**Documentation**](docs/README.md) · [**AGENTS.md**](AGENTS.md) · [**Releases**](https://github.com/paulmann/Bash_WP-CLI_Update/releases) · [**Issues**](https://github.com/paulmann/Bash_WP-CLI_Update/issues) · [**Security**](SECURITY.md)
+
+> **For agents.** Start with [AGENTS.md](AGENTS.md): the ordered install, the
+> verification order and the absolute do-nots. The
+> [wiki](https://github.com/paulmann/Bash_WP-CLI_Update/wiki) carries the same
+> material as a manual for a human reader.
+
 One command updates core, plugins, themes, the database schema and cron events on
 every site in a list, each one as the system user that owns it, with backups, a
-JSON report, a change log and a restore path.
+JSON report, a change log and a restore path:
 
-```
+```bash
 Bash_WP-CLI_Update.sh --full --backup db --jobs 4 --report /var/log/wp/report.json
 ```
 
-* Version: **8.0.4**
+* Version: **8.0.4** (finder 2.1.0)
 * Requires: `bash >= 4.2`, GNU coreutils/findutils, WP-CLI, `root` (to switch into
   site owners), one of `runuser` / `sudo` / `su`
 * Optional: `flock`, `timeout` (or `perl`), `tar`, `gzip`, `nice`, `ionice`, `curl`,
   `mail`
 * Released under the **PolyForm Noncommercial 1.0.0** licence — see [LICENSE](LICENSE)
+
+## Contents
+
+- [1. What changed in 8.0.0](#1-what-changed-in-800)
+- [2. Safety model](#2-safety-model)
+- [3. Install](#3-install)
+- [4. Quick start](#4-quick-start)
+- [5. Modes](#5-modes)
+- [6. Selection and fleet control](#6-selection-and-fleet-control)
+- [7. Backups and restore](#7-backups-and-restore)
+- [8. Configuration](#8-configuration)
+- [9. Output, reports and notifications](#9-output-reports-and-notifications)
+- [10. Exit codes](#10-exit-codes)
+- [11. Deploying it](#11-deploying-it)
+- [12. Tests](#12-tests)
+- [13. Upgrading from 6.x](#13-upgrading-from-6x)
+- [14. Project layout](#14-project-layout)
+- [15. License](#15-license)
 
 ---
 
@@ -244,9 +279,12 @@ times. `--max-failures 5` is a sane production value.
 | `--min-free-mb N` | refuse to write a dump when free space is below N MiB |
 
 Layout: `<backup dir>/<site directory name>/db-YYYYmmdd-HHMMSS-PID.sql[.gz]`,
-`site-...tar.gz`, `plugin-<slug>-...tar.gz`. The directory is created `1777` with the
-sticky bit, because `wp db export` writes into it as the site owner after the user
-switch; the files themselves are `640`.
+`site-...tar.gz`, `plugin-<slug>-...tar.gz`. The backup tree is created `0700` and stays
+root-only: `wp db export` runs as the site owner after the user switch, so the dump is
+written into a private temporary directory owned by that user and then moved into place
+by root, which sets `root:root 0640`. The permissions of the backup tree therefore do not
+matter; if the move cannot be made, the dump is left where it is and the full path is
+logged — nothing is deleted.
 
 Restore is intentionally awkward:
 
@@ -263,7 +301,7 @@ It refuses without `--yes`, dumps the current database first, imports, then runs
 
 Precedence, lowest to highest:
 
-```
+```text
 built-in defaults  <  /etc/wp-cli-update.conf  <  <script dir>/wp-cli-update.conf
                    <  WP_CLI_UPDATE_<KEY> environment  <  command line
 ```
@@ -458,14 +496,19 @@ exit-code paths. Measured results:
 
 ## 14. Project layout
 
-```
+```text
 Bash_WP-CLI_Update.sh        the manager (this is the product)
 Find_WP_Senior.sh            the site finder
 wp-cli-update.conf.example   annotated configuration reference
 tests/                       behavioural suites plus a stub wp
 tools/scan-secrets.sh        standalone secret scanner over a tree
 contrib/                     systemd unit, timer, cron example, logrotate
-docs/COMPARISON.md           the three-way comparison that produced 8.0.0
+docs/                        operator and agent documents (see docs/README.md)
+wiki/                        GitHub wiki sources and manifest
+assets/                      the social preview rendered by ghagent
+community files              CODE_OF_CONDUCT.md, SUPPORT.md, CITATION.cff,
+                             .github/ (issue forms, PR template, CODEOWNERS,
+                             dependabot, workflows)
 AGENTS.md                    install-and-configure instructions for an LLM agent
 AGENT.md                     pointer to AGENTS.md
 CHANGELOG.md                 release history

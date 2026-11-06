@@ -1,7 +1,9 @@
 # Contributing
 
-Two files matter more than this one: `AGENTS.md` (install, configure, verify, and the
-absolute do-nots) and `docs/COMPARISON.md` (why the code looks the way it does).
+Two files matter more than this one: `AGENTS.md` (the map: install, verify, the absolute
+do-nots) and `docs/COMPARISON.md` (why the code looks the way it does). The ordered
+install is in `docs/AGENT-INSTALL.md`, the failure table in `docs/AGENT-OPERATIONS.md`
+and the test suite and extension procedure in `docs/DEVELOPMENT.md`.
 Read them before changing anything.
 
 ## The rules that are not negotiable
@@ -22,7 +24,7 @@ a change that breaks one of them will not be merged:
 
 ## Adding a feature
 
-The order is fixed, and it is the same order in `AGENTS.md` §10:
+The order is fixed, and it is the same order in `docs/DEVELOPMENT.md` §2:
 
 1. flag in `parse_args`, validation in `validate_args`;
 2. key in `CONFIG_KEYS`, `config_validate_layer`, `config_apply_all`, `print_config`

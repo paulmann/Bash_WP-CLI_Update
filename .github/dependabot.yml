@@ -1,0 +1,23 @@
+version: 2
+
+# This repository has no runtime dependencies: the product is two bash scripts, a
+# configuration example and the documentation. Nothing is vendored and nothing is
+# installed at run time, so there is no npm, pip or bundler ecosystem to watch. The only
+# thing that can age here is the GitHub Actions used by .github/workflows, and that is
+# what this file updates.
+
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Europe/Minsk
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: ci
+    reviewers:
+      - paulmann
+    assignees:
+      - paulmann

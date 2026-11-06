@@ -1,0 +1,72 @@
+name: Feature request
+description: A mode, an option, a configuration key or a behaviour the tool does not have
+title: "[feature] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Read [AGENTS.md](https://github.com/paulmann/Bash_WP-CLI_Update/blob/main/AGENTS.md) first: it records the safety rules a change has to
+        keep, and the fixed order in which a feature is added.
+
+        This is a small, maintainer-run project, so a request is weighed against the cost
+        of maintaining it. A request that adds a mode or a policy to a root tool needs a
+        reproducible case, not only a preference.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem this solves
+      description: A concrete fleet or host situation, with the mode and the number of sites. Not a general wish.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behaviour
+      description: What the tool should do, phrased as a command line or a configuration key so that it can be tested.
+      placeholder: wp-cli-update --full --backup db --hold-themes twentytwentyfour
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: The workaround you use today, and why it is not enough.
+    validations:
+      required: true
+
+  - type: input
+    id: surface
+    attributes:
+      label: Mode, option or configuration key it would touch
+      description: Name the mode (for example --health) or the key (for example KEEP_BACKUPS), or say that a new one is needed.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: safety-model
+    attributes:
+      label: Does it change the safety model
+      description: The four invariants are root and the user switch, argv instead of a string, the licence handoff, and a backup before anything is modified.
+      options:
+        - No change to the safety model
+        - Root or the user switch
+        - argv construction
+        - Licence handoff
+        - Backups and restore
+        - More than one of these
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: preparation
+    attributes:
+      label: Before submitting
+      options:
+        - label: I read AGENTS.md, including the absolute do-nots and the order for adding a feature.
+          required: true
+        - label: I searched the existing issues and pull requests for the same request.
+          required: true

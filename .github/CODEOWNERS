@@ -1,0 +1,14 @@
+# CODEOWNERS - who reviews what in this repository.
+#
+# The maintainer reviews every change: there is one maintainer and no second reviewer to
+# fall back on. A pull request that touches the manager, the finder, the configuration
+# example, the tests, the workflows or the documentation is reviewed by the same person.
+#
+# CODEOWNERS only has an effect when the default branch has branch protection (or a
+# ruleset) that requires review from the code owners. Without that setting this file is
+# documentation, not enforcement.
+#
+# Syntax: one pattern per line, then one or more owners. Patterns follow gitignore rules
+# and the last matching pattern wins.
+
+*       @paulmann

@@ -90,8 +90,9 @@ jobs:
       - name: publish
         run: |
           tag="${ref#v}"
-          # The section header is `## [8.0.0 / 2.1.0] - date`: match the prefix, not
-          # `## [8.0.0]`, or the release body silently falls back to one sentence.
+          # The section header is `## [8.0.0] - date`: match the prefix through the
+          # version, never the whole line, so a trailing date or note cannot make the
+          # release body silently fall back to one sentence.
           notes="$(awk -v t="## [${tag}" 'index($0, t) == 1 {flag=1; next} /^## \[/ {flag=0} flag' CHANGELOG.md)"
           [ -n "$notes" ] || notes="Release ${ref}. See CHANGELOG.md."
           # Idempotent on purpose: a release can also be created by hand, and a red

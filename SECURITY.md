@@ -37,10 +37,12 @@ Do not open a public issue for anything that can be turned into root code execut
 
 ## Known non-issues (by design, documented so they are not re-reported)
 
-* **The backup directory is `1777` with the sticky bit.** `wp db export` writes into it
-  as the site owner after the user switch, and a multi-tenant host has more than one
-  owner. The files themselves are `640`. If that is unacceptable, put `BACKUP_DIR`
-  outside a shared filesystem and tighten the mode yourself.
+* **The backup tree is `0700` and root-only, while the dump is briefly written as the
+  site owner.** `wp db export` runs as the site owner after the user switch, so it writes
+  into a private temporary directory owned by that user; root then moves the file into the
+  backup tree as `root:root 0640`. There is no world-writable directory, and no other site
+  owner can read the dump. The mode was `1777` with the sticky bit up to 8.0.2 and was
+  changed in 8.0.3.
 * **`--no-lock` exists.** It is for nested or manual runs; using it to bypass a real
   lock re-introduces the corruption the lock prevents.
 * **`--restore-db` overwrites a database.** It requires `--yes` and dumps first; that is

@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/paulmann/Bash_WP-CLI_Update/security/advisories/new
+    about: Report a vulnerability privately. Do not open a public issue for anything that can become code execution as root.
+  - name: Documentation and wiki
+    url: https://github.com/paulmann/Bash_WP-CLI_Update/wiki
+    about: Installation walkthroughs, host notes and the articles that are not in the repository.
+  - name: Questions and support
+    url: https://github.com/paulmann/Bash_WP-CLI_Update/blob/main/SUPPORT.md
+    about: Read what to include, which form to use, and which versions are supported before opening an issue.

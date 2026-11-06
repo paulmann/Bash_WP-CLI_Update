@@ -1,0 +1,20 @@
+{
+  "_comment": "Read by ghagent (github-agent 1.4.0); paths are relative to this file. 'legacy/' holds byte-exact frozen copies of the 5.0 scripts published before the 2026 rewrite: archived evidence cited by ANALYSIS.md and deliberately never edited, so the document and privacy walkers skip it.",
+  "owner_repo": "paulmann/Bash_WP-CLI_Update",
+  "default_branch": "main",
+  "readme": "README.md",
+  "agents": "AGENTS.md",
+  "changelog": "CHANGELOG.md",
+  "docs_dir": "docs",
+  "wiki_dir": "wiki",
+  "wiki_manifest": "wiki/wiki.json",
+  "ci_workflow": ".github/workflows/ci.yml",
+  "exclude_dirs": ["legacy", ".ghagent", "dist", "backups"],
+  "safe_email_domains": [],
+  "ignore_rules": [],
+  "topic_min": 8,
+  "topic_max": 20,
+  "description_max": 200,
+  "changelog_style": "keepachangelog",
+  "language": "en"
+}

@@ -71,6 +71,12 @@ stand/
 # bin/ is deliberately NOT listed here: it holds the npm shims (bin/wp-cli-update,
 # bin/wp-find) and they have to ship with the package.
 
+# --- ghagent build output ----------------------------------------------------
+# `ghagent wiki build` writes the built wiki here before publication. It is
+# derived from wiki/ and never committed; `wiki publish --push` copies it into the
+# separate wiki repository.
+.ghagent/
+
 # --- RAGRAF index -----------------------------------------------------------
 # Machine-local derived data (index, revisions, code-property graph). It is rebuilt
 # automatically and must never enter history: at fleet scale it is hundreds of

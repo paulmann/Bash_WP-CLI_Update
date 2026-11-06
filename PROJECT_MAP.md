@@ -2,16 +2,17 @@
 
 File-by-file map of the repository, with the direction of every dependency.
 
-**Files: 45** · generated 2026-10-21 · `tests/test_static.sh` verifies the count
+**Files: 71** · generated 2026-11-06 · `tests/test_static.sh` verifies the count
 against `git ls-files`, so this document cannot go stale silently the way the
 auto-generated map of an earlier revision did (it declared 5 files while the
 branch shipped 11, in a second language, with a content fingerprint that did not
 match its own content).
 
-The count covers the shipped tree: the product, its tests, its documentation and the
-`legacy/` archive. The frozen `6.3/` and `6.4/` snapshots, `bin/`, `.compare/`,
-`.zwork/` and generated files (logs, lock files, the site list, backups, `dist/`) are
-excluded by `.gitignore`.
+The count covers the whole tracked tree: the product, its tests, its documentation, the
+`legacy/` archive, the wiki sources, the rendered assets and the community files. The
+frozen `6.3/` and `6.4/` snapshots, `bin/`, `.compare/`, `.zwork/`, `.ghagent/` and
+generated files (logs, lock files, the site list, backups, `dist/`) are excluded by
+`.gitignore`.
 
 If you add or remove a file, update the count above and the table below in the
 same commit.
@@ -20,8 +21,7 @@ same commit.
 
 | File | Version | Purpose | Depends on |
 |---|---|---|---|
-| `Bash_WP-CLI_Update.sh` | 8.0.4 | Runs WP-CLI maintenance over every site in the list, each as its owner. Modes (mutating, read-only and diagnostic), configuration layers, locking, logging, timeouts, licence handoff, backups and restore, retries and the circuit breaker, JSON reports and notifications, rendering. | `Find_WP_Senior.sh` (only when the site list is missing and `AUTO_DISCOVER` is on) · `wp` · `runuser`/`sudo`/`su` · `flock`, `timeout` or `perl` (optional) · `gzip`, 
-ice`, `ionice`, `curl`, `mail` (optional) |
+| `Bash_WP-CLI_Update.sh` | 8.0.4 | Runs WP-CLI maintenance over every site in the list, each as its owner. Modes (mutating, read-only and diagnostic), configuration layers, locking, logging, timeouts, licence handoff, backups and restore, retries and the circuit breaker, JSON reports and notifications, rendering. | `Find_WP_Senior.sh` (only when the site list is missing and `AUTO_DISCOVER` is on) · `wp` · `runuser`/`sudo`/`su` · `flock`, `timeout` or `perl` (optional) · `gzip`, `nice`, `ionice`, `curl`, `mail` (optional) |
 | `Find_WP_Senior.sh` | 2.1.0 | Scans named web roots for WordPress installations, honours `.no_wp_cli` and exclusions, deduplicates, enriches with metadata, writes the list atomically. | `find`, `sort`, `stat`, `mktemp` |
 | `wp-cli-update.conf.example` | — | Every manager setting with its default and the reason it exists. Copy to `/etc/wp-cli-update.conf` or next to the script. | read by `Bash_WP-CLI_Update.sh` |
 
@@ -61,10 +61,21 @@ trailing whitespace) and the `--output` / `--sites` flags.
 | File | Purpose |
 |---|---|
 | `README.md` | Operator documentation: what changed in 8.0.0, safety model, install, quick start, every mode and option, configuration reference, reports and notifications, exit codes, production deployment, tests, upgrade notes. |
-| `AGENTS.md` | Install-and-configure instructions for an LLM agent (or a careful human): preconditions, ordered install, configuration rules, verification order, troubleshooting table, absolute do-nots, how to extend the product. |
+| `AGENTS.md` | The agent map: two overriding rules, the file table, the verification order in brief, the non-negotiable rules, the do-nots and the report-back format; detail is in `docs/AGENT-INSTALL.md`, `docs/AGENT-OPERATIONS.md` and `docs/DEVELOPMENT.md`. |
 | `CHANGELOG.md` | Keep a Changelog. User-facing; an internal agent log is not a changelog. |
 | `AGENT.md` | Pointer to `AGENTS.md`, kept because older tooling looks for this name. |
+| `docs/AGENT-INSTALL.md` | Preconditions, both install routes, configuration rules, the site list and the ordered verification. |
+| `docs/AGENT-OPERATIONS.md` | Scheduled operation, reading a run report, the failure table and the absolute do-nots. |
+| `docs/DEVELOPMENT.md` | Test suites, static gates, the fixed order for adding a feature, versioning and the release pointer. |
+| `docs/RELEASE-HISTORY.md` | Which branch became which release, and why 7.0.1 is a separate architecture. |
+| `docs/README.md` | Documentation index: by document and by task. |
 | `docs/COMPARISON.md` | The three-way comparison (`main`, `QWEN_Hybrid`, `DeepSeek_Hybrid`) that produced 8.0.0: metrics, feature matrix, what came from where, what was rejected and why, defects found, what all three had forgotten, and the verification record. |
+| `docs/PUBLISHING.md` | How a release is cut: version bump, the three artefacts, what the workflow checks, and the npm step that is deliberately manual. |
+| `wiki/` | GitHub wiki sources and `wiki.json`; published with `ghagent wiki build\|verify\|publish`. |
+| `assets/` | The rendered 1280×640 social preview (PNG and SVG), regenerated with `ghagent assets render --write`. |
+| `CODE_OF_CONDUCT.md`, `SUPPORT.md`, `CITATION.cff` | Contributor Covenant 2.1, the support routes, and the machine-readable citation. |
+| `.github/ISSUE_TEMPLATE/`, `PULL_REQUEST_TEMPLATE.md`, `CODEOWNERS`, `dependabot.yml` | Bug and feature forms plus contact links, the PR checklist, the reviewer and the weekly Actions update. |
+| `.ghagent.json` | Repository-local configuration for `ghagent`: owner/repo, document paths, the wiki, and the deliberately excluded `legacy/` archive. |
 | `SECURITY.md` | Threat model of a root tool, supported versions, how to report, known non-issues, hardening checklist. |
 | `package.json` | npm packaging: name, version, `bin` shims, `files` whitelist, `os: linux`, licence. `prepublishOnly` re-checks the syntax of all four shell files. |
 | `bin/wp-cli-update`, `bin/wp-find` | The npm shims: resolve their real path through the symlink npm creates, then `exec bash` the script with the same arguments. |
@@ -72,8 +83,6 @@ trailing whitespace) and the `--output` / `--sites` flags.
 | `Makefile` | `make test`, `make lint`, `make dist`, `make install`. |
 | `.editorconfig` | LF endings and 4-space indent; the two settings that break a shell script silently. |
 | `CONTRIBUTING.md` | The four invariants, the fixed order for adding a feature, versioning, commit rules. |
-| `docs/README.md` | Documentation index: by document and by task. |
-| `docs/PUBLISHING.md` | How a release is cut: version bump, the three artefacts, what the workflow checks, and the npm step that is deliberately manual. |
 | `.github/workflows/release.yml` | On a `v*` tag: re-runs the gates, checks that tag and `SCRIPT_VERSION` agree, builds `dist/`, publishes the release with the tarball and `SHA256SUMS`. |
 | `.github/workflows/ci.yml` | CI: shellcheck, the full suite on bash 5.x and on the 4.2 floor, documentation and version consistency, and a check that the test run leaves no files behind. |
 | `contrib/wp-cli-update.service`, `contrib/wp-cli-update.timer` | A nightly systemd run: nice/ionice, a three-hour ceiling, journal logging, randomised delay. |
@@ -88,7 +97,7 @@ trailing whitespace) and the `--output` / `--sites` flags.
 
 The manager grew a fleet layer on top of the per-site one in v6.2.0:
 
-```
+```text
 parse_args → validate_args → config_load → config_apply_all → validate_args
    │
    ├─ --list-modes / --print-config / --list-sites … inspect and exit
@@ -117,7 +126,7 @@ Four things a parallel worker cannot do on its own, and where each is handled:
 | concurrent sites interleave in the shared log file | `log_write_file` appends to the fragment while `PARALLEL=true`; the parent appends fragments in order |
 | a machine-readable payload must stay parseable | `render_plugin_table` and `emit_site_record` route to the fragment whenever the output is machine-readable |
 
-```
+```text
 Find_WP_Senior.sh --output FILE [ROOT ...]
         |
         |  one absolute path per line, atomic write, permissions preserved
@@ -143,7 +152,7 @@ Bash_WP-CLI_Update.sh MODE [options]
 
 ## Configuration layers
 
-```
+```text
 defaults (in the script)
    ^  overridden by
 /etc/wp-cli-update.conf
