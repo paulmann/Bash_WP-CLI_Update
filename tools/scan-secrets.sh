@@ -47,8 +47,8 @@ if [ -z "${BASH_VERSION:-}" ]; then
     printf 'ERROR: this script requires bash, but another shell started it.\n' >&2
     exit 3
 fi
-if ((BASH_VERSINFO[0] < 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 2))); then
-    printf 'ERROR: %s requires bash 4.2 or newer (found %s).\n' \
+if ((BASH_VERSINFO[0] < 5 || (BASH_VERSINFO[0] == 5 && BASH_VERSINFO[1] < 1))); then
+    printf 'ERROR: %s requires bash 5.1 or newer (found %s).\n' \
         "${0##*/}" "${BASH_VERSION:-unknown}" >&2
     exit 3
 fi

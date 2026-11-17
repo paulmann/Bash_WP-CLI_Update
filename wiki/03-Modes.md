@@ -47,7 +47,7 @@ completion script needs and does not list itself.
 | `-U, --url URL` | pass `--url` to every call (multisite); otherwise derived from `wp-config.php` |
 | `--no-url-detect` | never derive `--url` |
 
-`-j N` is a batch barrier, not a continuous pool: bash 4.2 has no `wait -n`, so the next
+`-j N` is a batch barrier, not a continuous pool: the next
 batch starts when the slowest site of the current one finishes. Per-site output and log
 lines are replayed in site order at the barrier, so `tail -f` looks stalled until it lands.
 

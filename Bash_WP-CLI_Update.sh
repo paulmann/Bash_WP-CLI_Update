@@ -15,7 +15,7 @@
 # Project:     Bash WP-CLI Update
 # Repository:  https://github.com/paulmann/Bash_WP-CLI_Update
 # License:     MIT (see LICENSE)
-# Version:     8.1.2
+# Version:     9.0.0
 #
 # Purpose
 #   Run WP-CLI maintenance operations (core, plugins, themes, database, cron,
@@ -76,7 +76,7 @@
 #   4  configuration error (unreadable or rejected config file)
 #
 # Requirements
-#   bash 4.2+, GNU coreutils and findutils, WP-CLI, one of runuser/sudo/su,
+#   bash 5.1+, GNU coreutils and findutils, WP-CLI, one of runuser/sudo/su,
 #   root (to switch into site owners). `flock` and `timeout` are used when
 #   present and degrade gracefully when they are not.
 ###############################################################################
@@ -86,8 +86,8 @@ if [ -z "${BASH_VERSION:-}" ]; then
     printf '       Run it as: bash %s [options]\n' "${0##*/}" >&2
     exit 3
 fi
-if ((BASH_VERSINFO[0] < 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 2))); then
-    printf 'ERROR: %s requires bash 4.2 or newer (found %s).\n' \
+if ((BASH_VERSINFO[0] < 5 || (BASH_VERSINFO[0] == 5 && BASH_VERSINFO[1] < 1))); then
+    printf 'ERROR: %s requires bash 5.1 or newer (found %s).\n' \
         "${0##*/}" "${BASH_VERSION:-unknown}" >&2
     exit 3
 fi
@@ -103,7 +103,7 @@ shopt -s inherit_errexit 2>/dev/null || true
 ###############################################################################
 
 PROG_NAME="${0##*/}"
-SCRIPT_VERSION='8.1.2'
+SCRIPT_VERSION='9.0.0'
 
 # A literal backtick, spelled by code point: the config parser has to reject it,
 # and writing the character directly would make this file fail the project's own
@@ -3258,8 +3258,8 @@ plugin_resolve_slug() { # SITE USER NAME -> slug
     ((WP_STATUS == 0)) || return 1
     local tsv n t _status match='' matches=0 hit=0
     # `title` last, for the same reason as in plugin_select_targets. Plain
-    # scalars, not an array: bash 4.2 treats an empty array as unset and the
-    # documented floor has to keep working.
+    # scalars, not an array: the answer is "none, one, or many", and three
+    # variables say that without building a list nobody reads.
     tsv="$(printf '%s' "$WP_OUTPUT" | json_to_tsv name status title)" || return 1
     while IFS=$'\t' read -r n _status t; do
         [ "$n" = 'name' ] && continue
@@ -3873,10 +3873,10 @@ ${C_BOLD}Licence handling:${C_RESET}
   /etc/wp-cli-update/astra.key and \$HOME/.astra.key.
 
 ${C_BOLD}Parallelism:${C_RESET}
-  -j N runs the fleet in batches of N. Bash 4.2 has no 'wait -n', so this is a
-  batch barrier, not a continuous pool: the next batch starts when the slowest
-  site of the current one finishes. Per-site console output and log lines are
-  buffered and replayed in site order after each barrier, so neither interleaves.
+  -j N runs the fleet in batches of N. This is a batch barrier, not a continuous
+  pool: the next batch starts when the slowest site of the current one finishes.
+  Per-site console output and log lines are buffered and replayed in site order
+  after each barrier, so neither interleaves.
   The consequence worth remembering: during a parallel run the log file grows at
   the barrier, not while the work happens, so 'tail -f' looks stalled until the
   batch lands.
@@ -4286,10 +4286,10 @@ validate_args() {
 # 18. Fleet execution: sequential and parallel
 ###############################################################################
 
-# Parallelism is batched, not a continuous pool: bash 4.2 has no `wait -n`, so a
-# pool would need a job server and a fifo. A batch barrier is one `wait`, and on
-# a fleet of similar sites the difference is a few seconds. This is the same
-# trade-off SagaAI made and it is the right one for the stated bash floor.
+# Parallelism is batched, not a continuous pool. `wait -n` has existed since 4.3
+# and the floor is 5.1, so a pool is possible -- but it needs a job server and a
+# fifo to keep the per-site fragments in order, and on a fleet of similar sites
+# it saves a few seconds per batch. The barrier is one `wait` and stays.
 #
 # Four things have to survive the fork, and none of them survives by itself:
 #

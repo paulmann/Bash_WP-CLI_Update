@@ -77,8 +77,8 @@ so the comparison stays checkable instead of being overwritten. The table is mai
 | `v7.0.1` | `QWEN-Agent_Mode` | a modular tree (`src/manager`, `src/finder`) built into one script |
 | `v8.0.0` | this tree | the merge: read-only modes, restore, fleet control, guards, reports |
 
-The current release is 8.1.2, a bug-fix release on 8.1.1 that repairs the selective
-update path, together with the security work described
+The current release is 9.0.0: the selective update path repaired, and the bash floor
+raised to 5.1, together with the security work described
 above, and the point at which the licence moved to MIT, so commercial use no longer
 needs a separate agreement.
 
@@ -99,7 +99,7 @@ release rather than being folded in.
   PHP on the manager side. It drives a `wp` binary.
 * **Not an installer for WP-CLI.** The npm package installs two commands that exec the
   shipped scripts; it does not install WP-CLI and it runs nothing at install time.
-* **Not portable to macOS.** The npm package declares `os: linux`; the floor is bash 4.2
+* **Not portable to macOS.** The npm package declares `os: linux`; the floor is bash 5.1
   and GNU coreutils, and macOS ships bash 3.2.
 * **Not a monitoring system.** `--health` answers "what is pending right now" and
   `--status` answers "what did the last run do"; a notification carries counters only.

@@ -178,7 +178,8 @@ Checked against the questions an operator actually asks during an incident:
 
 * `Find_WP_Senior.sh` was not rewritten: it is a separate tool with its own suite, and
   6.2.0's version (2.1.0) already passes the contract tests.
-* Continuous parallelism (a real pool with `wait -n`) needs bash 4.3+; the floor is
-  4.2, so the batch barrier stays. It costs at most one slow site per batch.
+* Continuous parallelism (a real pool with `wait -n`) is possible now that the floor
+  is 5.1, but the batch barrier stays: it keeps the per-site output contiguous and
+  costs at most one slow site per batch.
 * Email notification uses `mail(1)`; a host without it logs a note and moves on, it does
   not fail the run. A SMTP client would be a new dependency for one feature.

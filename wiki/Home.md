@@ -4,7 +4,7 @@ Bash WP-CLI Update runs WP-CLI maintenance over a list of WordPress installation
 plugins, themes, the database schema and due cron events, one site at a time, each site
 as the system user that owns it. It backs a site up before it changes it, writes a JSON
 run report with the list of what actually changed, and can restore a database from the
-dumps it takes. It is a bash 4.2+ script that runs as root. It is not a WordPress plugin
+dumps it takes. It is a bash 5.1+ script that runs as root. It is not a WordPress plugin
 and it does not need PHP.
 
 ```bash
@@ -15,7 +15,7 @@ Bash_WP-CLI_Update.sh --full --backup db --jobs 4 --report /var/log/wp/report.js
 
 A race condition in the WordPress core update mechanism is exploited in the wild. Core
 4.7 through 7.1.3 is affected; 7.1.4 is the fixed release, and 4.6 and older get no fix.
-Version 8.1.2 answers it with two modes and a configuration setting: `--security` reports
+Version 9.0.0 answers it with two modes and a configuration setting: `--security` reports
 each site's core version against the fixed releases and exits non-zero when a site is
 exposed, `--harden` closes `wp-content/upgrade/` on Apache and LiteSpeed, and
 `HARDEN_UPGRADE_DIR=1` does the same during every writing mode. nginx ignores
@@ -29,9 +29,9 @@ maintenance run, not after.
 
 | Item | Value |
 |---|---|
-| Version | 8.1.2 |
+| Version | 9.0.0 |
 | Finder version | 2.1.0 (`Find_WP_Senior.sh`) |
-| Runtime | bash 4.2+, GNU coreutils and findutils, WP-CLI |
+| Runtime | bash 5.1+, GNU coreutils and findutils, WP-CLI |
 | Privileges | root, plus one of `runuser` / `sudo` / `su` |
 | Optional tools | `flock`, `timeout` (or `perl`), `tar`, `gzip`, `nice`, `ionice`, `curl`, `mail` |
 | Licence | MIT |

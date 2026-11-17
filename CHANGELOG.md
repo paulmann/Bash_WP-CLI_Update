@@ -16,15 +16,29 @@ draft of 8.0.0 — is in [docs/RELEASE-HISTORY.md](docs/RELEASE-HISTORY.md).
 
 ## [Unreleased]
 
-## [8.1.2] - 2026-11-17
+## [9.0.0] - 2026-11-17
 
-Bug-fix release for the selective update path: `--only-active`, `--exclude-plugins`,
-`--hold-plugins`, `--exclude-themes`, `--hold-themes` and `--plugin-manage`.
-Measured on WP-CLI 2.12.0: on 8.1.1 every site that used those options failed with
-“cannot enumerate plugins … nothing was updated”, so a nightly `--full` run with
-`EXCLUDE_PLUGINS` or `SKIP_IF_NO_UPDATES` set did nothing at all. `--all` was not
-affected, which is why the damage looked like a plugin problem rather than a
-manager problem.
+Two changes in one release: the selective update path is repaired, and the minimum
+bash version is now 5.1. The floor is why this is a major version — a documented
+runtime requirement went up, so a host that only has bash 4.x must either upgrade
+bash or stay on 8.1.1, which does contain the selection bug.
+
+### Changed
+
+- **The floor is bash 5.1.** Bash 4.2 (2011) ships only on CentOS 7, which reached
+  end of life in June 2024, and on distributions that stopped receiving updates
+  years ago; every distribution still supported in 2026 ships 5.1 or newer (Ubuntu
+  22.04+, Debian 11+, RHEL/Rocky/Alma 9+; Alpine 3.14+). The manager, the finder
+  and `install.sh` refuse anything older with exit 3 and the version they found.
+  Hosts on RHEL/Rocky/Alma 8 (bash 4.4) can no longer run 9.0.0; 8.1.1 remains the
+  last release they can use.
+- CI takes the floor from a distribution image (`ubuntu-22.04`, bash 5.1) instead
+  of compiling bash 4.2 from source, which stopped working when `ubuntu-latest`
+  moved to a compiler that defaults to C23 in November 2026. A published bash is
+  also a better floor test than a hand-built one.
+- `-j N` is still a batch barrier, not a continuous pool. `wait -n` would allow a
+  pool now, but the barrier keeps every site's output contiguous and costs at most
+  one slow site per batch, so the shape stays.
 
 ### Fixed
 
@@ -691,8 +705,8 @@ without output, `--help` is not a flag, commands are built by string
 concatenation, no lock, no log rotation, no dry run, and the Astra key is edited
 into the script.
 
-[Unreleased]: https://github.com/paulmann/Bash_WP-CLI_Update/compare/v8.1.2...HEAD
-[8.1.2]: https://github.com/paulmann/Bash_WP-CLI_Update/compare/v8.1.1...v8.1.2
+[Unreleased]: https://github.com/paulmann/Bash_WP-CLI_Update/compare/v9.0.0...HEAD
+[9.0.0]: https://github.com/paulmann/Bash_WP-CLI_Update/compare/v8.1.1...v9.0.0
 [8.1.1]: https://github.com/paulmann/Bash_WP-CLI_Update/compare/v8.1.0...v8.1.1
 [8.1.0]: https://github.com/paulmann/Bash_WP-CLI_Update/compare/v8.0.4...v8.1.0
 [8.0.4]: https://github.com/paulmann/Bash_WP-CLI_Update/compare/v8.0.3...v8.0.4

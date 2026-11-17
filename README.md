@@ -1,12 +1,12 @@
-# Bash WP-CLI Update 8.1.2
+# Bash WP-CLI Update 9.0.0
 
 Maintenance automation for a fleet of WordPress installations, driven by WP-CLI and
-written in POSIX-friendly bash 4.2+.
+written in POSIX-friendly bash 5.1+.
 
 [![CI](https://github.com/paulmann/Bash_WP-CLI_Update/actions/workflows/ci.yml/badge.svg)](https://github.com/paulmann/Bash_WP-CLI_Update/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/paulmann/Bash_WP-CLI_Update?label=release)](https://github.com/paulmann/Bash_WP-CLI_Update/releases)
 [![MIT licensed](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
-[![bash 4.2+](https://img.shields.io/badge/bash-4.2%2B-4EAA25)](https://www.gnu.org/software/bash/)
+[![bash 5.1+](https://img.shields.io/badge/bash-5.1%2B-4EAA25)](https://www.gnu.org/software/bash/)
 [![npm](https://img.shields.io/npm/v/bash-wp-cli-update?label=npm)](https://www.npmjs.com/package/bash-wp-cli-update)
 
 <img src="https://github.com/paulmann/Bash_WP-CLI_Update/raw/main/assets/social-preview.png"
@@ -28,8 +28,8 @@ JSON report, a change log and a restore path:
 Bash_WP-CLI_Update.sh --full --backup db --jobs 4 --report /var/log/wp/report.json
 ```
 
-* Version: **8.1.2** (finder 2.1.0)
-* Requires: `bash >= 4.2`, GNU coreutils/findutils, WP-CLI, `root` (to switch into
+* Version: **9.0.0** (finder 2.1.0)
+* Requires: `bash >= 5.1`, GNU coreutils/findutils, WP-CLI, `root` (to switch into
   site owners), one of `runuser` / `sudo` / `su`
 * Optional: `flock`, `timeout` (or `perl`), `tar`, `gzip`, `nice`, `ionice`, `curl`,
   `mail`
@@ -67,13 +67,16 @@ Bash_WP-CLI_Update.sh --full --backup db --jobs 4 --report /var/log/wp/report.js
 > print the nginx directive, because nginx ignores `.htaccess`. `--health` gained a
 > CVE column, and a core run that leaves a site below the fixed release says so.
 > The licence is now MIT, so commercial use no longer needs a separate agreement.
-> **8.1.2 fixes the selective update path.** `--only-active`, `--exclude-plugins`,
-> `--hold-plugins`, `--exclude-themes`, `--hold-themes` and `--plugin-manage` asked
-> WP-CLI for a `slug` field that does not exist, so on WP-CLI 2.12.0 every site that
-> used them failed with “cannot enumerate plugins … nothing was updated” — a nightly
-> `--full` run with `EXCLUDE_PLUGINS` set updated nothing at all. The slug now comes
-> from `name`, the display name from `title`, and mu-plugins/dropins — which cannot
-> be updated and used to fail a healthy site — are skipped. `--all` is unchanged.
+> **9.0.0 fixes the selective update path and raises the floor to bash 5.1.**
+> `--only-active`, `--exclude-plugins`, `--hold-plugins`, `--exclude-themes`,
+> `--hold-themes` and `--plugin-manage` asked WP-CLI for a `slug` field that does
+> not exist, so on WP-CLI 2.12.0 every site that used them failed with “cannot
+> enumerate plugins … nothing was updated” — a nightly `--full` run with
+> `EXCLUDE_PLUGINS` set updated nothing at all. The slug now comes from `name`, the
+> display name from `title`, and mu-plugins/dropins — which cannot be updated and
+> used to fail a healthy site — are skipped. `--all` is unchanged. The bash floor
+> moves from 4.2 (CentOS 7, end of life in 2024) to 5.1, which every distribution
+> still supported in 2026 ships; a host that only has bash 4.x stays on 8.1.1.
 > **8.1.1 is a test-only patch.** The fake `wp` in the fleet suite built its argv
 > record from several `write()` calls, so concurrent workers could merge two records
 > into one line and the invocation count flaked ("the batch stopped early"); the record
@@ -158,7 +161,7 @@ Three ways, same result. Pick one:
 npm install -g bash-wp-cli-update
 
 # 2. the installer from the archive
-curl -LO https://github.com/paulmann/Bash_WP-CLI_Update/releases/latest/download/bash-wp-cli-update-8.1.2.tar.gz
+curl -LO https://github.com/paulmann/Bash_WP-CLI_Update/releases/latest/download/bash-wp-cli-update-9.0.0.tar.gz
 sudo ./install.sh --dry-run     # show every step
 sudo ./install.sh --systemd     # does it, plus the nightly timer
 ```

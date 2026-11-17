@@ -27,39 +27,35 @@ jobs:
 
   test:
     name: test suite (bash ${{ matrix.bash }})
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - bash: 'system'   # ubuntu-latest ships bash 5.x
-          - bash: '4.2'      # the documented floor
+          # The current bash of the runner image.
+          - os: ubuntu-latest
+            bash: 'current'
+          # The documented floor, taken from a distribution that ships it instead
+          # of compiled here. Ubuntu 22.04 has bash 5.1, which is the oldest
+          # version in any distribution still receiving updates: CentOS 7 (bash
+          # 4.2) went end-of-life in 2024, and RHEL 8 (4.4) cannot run the
+          # manager any more. Compiling 4.2 on ubuntu-latest stopped working when
+          # the image moved to a C23-by-default compiler in November 2026, and a
+          # hand-built bash was always more fragile than a published one.
+          - os: ubuntu-22.04
+            bash: '5.1'
     steps:
       - uses: actions/checkout@v4
 
-      - name: install the bash under test
-        if: matrix.bash != 'system'
+      - name: the image really ships the bash this job claims
         run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential curl
-          cd /tmp
-          curl -fsSLO https://ftp.gnu.org/gnu/bash/bash-${{ matrix.bash }}.tar.gz
-          tar xzf bash-${{ matrix.bash }}.tar.gz
-          cd bash-${{ matrix.bash }}
-          # bash 4.2 is from 2010 and declares several helpers as `char *f ()`.
-          # Compilers that default to C23 read `()` as "takes no arguments" and
-          # refuse the call sites ("too many arguments to function 'xmalloc'"),
-          # which is what ubuntu-latest started doing in November 2026. gnu89
-          # restores the old meaning and is what lets the floor build there
-          # instead of pinning the job to an older image forever.
-          ./configure --without-bash-malloc CFLAGS='-std=gnu89 -O2' >/dev/null
-          make -j"$(nproc)" >/dev/null
-          sudo make install
-          /usr/local/bin/bash --version | head -1
-          test "$(/usr/local/bin/bash -c 'echo ${BASH_VERSINFO[0]}.${BASH_VERSINFO[1]}')" = "${{ matrix.bash }}"
-          # Put the new bash first so the suites and their shebangs use it.
-          sudo ln -sf /usr/local/bin/bash /usr/local/bin/bash42
-          echo "/usr/local/bin" >> "$GITHUB_PATH"
+          v="$(bash -c 'echo "${BASH_VERSINFO[0]}.${BASH_VERSINFO[1]}"')"
+          echo "bash: ${v}"
+          case "${{ matrix.bash }}" in
+            current) echo "whatever the image ships is the point of this job" ;;
+            5.1) [ "$v" = '5.1' ] || { echo "the image ships bash ${v}, expected 5.1"; exit 1; } ;;
+            *) echo "unknown matrix entry"; exit 1 ;;
+          esac
 
       - name: syntax
         run: for f in *.sh tools/*.sh tests/*.sh tests/stub/wp; do bash -n "$f"; done
@@ -69,11 +65,7 @@ jobs:
           # The suites that exercise the user switch require root; on a runner the
           # account is 'runner', so root is borrowed explicitly. Checks that still
           # cannot run (no switchable account, no ionice) report SKIP with a reason.
-          if [ "${{ matrix.bash }}" = 'system' ]; then
-            sudo env "PATH=$PATH" bash tests/run_tests.sh
-          else
-            sudo env "PATH=/usr/local/bin:$PATH" /usr/local/bin/bash tests/run_tests.sh
-          fi
+          sudo env "PATH=$PATH" bash tests/run_tests.sh
 
       - name: nothing was written into the repository
         run: |

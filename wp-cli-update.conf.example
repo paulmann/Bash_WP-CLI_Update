@@ -1,4 +1,4 @@
-# Configuration example for Bash_WP-CLI_Update.sh 8.1.2
+# Configuration example for Bash_WP-CLI_Update.sh 9.0.0
 #
 # Copy it to one of these places and edit:
 #
@@ -130,8 +130,8 @@ ASTRA_SLUG=astra-addon
 # ---------------------------------------------------------------- parallelism
 # Process N sites at a time. 1 (the default) is sequential.
 #
-# This is a batch barrier, not a continuous pool: bash 4.2 has no `wait -n`, so
-# the next batch waits for the slowest site of the current one. Pick N from the
+# This is a batch barrier, not a continuous pool: the next batch waits for the
+# slowest site of the current one. Pick N from the
 # slowest shared resource, which is normally the database server and not the CPU
 # -- 4 to 8 is a sane range for one MySQL instance on one host.
 #

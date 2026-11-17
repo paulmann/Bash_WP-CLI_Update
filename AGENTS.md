@@ -1,4 +1,4 @@
-# AGENTS.md — install and operate Bash WP-CLI Update 8.1.2
+# AGENTS.md — install and operate Bash WP-CLI Update 9.0.0
 
 Instructions for an LLM agent (or a careful human) who installs, configures and verifies
 this tool on a Linux host. This file is a map: the detailed procedures live in `docs/`
@@ -18,7 +18,7 @@ Two rules override every other consideration:
 
 ## What the product is
 
-`Bash_WP-CLI_Update.sh` is a bash 4.2+ script that runs WP-CLI maintenance over a list
+`Bash_WP-CLI_Update.sh` is a bash 5.1+ script that runs WP-CLI maintenance over a list
 of WordPress installations, each one as the system user that owns it. It is not a
 WordPress plugin and does not need PHP: it needs a `wp` binary, bash, coreutils, and
 root (to switch into site owners).
@@ -40,7 +40,7 @@ the site list and what each verification step must print — is in
 [docs/AGENT-INSTALL.md](docs/AGENT-INSTALL.md). The short form:
 
 ```bash
-bash --version | head -1                 # must be >= 4.2
+bash --version | head -1                 # must be >= 5.1
 id -u                                    # 0 for a real run (root)
 command -v wp                            # or set WP_CLI_PATH explicitly
 

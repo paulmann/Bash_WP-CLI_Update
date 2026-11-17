@@ -6,7 +6,7 @@
 # manager next to it. `readlink -f` does that on Linux; when it is unavailable the
 # unresolved path still works for a plain copy.
 #
-# The manager is a bash script with its own version guard: bash 4.2 or newer, GNU
+# The manager is a bash script with its own version guard: bash 5.1 or newer, GNU
 # coreutils, findutils, tar, gzip. This shim adds nothing and changes nothing.
 set -uo pipefail
 

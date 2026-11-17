@@ -21,7 +21,7 @@ same commit.
 
 | File | Version | Purpose | Depends on |
 |---|---|---|---|
-| `Bash_WP-CLI_Update.sh` | 8.1.2 | Runs WP-CLI maintenance over every site in the list, each as its owner. Modes (mutating, read-only, diagnostic and security), configuration layers, locking, logging, timeouts, licence handoff, backups and restore, retries and the circuit breaker, JSON reports and notifications, the CVE-2026-119977 assessment and the `wp-content/upgrade/` hardening, rendering. | `Find_WP_Senior.sh` (only when the site list is missing and `AUTO_DISCOVER` is on) · `wp` · `runuser`/`sudo`/`su` · `flock`, `timeout` or `perl` (optional) · `gzip`, `nice`, `ionice`, `curl`, `mail` (optional) |
+| `Bash_WP-CLI_Update.sh` | 9.0.0 | Runs WP-CLI maintenance over every site in the list, each as its owner. Modes (mutating, read-only, diagnostic and security), configuration layers, locking, logging, timeouts, licence handoff, backups and restore, retries and the circuit breaker, JSON reports and notifications, the CVE-2026-119977 assessment and the `wp-content/upgrade/` hardening, rendering. | `Find_WP_Senior.sh` (only when the site list is missing and `AUTO_DISCOVER` is on) · `wp` · `runuser`/`sudo`/`su` · `flock`, `timeout` or `perl` (optional) · `gzip`, `nice`, `ionice`, `curl`, `mail` (optional) |
 | `Find_WP_Senior.sh` | 2.1.0 | Scans named web roots for WordPress installations, honours `.no_wp_cli` and exclusions, deduplicates, enriches with metadata, writes the list atomically. | `find`, `sort`, `stat`, `mktemp` |
 | `wp-cli-update.conf.example` | — | Every manager setting with its default and the reason it exists. Copy to `/etc/wp-cli-update.conf` or next to the script. | read by `Bash_WP-CLI_Update.sh` |
 
@@ -86,7 +86,7 @@ trailing whitespace) and the `--output` / `--sites` flags.
 | `.editorconfig` | LF endings and 4-space indent; the two settings that break a shell script silently. |
 | `CONTRIBUTING.md` | The four invariants, the fixed order for adding a feature, versioning, commit rules. |
 | `.github/workflows/release.yml` | On a `v*` tag: re-runs the gates, checks that tag and `SCRIPT_VERSION` agree, builds `dist/`, publishes the release with the tarball and `SHA256SUMS`. |
-| `.github/workflows/ci.yml` | CI: shellcheck, the full suite on bash 5.x and on the 4.2 floor, documentation and version consistency, and a check that the test run leaves no files behind. |
+| `.github/workflows/ci.yml` | CI: shellcheck, the full suite on the current bash and on a bash 5.1 image (the documented floor, taken from a distribution rather than compiled), documentation and version consistency, and a check that the test run leaves no files behind. |
 | `contrib/wp-cli-update.service`, `contrib/wp-cli-update.timer` | A nightly systemd run: nice/ionice, a three-hour ceiling, journal logging, randomised delay. |
 | `contrib/cron.example` | The same with plain cron, plus a read-only `--health` probe for monitoring. |
 | `contrib/logrotate.conf` | Long-term rotation for the log directory, with `copytruncate` (the manager keeps its log open for the whole run). |

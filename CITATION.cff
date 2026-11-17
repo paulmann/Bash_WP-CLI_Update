@@ -13,7 +13,7 @@ authors:
 repository-code: "https://github.com/paulmann/Bash_WP-CLI_Update"
 url: "https://github.com/paulmann/Bash_WP-CLI_Update"
 license: MIT
-version: "8.1.2"
+version: "9.0.0"
 date-released: "2026-11-06"
 keywords:
   - wordpress

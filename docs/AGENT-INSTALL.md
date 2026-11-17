@@ -17,7 +17,7 @@ Run these and compare with the expected answers. If a check fails, stop and repo
 exact command and output — do not install a workaround silently.
 
 ```bash
-bash --version | head -1                 # >= 4.2
+bash --version | head -1                 # >= 5.1
 id -u                                    # 0 for a real run (root)
 command -v wp                            # /usr/local/bin/wp or configure WP_CLI_PATH
 command -v runuser || command -v sudo || command -v su

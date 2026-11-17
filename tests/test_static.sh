@@ -200,6 +200,35 @@ else
     bad 'cannot read SCRIPT_VERSION from the finder' ''
 fi
 
+say 'the bash floor is the same everywhere'
+# The floor is a promise to strangers: the manager refuses to start below it, the
+# finder and the installer say the same number, and four documents repeat it. When
+# one of them is edited alone the suite has to say so, because a stale "bash 4.2+"
+# in the README is worse than no number at all.
+maj="$(sed -n 's/.*BASH_VERSINFO\[0\] < \([0-9][0-9]*\).*/\1/p' "${repo}/Bash_WP-CLI_Update.sh" | head -1)"
+min="$(sed -n 's/.*BASH_VERSINFO\[0\] == [0-9][0-9]* && BASH_VERSINFO\[1\] < \([0-9][0-9]*\).*/\1/p' "${repo}/Bash_WP-CLI_Update.sh" | head -1)"
+if [ -n "$maj" ] && [ -n "$min" ]; then
+    floor="${maj}.${min}"
+    ok "the manager guard is bash ${floor}"
+    check_floor() { # FILE NEEDLE WHAT
+        if grep -Fq -- "$2" "${repo}/$1" 2>/dev/null; then
+            ok "$3"
+        else
+            bad "$3" "'$2' not found in $1"
+        fi
+    }
+    check_floor Find_WP_Senior.sh "requires bash ${floor} or newer" "the finder states the same floor"
+    check_floor tools/scan-secrets.sh "requires bash ${floor} or newer" "the secret scanner states the same floor"
+    check_floor install.sh "bash ${floor} or newer is required" "install.sh states the same floor"
+    check_floor README.md "bash >= ${floor}" "README states the same floor"
+    check_floor README.md "bash ${floor}+" "the README badge and prose say ${floor}+"
+    check_floor AGENTS.md "must be >= ${floor}" "AGENTS.md states the same floor"
+    check_floor wiki/Home.md "bash ${floor}+" "the wiki home states the same floor"
+    unset -f check_floor
+else
+    bad 'cannot read the bash floor from the manager guard' ''
+fi
+
 say 'PROJECT_MAP.md is not stale'
 # package.json carries the version that goes to npm. A registry release whose version
 # disagrees with the script is a support case nobody can reproduce.

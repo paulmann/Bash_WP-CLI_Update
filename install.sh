@@ -84,11 +84,11 @@ fi
 [ -f "${HEREDIR}/Bash_WP-CLI_Update.sh" ] || die "run this from the checkout: ${HEREDIR}/Bash_WP-CLI_Update.sh is missing"
 [ -f "${HEREDIR}/Find_WP_Senior.sh" ] || die "${HEREDIR}/Find_WP_Senior.sh is missing"
 
-# bash 4.2 is the documented floor; the manager refuses to start below it, and an
+# bash 5.1 is the documented floor; the manager refuses to start below it, and an
 # installer that installs something which cannot run is not an installer.
-if [ -z "${BASH_VERSION:-}" ] || [ "${BASH_VERSINFO[0]}" -lt 4 ] ||
-   { [ "${BASH_VERSINFO[0]}" -eq 4 ] && [ "${BASH_VERSINFO[1]}" -lt 2 ]; }; then
-    die "bash 4.2 or newer is required (found ${BASH_VERSION:-none})"
+if [ -z "${BASH_VERSION:-}" ] || [ "${BASH_VERSINFO[0]}" -lt 5 ] ||
+   { [ "${BASH_VERSINFO[0]}" -eq 5 ] && [ "${BASH_VERSINFO[1]}" -lt 1 ]; }; then
+    die "bash 5.1 or newer is required (found ${BASH_VERSION:-none})"
 fi
 
 if [ "$(id -u)" -ne 0 ] && [ "$DRY_RUN" != 'true' ]; then
