@@ -16,6 +16,52 @@ draft of 8.0.0 — is in [docs/RELEASE-HISTORY.md](docs/RELEASE-HISTORY.md).
 
 ## [Unreleased]
 
+## [8.1.2] - 2026-11-17
+
+Bug-fix release for the selective update path: `--only-active`, `--exclude-plugins`,
+`--hold-plugins`, `--exclude-themes`, `--hold-themes` and `--plugin-manage`.
+Measured on WP-CLI 2.12.0: on 8.1.1 every site that used those options failed with
+“cannot enumerate plugins … nothing was updated”, so a nightly `--full` run with
+`EXCLUDE_PLUGINS` or `SKIP_IF_NO_UPDATES` set did nothing at all. `--all` was not
+affected, which is why the damage looked like a plugin problem rather than a
+manager problem.
+
+### Fixed
+
+- **The manager asked WP-CLI for a `slug` field that does not exist.** `wp plugin
+  list` and `wp theme list` have no `slug`: `name` *is* the slug, and the display
+  name is the optional `title` field. `--fields=name,slug,status,update` was a hard
+  error (`Invalid field: slug.`, exit 1), so the enumeration failed before a single
+  plugin was considered. All three call sites (`plugin_select_targets`,
+  `theme_select_targets`, `plugin_resolve_slug`) now ask for `name,status[,update]`
+  plus `title`, and take the slug from `name`.
+- **mu-plugins and dropins were added to the `plugin update` command.** They appear
+  in `plugin list` but are not installable packages, so `wp plugin update
+  disable-cf7-updates zbs-support` answers “could not be found” and fails a site
+  that is perfectly healthy. Entries with status `must-use` or `dropin` are skipped
+  and the reason is logged at debug level.
+- **The dropin filter could be defeated by an empty column.** `json_to_tsv` emits an
+  empty cell for an absent value, and `read` with `IFS=$'\t'` collapses an empty
+  field, which shifted `status` into `title` for every dropin (they have no display
+  name) and let it through. The optional column is now requested last, so an empty
+  value can only land in the last variable.
+- **`--debug` crashed the pending-update check.** `pending_count` and
+  `site_core_version` return their answer on stdout; under `--debug` the console
+  echo of their own `wp` call was captured by the caller's `$( )` and the arithmetic
+  died with “DBG: unbound variable”. Reachable on any host that follows the
+  documented production profile (`SKIP_IF_NO_UPDATES=1`) and turns debugging on.
+
+### Changed
+
+- Exclusion, holding and `--name` matching run against the slug **and** the display
+  name, both from the same single `wp <kind> list` call (`title`), which is what the
+  documentation has promised since 6.0. Comparison is case-insensitive and
+  whitespace-insensitive, so `--exclude-plugins 'All in One SEO'` works even though
+  the list parser strips spaces from the entries.
+- On a WP-CLI that predates the `title` field the call is retried once without it
+  and matching falls back to the slug; the capability is probed once per run, not
+  per site.
+
 ## [8.1.1] - 2026-11-06
 
 Test-only patch. No manager, finder, mode, option, configuration key or exit code
@@ -645,7 +691,8 @@ without output, `--help` is not a flag, commands are built by string
 concatenation, no lock, no log rotation, no dry run, and the Astra key is edited
 into the script.
 
-[Unreleased]: https://github.com/paulmann/Bash_WP-CLI_Update/compare/v8.1.1...HEAD
+[Unreleased]: https://github.com/paulmann/Bash_WP-CLI_Update/compare/v8.1.2...HEAD
+[8.1.2]: https://github.com/paulmann/Bash_WP-CLI_Update/compare/v8.1.1...v8.1.2
 [8.1.1]: https://github.com/paulmann/Bash_WP-CLI_Update/compare/v8.1.0...v8.1.1
 [8.1.0]: https://github.com/paulmann/Bash_WP-CLI_Update/compare/v8.0.4...v8.1.0
 [8.0.4]: https://github.com/paulmann/Bash_WP-CLI_Update/compare/v8.0.3...v8.0.4

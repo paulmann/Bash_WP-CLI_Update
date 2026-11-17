@@ -10,6 +10,8 @@
 | exit 4, "shell metacharacter" | the config contains shell syntax | rewrite the line as plain `KEY=VALUE` |
 | `wp` fails with "Error: This is not a WordPress directory" | the list contains a non-WordPress path | remove the line from the list, or let `wp-find` rebuild it |
 | every site fails with the same error | WP-CLI itself, PHP version, or database access | `wp --info`, then `wp core version --path=<one site>` by hand |
+| every site says "cannot enumerate plugins … nothing was updated" and the run exits 1 | the manager asked for a WP-CLI field that does not exist — fixed in 8.1.2 (`slug` was never a field; `name` is the slug) | upgrade to 8.1.2 or later; check with `wp plugin list --format=json --fields=name,title,status,update` |
+| a site fails with "The '<name>' plugin could not be found" during `plugin update` | the update list contained a mu-plugin or a dropin, which WP-CLI cannot update — fixed in 8.1.2 | upgrade to 8.1.2; do not remove the mu-plugin from the site |
 | a multisite site fails with "Error: --url is required" | no `WP_HOME` in `wp-config.php` | pass `--url https://example.com` for that site |
 | "licence arrived empty" | the Astra key file is unreadable by the site owner | set `WP_CLI_UPDATE_LICENCE` for one invocation, or check the key file mode |
 | the backup is missing | `BACKUP=off`, or the disk guard refused | check the log for "refusing to export"; lower `MIN_FREE_MB` only after freeing space |

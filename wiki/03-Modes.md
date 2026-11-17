@@ -99,7 +99,7 @@ imports, then runs `wp db check` and reports the result.
 |---|---|
 | `--hold-plugins LIST` | a pin: these plugins are never updated, and the log says so |
 | `--hold-themes LIST` | the same for themes |
-| `--exclude-plugins LIST` (`-e`) | leave them out of `--plugins` / `--full`; implies enumeration, matching is case-insensitive on slug or display name, never a pattern |
+| `--exclude-plugins LIST` (`-e`) | leave them out of `--plugins` / `--full`; implies enumeration, matching is case-insensitive and whitespace-insensitive on the slug (WP-CLI's `name`) or the display name (`title`), never a pattern |
 | `--exclude-themes LIST` | leave them out of `--themes` / `--full` |
 | `--only-active` | update only active plugins that have an update available |
 

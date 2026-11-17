@@ -210,8 +210,8 @@ printf '%s\n' "$SITES" >"$one_site"
 list_run() { manager_run --sites "$one_site" -l "$@"; }
 argv_log_reset
 table_out="$(list_run 2>/dev/null)"
-if printf '%s' "$table_out" | grep -Fq 'WooCommerce'; then
-    ok 'the table lists a plugin by name'
+if printf '%s' "$table_out" | grep -Fq 'woocommerce'; then
+    ok 'the table lists a plugin by its slug (the `name` field)'
 else
     bad 'the table is missing plugin names' "$(printf '%s' "$table_out" | head -5)"
 fi
@@ -231,7 +231,7 @@ import json, sys
 path, n = sys.argv[1], int(sys.argv[2])
 d = json.load(open(path))
 assert isinstance(d, list) and len(d) == n, ('rows', len(d), n)
-by_slug = {row['slug']: row for row in d}
+by_slug = {row['name']: row for row in d}
 assert 'woocommerce' in by_slug, sorted(by_slug)
 assert by_slug['woocommerce']['update'] == 'available', by_slug['woocommerce']
 assert by_slug['akismet']['update'] == 'none', by_slug['akismet']
@@ -242,7 +242,7 @@ const fs=require("fs");
 const [p,n]=[process.argv[1],Number(process.argv[2])];
 const d=JSON.parse(fs.readFileSync(p,"utf8"));
 if(!Array.isArray(d)||d.length!==n)process.exit(1);
-const w=d.find(x=>x.slug==="woocommerce");
+const w=d.find(x=>x.name==="woocommerce");
 if(!w||w.update!=="available")process.exit(1);
 ' "${WORK}/plugins.json" "$STUB_PLUGINS" 2>/dev/null && parsed=1
 fi
@@ -272,8 +272,8 @@ if printf '%s' "$tsv_out" | grep -c '' | grep -qx "$STUB_ROWS"; then
 else
     bad '--format tsv line count' "$(printf '%s' "$tsv_out" | grep -c '')"
 fi
-custom="$(list_run --format tsv --fields slug,update,update_version 2>/dev/null)"
-if printf '%s' "$custom" | head -1 | grep -Fxq $'slug\tupdate\tupdate_version'; then
+custom="$(list_run --format tsv --fields name,update,update_version 2>/dev/null)"
+if printf '%s' "$custom" | head -1 | grep -Fxq $'name\tupdate\tupdate_version'; then
     ok '--fields selects the columns'
 else
     bad '--fields' "$(printf '%s' "$custom" | head -1)"
@@ -305,18 +305,19 @@ if [ "$rows" = '2' ]; then
 else
     bad '--name woo row count' "expected 2 lines (header + row), got ${rows}"
 fi
-# The default columns are name,status,update,version, so the CSV carries the
-# display name; the slug only appears when --fields asks for it.
-if printf '%s' "$filtered" | grep -Fq 'WooCommerce'; then
-    ok 'the selected plugin is WooCommerce'
+# The default columns are name,status,update,version, so the CSV carries the slug:
+# WP-CLI has no separate slug field, `name` *is* the slug. The display name is the
+# optional `title` field and only appears when --fields asks for it.
+if printf '%s' "$filtered" | grep -Fq 'woocommerce'; then
+    ok 'the selected plugin is woocommerce (by slug)'
 else
     bad '--name woo selected the wrong plugin' "$(printf '%s' "$filtered")"
 fi
-slugged="$(list_run --format csv --fields slug --name woo 2>/dev/null)"
-if printf '%s' "$slugged" | grep -Fxq 'woocommerce'; then
-    ok '--name woo resolves to the slug woocommerce'
+titled="$(list_run --format csv --fields title --name woo 2>/dev/null)"
+if printf '%s' "$titled" | grep -Fxq 'WooCommerce'; then
+    ok '--name woo resolves to the plugin, and --fields title shows the display name'
 else
-    bad '--name woo did not resolve to the slug' "$(printf '%s' "$slugged")"
+    bad '--fields title did not return the display name' "$(printf '%s' "$titled")"
 fi
 # A jq-style payload in --name must be inert: it is a substring, never a pattern.
 hostile="$(list_run --format csv --name 'woo") | .[] | select(true) | .(["' 2>/dev/null)"

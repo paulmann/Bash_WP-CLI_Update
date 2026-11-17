@@ -32,6 +32,7 @@ names the expected and the actual value. Measured results, as the project record
 | `tests/test_finder.sh` | the finder: discovery, JSON, depth, exclusions |
 | `tests/test_manager.sh` | every mode, argv shape, listing formats, config layers |
 | `tests/test_fleet.sh` | parallelism, counters, JSON Lines, config security |
+| `tests/test_selection.sh` | the selective update path: which fields are asked of `wp <kind> list`, slug-vs-display-name matching, mu-plugins and dropins, the `--all` path, the fallback on an older WP-CLI, `--plugin-manage` resolution |
 | `tests/test_secretguard.sh` | `tools/scan-secrets.sh` |
 | `tests/test_v7.sh` | read-only modes, restore, retries, circuit breaker, guards, report, policy lists, config aliases |
 | `tests/test_cve.sh` | the 8.1.0 security set: `--security` verdicts and exit codes, the `.htaccess` deny block, `--harden-upgrade-dir`, the `--health` CVE column |
@@ -93,7 +94,7 @@ clean fix.
 ## Version consistency
 
 The manager, the finder and the documentation move together, and the finder is versioned
-separately (2.1.0 from 6.2.0 onwards). The current release is 8.1.1 with finder 2.1.0. A
+separately (2.1.0 from 6.2.0 onwards). The current release is 8.1.2 with finder 2.1.0. A
 bump touches `SCRIPT_VERSION` in `Bash_WP-CLI_Update.sh`, the `Version:` line and the
 archive name in `README.md`, `package.json`, the `CHANGELOG.md` section, and the version
 mentioned in `AGENTS.md`, `wp-cli-update.conf.example` and `PROJECT_MAP.md`.

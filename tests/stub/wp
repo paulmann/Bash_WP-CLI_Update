@@ -56,17 +56,34 @@ cmd="${positional[0]-}"
 sub="${positional[1]-}"
 third="${positional[2]-}"
 
+# The fields WP-CLI 2.12.0 really offers. `slug` is not one of them: `name` is
+# the slug and `title` is the display name, so asking for `slug` has to fail here
+# exactly as it fails on a host ("Error: Invalid field: slug.", exit 1). A stub
+# that answers a field the real binary rejects is how this project shipped a
+# selection path that could not run at all.
+FIELDS_KNOWN='name status update version update_version auto_update title description file author tested_up_to update_package update_id'
+
+# FAKE_NO_TITLE: pretend to be an older WP-CLI that has no `title` field. A file
+# hook, not an environment variable: the manager builds a clean environment for
+# the child, so an env switch would never reach it.
+if [ -f "${LOG}.no-title" ]; then
+    FIELDS_KNOWN="${FIELDS_KNOWN//title/}"
+fi
+
+# slug|status|update|version|title|update_version
 PLUGINS=(
-    "Akismet Anti-Spam|active|none|5.3|akismet|Akismet Anti-Spam|"
-    "WooCommerce|inactive|available|8.1.0|woocommerce|WooCommerce|9.0.0"
-    "All in One SEO|active|none|4.4.0|all-in-one-seo-pack|All in One SEO (AIOSEO)|"
-    "Jetpack|active|available|13.0|jetpack|Jetpack|13.5"
-    "Old Plugin|inactive|available|1.0|old-plugin|Old Plugin|1.1"
+    "akismet|active|none|5.3|Akismet Anti-Spam|"
+    "woocommerce|inactive|available|8.1.0|WooCommerce|9.0.0"
+    "all-in-one-seo-pack|active|none|4.4.0|All in One SEO (AIOSEO)|"
+    "jetpack|active|available|13.0|Jetpack|13.5"
+    "old-plugin|inactive|available|1.0|Old Plugin|1.1"
+    "zbs-support|must-use|available|1.0|ZBS Support|1.1"
+    "object-cache.php|dropin|available|1.0||1.1"
 )
 
 THEMES=(
-        "Twenty Twenty-Four|active|none|1.1|twentytwentyfour|Twenty Twenty-Four|"
-        "Astra|active|available|4.6.0|astra|Astra|4.7.0"
+        "twentytwentyfour|active|none|1.1|Twenty Twenty-Four|"
+        "astra|active|available|4.6.0|Astra|4.7.0"
 )
 
 rows_for() { # kind -> ref to the array via name
@@ -77,9 +94,18 @@ rows_for() { # kind -> ref to the array via name
 }
 
 emit_rows() { # kind: plugin|theme
-    local kind="$1" r n st up v sl ti uv out f v_ emitted=0 count=0
+    local kind="$1" r sl st up v ti uv out f v_ emitted=0 count=0
     local -a want=()
     [ -n "$fields" ] && IFS=',' read -r -a want <<<"$fields" || want=(name status update version)
+    for f in "${want[@]}"; do
+        case " $FIELDS_KNOWN " in
+            *" $f "*) ;;
+            *)
+                printf 'Error: Invalid field: %s.\n' "$f" >&2
+                exit 1
+                ;;
+        esac
+    done
     # A header is printed even when nothing matches, like the real WP-CLI: a
     # consumer that counts rows relies on the header being one of them.
     case "$fmt" in
@@ -94,7 +120,7 @@ emit_rows() { # kind: plugin|theme
     esac
     while IFS= read -r r; do
         [ -n "$r" ] || continue
-        IFS='|' read -r n st up v sl ti uv <<<"$r"
+        IFS='|' read -r sl st up v ti uv <<<"$r"
         # FAKE_VERSION_BUMP=1: after a successful `plugin update` the reported
         # version becomes the update version, so the change log can be tested.
         if [ "${FAKE_VERSION_BUMP:-0}" = '1' ] && [ -f "${LOG}.bumped" ] && [ -n "$uv" ]; then
@@ -111,30 +137,18 @@ emit_rows() { # kind: plugin|theme
             json)
                 if ((emitted)); then printf ','; fi
                 emitted=1
-                printf '{"name":"%s","status":"%s","update":"%s","version":"%s","slug":"%s","title":"%s","update_version":"%s"}' \
-                    "$n" "$st" "$up" "$v" "$sl" "$ti" "$uv"
+                printf '{"name":"%s","status":"%s","update":"%s","version":"%s","title":"%s","update_version":"%s"}' \
+                    "$sl" "$st" "$up" "$v" "$ti" "$uv"
                 ;;
-            csv)
+            csv | *)
                 out=''
                 for f in "${want[@]}"; do
                     case "$f" in
-                        name) v_="$n" ;; status) v_="$st" ;; update) v_="$up" ;;
-                        version) v_="$v" ;; slug) v_="$sl" ;; title) v_="$ti" ;;
+                        name) v_="$sl" ;; status) v_="$st" ;; update) v_="$up" ;;
+                        version) v_="$v" ;; title) v_="$ti" ;;
                         update_version) v_="$uv" ;; *) v_='' ;;
                     esac
-                    out+="${out:+,}${v_}"
-                done
-                printf '%s\n' "$out"
-                ;;
-            *)
-                out=''
-                for f in "${want[@]}"; do
-                    case "$f" in
-                        name) v_="$n" ;; status) v_="$st" ;; update) v_="$up" ;;
-                        version) v_="$v" ;; slug) v_="$sl" ;; title) v_="$ti" ;;
-                        update_version) v_="$uv" ;; *) v_='' ;;
-                    esac
-                    out+="${out:+$'\t'}${v_}"
+                    if [ "$fmt" = 'csv' ]; then out+="${out:+,}${v_}"; else out+="${out:+$'\t'}${v_}"; fi
                 done
                 printf '%s\n' "$out"
                 ;;

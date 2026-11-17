@@ -15,7 +15,7 @@
 # Project:     Bash WP-CLI Update
 # Repository:  https://github.com/paulmann/Bash_WP-CLI_Update
 # License:     MIT (see LICENSE)
-# Version:     8.1.1
+# Version:     8.1.2
 #
 # Purpose
 #   Run WP-CLI maintenance operations (core, plugins, themes, database, cron,
@@ -103,7 +103,7 @@ shopt -s inherit_errexit 2>/dev/null || true
 ###############################################################################
 
 PROG_NAME="${0##*/}"
-SCRIPT_VERSION='8.1.1'
+SCRIPT_VERSION='8.1.2'
 
 # A literal backtick, spelled by code point: the config parser has to reject it,
 # and writing the character directly would make this file fail the project's own
@@ -2422,9 +2422,13 @@ cve_core_status() { # VERSION
 }
 
 # site_core_version SITE USER -> the core version on stdout, empty when unreadable.
+# The check's console echo is discarded: this function returns its value through
+# stdout, and a caller that captures it (`core="$(site_core_version ...)"`) would
+# otherwise receive the debug line instead of the version and die on
+# "DBG: unbound variable" under --debug.
 site_core_version() { # SITE USER
     local site="$1" user="$2"
-    info_wp "$site" "$user" core version
+    info_wp "$site" "$user" core version >/dev/null
     if [ "$WP_STATUS" = '0' ]; then
         printf '%s' "$WP_OUTPUT" | tr -d '\r' | head -n 1
     fi
@@ -2700,10 +2704,10 @@ mode_plugins() { # SITE USER
 THEME_SELECTION=''
 theme_select_targets() { # SITE USER
     local site="$1" user="$2"
-    local tsv line name status update slug first=1
+    local tsv line slug status update title first=1
     THEME_SELECTION=''
     policies_init
-    info_wp "$site" "$user" theme list --format=json --fields=name,slug,status,update
+    kind_list_json theme "$site" "$user" status,update
     [ "$WP_SKIPPED" = 'true' ] && return 0
     if ((WP_STATUS != 0)); then
         log_error "cannot enumerate themes on ${site} (wp exit ${WP_STATUS}); nothing was updated"
@@ -2712,18 +2716,21 @@ theme_select_targets() { # SITE USER
     local body="$WP_OUTPUT"
     body="${body#"${body%%[![:space:]]*}"}"
     case "$body" in '['*']') ;; *) log_error "wp on ${site} did not return a JSON theme list; nothing was updated"; return 1 ;; esac
-    tsv="$(printf '%s' "$body" | json_to_tsv name slug status update)" || {
+    # `title` is requested last because it is the only column that can be empty
+    # and `read` with IFS=$'\t' collapses an empty field: an empty title in the
+    # middle would silently shift every column after it.
+    tsv="$(printf '%s' "$body" | json_to_tsv name status update title)" || {
         log_error "cannot parse the theme list from ${site}; nothing was updated"
         return 1
     }
-    while IFS=$'\t' read -r name slug status update; do
+    while IFS=$'\t' read -r slug status update title; do
         ((first)) && { first=0; continue; }
         [ -n "$slug" ] || continue
-        if [ -n "${HOLD_THEME_MAP[${slug,,}]-}" ] || [ -n "${HOLD_THEME_MAP[${name,,}]-}" ]; then
+        if policy_lookup hold_theme "$slug" "$title"; then
             log_info "held by HOLD_THEMES, not updated: ${slug}"
             continue
         fi
-        if [ -n "${EXCLUDED_THEME_MAP[${slug,,}]-}" ] || [ -n "${EXCLUDED_THEME_MAP[${name,,}]-}" ]; then
+        if policy_lookup excluded_theme "$slug" "$title"; then
             log_debug "excluded by --exclude-themes: ${slug}"
             continue
         fi
@@ -2823,7 +2830,9 @@ health_header() {
 # every version.
 pending_count() { # SITE USER KIND
     local site="$1" user="$2" kind="$3" n=0
-    info_wp "$site" "$user" "$kind" list --update=available --format=csv --fields=name
+    # Same rule as site_core_version: the number is the return value, so the
+    # console echo of the check must not land in the caller's $().
+    info_wp "$site" "$user" "$kind" list --update=available --format=csv --fields=name >/dev/null
     [ "$WP_STATUS" = '0' ] || { printf '0'; return 0; }
     n="$(printf '%s\n' "$WP_OUTPUT" | grep -c '[^[:space:]]')"
     n="${n//[^0-9]/}"
@@ -3054,6 +3063,63 @@ policies_init() {
     return 0
 }
 
+# A policy entry and an installed plugin/theme are compared after dropping case
+# and *all* whitespace. map_add_csv already strips whitespace from the entries,
+# so the identity has to lose it too -- otherwise a display name such as
+# "All in One SEO" could never match, however correct the rest of the code is.
+policy_key() {
+    local s="${1,,}"
+    printf '%s' "${s//[[:space:]]/}"
+}
+
+# policy_lookup WHICH NAME... -> 0 when any of the NAMEs is listed by that
+# policy. WHICH is excluded|hold|excluded_theme|hold_theme. Pass both the slug
+# and the display name: the operator may have written either.
+policy_lookup() { # WHICH NAME...
+    local which="$1" name entry
+    shift
+    for name in "$@"; do
+        [ -n "$name" ] || continue
+        entry="$(policy_key "$name")"
+        [ -n "$entry" ] || continue
+        case "$which" in
+            excluded) [ -n "${EXCLUDED_MAP[$entry]-}" ] && return 0 ;;
+            hold) [ -n "${HOLD_MAP[$entry]-}" ] && return 0 ;;
+            excluded_theme) [ -n "${EXCLUDED_THEME_MAP[$entry]-}" ] && return 0 ;;
+            hold_theme) [ -n "${HOLD_THEME_MAP[$entry]-}" ] && return 0 ;;
+        esac
+    done
+    return 1
+}
+
+# The field set of `wp <kind> list` is a property of the installed WP-CLI, not of
+# the site. WP-CLI 2.x has no `slug` field at all: `name` *is* the slug, and the
+# display name comes from `title`. Asking for a field the binary does not know is
+# a hard error ("Invalid field: slug.", exit 1), which is why the set is probed
+# once per run and remembered in LIST_TITLES ('' until a rejection sets 'no').
+LIST_TITLES=''
+
+# kind_list_json KIND SITE USER TAIL_FIELDS
+# Runs `<kind> list --format=json` asking for name,title,<tail>. An older WP-CLI
+# that does not know `title` rejects the call, so it is retried once without it.
+# The caller parses `name <tail> title`: a title that was not asked for is an
+# empty last column, display-name matching then simply never fires, and matching
+# by slug keeps working.
+kind_list_json() { # KIND SITE USER TAIL
+    local kind="$1" site="$2" user="$3" tail="$4"
+    local field_list="name,title,${tail}"
+    [ "$LIST_TITLES" = 'no' ] && field_list="name,${tail}"
+    info_wp "$site" "$user" "$kind" list --format=json --fields="$field_list"
+    if [ -z "$LIST_TITLES" ] && [ "$WP_SKIPPED" != 'true' ] && ((WP_STATUS != 0)); then
+        info_wp "$site" "$user" "$kind" list --format=json --fields="name,${tail}"
+        if ((WP_STATUS == 0)); then
+            LIST_TITLES='no'
+            log_debug "this wp-cli has no 'title' field; plugins and themes are matched by slug only"
+        fi
+    fi
+    return 0
+}
+
 plugin_columns() {
     local list="${FILTER_FIELDS:-$PLUGIN_FIELDS_DEFAULT}"
     list="${list//,/ }"
@@ -3119,14 +3185,16 @@ plugin_list_site() { # SITE USER
 # plugin_select_targets SITE USER -> fills PLUGIN_SELECTION (newline separated)
 # with the slugs that should be updated, honouring --only-active and
 # --exclude-plugins. Uses the same JSON reader as --list-plugins, so no jq.
+# The slug is the `name` field: WP-CLI has no `slug` field, and asking for one is
+# an error, not an empty column.
 PLUGIN_SELECTION=''
 
 plugin_select_targets() { # SITE USER
     local site="$1" user="$2"
-    local tsv line name status update slug
+    local tsv line slug status update title
     PLUGIN_SELECTION=''
     policies_init
-    info_wp "$site" "$user" plugin list --format=json --fields=name,slug,status,update
+    kind_list_json plugin "$site" "$user" status,update
     if [ "$WP_SKIPPED" = 'true' ]; then return 0; fi
     if ((WP_STATUS != 0)); then
         log_error "cannot enumerate plugins on ${site} (wp exit ${WP_STATUS}); nothing was updated"
@@ -3141,19 +3209,33 @@ plugin_select_targets() { # SITE USER
             return 1
             ;;
     esac
-    tsv="$(printf '%s' "$body" | json_to_tsv name slug status update)" || {
+    # `title` is requested last because it is the only column that can be empty
+    # (a dropin has none) and `read` with IFS=$'\t' collapses an empty field: in
+    # the middle it would shift `status` into `title`, which is exactly how a
+    # dropin reached `plugin update` and failed a healthy site.
+    tsv="$(printf '%s' "$body" | json_to_tsv name status update title)" || {
         log_error "cannot parse the plugin list from ${site}; nothing was updated"
         return 1
     }
     local first=1
-    while IFS=$'\t' read -r name slug status update; do
+    while IFS=$'\t' read -r slug status update title; do
         ((first)) && { first=0; continue; }          # header row
         [ -n "$slug" ] || continue
-        if [ -n "${HOLD_MAP[${slug,,}]-}" ] || [ -n "${HOLD_MAP[${name,,}]-}" ]; then
+        # `plugin update <slug>` only knows plugins WordPress can update.
+        # mu-plugins and dropins are loaded from wp-content but are not
+        # installable packages: asking to update one fails with "could not be
+        # found" on a site that is perfectly healthy.
+        case "$status" in
+            must-use | dropin)
+                log_debug "not an updatable plugin, skipped: ${slug} (${status})"
+                continue
+                ;;
+        esac
+        if policy_lookup hold "$slug" "$title"; then
             log_info "held by HOLD_PLUGINS, not updated: ${slug}"
             continue
         fi
-        if [ -n "${EXCLUDED_MAP[${slug,,}]-}" ] || [ -n "${EXCLUDED_MAP[${name,,}]-}" ]; then
+        if policy_lookup excluded "$slug" "$title"; then
             log_debug "excluded by --exclude-plugins: ${slug}"
             continue
         fi
@@ -3167,30 +3249,43 @@ plugin_select_targets() { # SITE USER
 }
 
 # Resolve --name to exactly one slug. Substring, case-insensitive, no patterns.
+# Both the slug (`name`) and the display name (`title`, when this WP-CLI has it)
+# are searched; a row can match on one of them, so a plugin whose slug and title
+# both contain the needle is still counted once.
 plugin_resolve_slug() { # SITE USER NAME -> slug
     local site="$1" user="$2" name="${3,,}"
-    info_wp "$site" "$user" plugin list --format=json --fields=name,slug,status
+    kind_list_json plugin "$site" "$user" status >/dev/null
     ((WP_STATUS == 0)) || return 1
-    local tsv n s match='' matches=0
-    tsv="$(printf '%s' "$WP_OUTPUT" | json_to_tsv name slug status)" || return 1
-    while IFS=$'\t' read -r n s _status; do
+    local tsv n t _status
+    local -a found=()
+    # `title` last, for the same reason as in plugin_select_targets.
+    tsv="$(printf '%s' "$WP_OUTPUT" | json_to_tsv name status title)" || return 1
+    while IFS=$'\t' read -r n _status t; do
         [ "$n" = 'name' ] && continue
-        [ -n "$s" ] || continue
-        if [ "${n,,}" = "$name" ] || [ "${s,,}" = "$name" ]; then
-            match="$s"; matches=1; break
+        [ -n "$n" ] || continue
+        if [ "${n,,}" = "$name" ] || { [ -n "$t" ] && [ "${t,,}" = "$name" ]; }; then
+            printf '%s' "$n"
+            return 0
         fi
-        case "${n,,}" in *"$name"*) match="$s"; matches=$((matches + 1)) ;; esac
-        case "${s,,}" in *"$name"*) [ "$match" = "$s" ] || { match="$s"; matches=$((matches + 1)); } ;; esac
+        case "${n,,}" in
+            *"$name"*)
+                found+=("$n")
+                continue
+                ;;
+        esac
+        if [ -n "$t" ]; then
+            case "${t,,}" in *"$name"*) found+=("$n") ;; esac
+        fi
     done <<<"$tsv"
-    if ((matches == 0)); then
+    if ((${#found[@]} == 0)); then
         log_error "no plugin matching '${3}' on ${site}"
         return 1
     fi
-    if ((matches > 1)); then
+    if ((${#found[@]} > 1)); then
         log_error "'${3}' is ambiguous on ${site}; pass the exact slug"
         return 1
     fi
-    printf '%s' "$match"
+    printf '%s' "${found[0]}"
 }
 
 confirm_destructive() { # SLUG SITE
@@ -3650,7 +3745,7 @@ ${C_BOLD}Plugin management:${C_RESET}
       --only-active      with --plugins/--full: update only active plugins that
                          have an update available (enumerated, not --all)
   -e, --exclude-plugins LIST
-                         comma separated slugs or names to leave out of
+                         comma separated slugs or display names to leave out of
                          --plugins/--full; implies enumeration
       --exclude-themes LIST
                          comma separated themes to leave out of --themes/--full
@@ -3792,7 +3887,7 @@ ${C_BOLD}Examples:${C_RESET}
   ${PROG_NAME} --list-sites
   ${PROG_NAME} -p --site /var/www/example.com
   ${PROG_NAME} -l --name woo --format csv
-  ${PROG_NAME} -l --format json --fields name,slug,update,version
+  ${PROG_NAME} -l --format json --fields name,title,update,version
   ${PROG_NAME} -m -A deactivate -N jetpack -S /var/www/example.com -y
   ${PROG_NAME} -d --dry-run --timeout 120
   ${PROG_NAME} --check

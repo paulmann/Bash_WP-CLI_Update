@@ -1,4 +1,4 @@
-# Bash WP-CLI Update 8.1.1
+# Bash WP-CLI Update 8.1.2
 
 Maintenance automation for a fleet of WordPress installations, driven by WP-CLI and
 written in POSIX-friendly bash 4.2+.
@@ -28,7 +28,7 @@ JSON report, a change log and a restore path:
 Bash_WP-CLI_Update.sh --full --backup db --jobs 4 --report /var/log/wp/report.json
 ```
 
-* Version: **8.1.1** (finder 2.1.0)
+* Version: **8.1.2** (finder 2.1.0)
 * Requires: `bash >= 4.2`, GNU coreutils/findutils, WP-CLI, `root` (to switch into
   site owners), one of `runuser` / `sudo` / `su`
 * Optional: `flock`, `timeout` (or `perl`), `tar`, `gzip`, `nice`, `ionice`, `curl`,
@@ -67,6 +67,13 @@ Bash_WP-CLI_Update.sh --full --backup db --jobs 4 --report /var/log/wp/report.js
 > print the nginx directive, because nginx ignores `.htaccess`. `--health` gained a
 > CVE column, and a core run that leaves a site below the fixed release says so.
 > The licence is now MIT, so commercial use no longer needs a separate agreement.
+> **8.1.2 fixes the selective update path.** `--only-active`, `--exclude-plugins`,
+> `--hold-plugins`, `--exclude-themes`, `--hold-themes` and `--plugin-manage` asked
+> WP-CLI for a `slug` field that does not exist, so on WP-CLI 2.12.0 every site that
+> used them failed with “cannot enumerate plugins … nothing was updated” — a nightly
+> `--full` run with `EXCLUDE_PLUGINS` set updated nothing at all. The slug now comes
+> from `name`, the display name from `title`, and mu-plugins/dropins — which cannot
+> be updated and used to fail a healthy site — are skipped. `--all` is unchanged.
 > **8.1.1 is a test-only patch.** The fake `wp` in the fleet suite built its argv
 > record from several `write()` calls, so concurrent workers could merge two records
 > into one line and the invocation count flaked ("the batch stopped early"); the record
@@ -151,7 +158,7 @@ Three ways, same result. Pick one:
 npm install -g bash-wp-cli-update
 
 # 2. the installer from the archive
-curl -LO https://github.com/paulmann/Bash_WP-CLI_Update/releases/latest/download/bash-wp-cli-update-8.1.1.tar.gz
+curl -LO https://github.com/paulmann/Bash_WP-CLI_Update/releases/latest/download/bash-wp-cli-update-8.1.2.tar.gz
 sudo ./install.sh --dry-run     # show every step
 sudo ./install.sh --systemd     # does it, plus the nightly timer
 ```
@@ -487,6 +494,7 @@ TEST_SITE_USER=www-data bash tests/run_tests.sh
 | `test_finder.sh` | `Find_WP_Senior.sh`: discovery, JSON, depth, exclusions |
 | `test_manager.sh` | every mode, argv shape, listing formats, config layers |
 | `test_fleet.sh` | parallelism, counters, JSON Lines, config security |
+| `test_selection.sh` | the selective update path: the field set asked of `wp <kind> list`, slug-vs-display-name matching, mu-plugins and dropins, the `--all` path, the older-WP-CLI fallback, `--plugin-manage` resolution |
 | `test_secretguard.sh` | `tools/scan-secrets.sh` |
 | `test_v7.sh` | read-only modes, restore, retries, circuit breaker, guards, report, policy lists, config aliases |
 | `test_cve.sh` | `--security` verdicts and exit codes, `--harden` idempotence and backup, `--harden-upgrade-dir`/`HARDEN_UPGRADE_DIR`, nginx notice, absence of writes in read-only modes |
@@ -501,7 +509,7 @@ exit-code paths. Measured results:
 
 | Environment | Result |
 |---|---|
-| Debian 12, `unshare -r` (uid 0, no switchable account) | 693 passed, 0 failed, 7 skipped |
+| Debian 12, `unshare -r` (uid 0, no switchable account) | 716 passed, 0 failed, 8 skipped |
 | Windows host, Git Bash, non-root | 0 failures outside the root-only checks; `chmod`, `ionice` and user-switch checks skip |
 | Plain non-root account | the user-switch checks in `test_manager.sh` fail with exit 3, which is the manager refusing to run |
 
