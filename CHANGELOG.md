@@ -16,6 +16,20 @@ draft of 8.0.0 — is in [docs/RELEASE-HISTORY.md](docs/RELEASE-HISTORY.md).
 
 ## [Unreleased]
 
+## [9.0.1] - 2026-11-17
+
+Documentation release. No script, option, configuration key or exit code changed; the
+tarball is 9.0.0 with a corrected README.
+
+### Documentation
+
+- **README §1 is a release history again.** The section was titled “What changed in
+  8.0.0”, and 8.1.0, 8.1.1 and 9.0.0 existed only as blockquotes wrapped around that
+  heading — so the page npm renders for the package said nothing about the release a
+  reader was installing. It is now “What changed”, newest first: 9.0.0, 8.1.1, 8.1.0,
+  8.0.2, 8.0.1, 8.0.0, each written as what an operator notices.
+- The wiki Home page said the CVE modes arrived in 9.0.0; they arrived in 8.1.0.
+
 ## [9.0.0] - 2026-11-17
 
 Two changes in one release: the selective update path is repaired, and the minimum
@@ -705,7 +719,8 @@ without output, `--help` is not a flag, commands are built by string
 concatenation, no lock, no log rotation, no dry run, and the Astra key is edited
 into the script.
 
-[Unreleased]: https://github.com/paulmann/Bash_WP-CLI_Update/compare/v9.0.0...HEAD
+[Unreleased]: https://github.com/paulmann/Bash_WP-CLI_Update/compare/v9.0.1...HEAD
+[9.0.1]: https://github.com/paulmann/Bash_WP-CLI_Update/compare/v9.0.0...v9.0.1
 [9.0.0]: https://github.com/paulmann/Bash_WP-CLI_Update/compare/v8.1.1...v9.0.0
 [8.1.1]: https://github.com/paulmann/Bash_WP-CLI_Update/compare/v8.1.0...v8.1.1
 [8.1.0]: https://github.com/paulmann/Bash_WP-CLI_Update/compare/v8.0.4...v8.1.0

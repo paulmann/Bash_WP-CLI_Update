@@ -1,4 +1,4 @@
-# Bash WP-CLI Update 9.0.0
+# Bash WP-CLI Update 9.0.1
 
 Maintenance automation for a fleet of WordPress installations, driven by WP-CLI and
 written in POSIX-friendly bash 5.1+.
@@ -28,7 +28,7 @@ JSON report, a change log and a restore path:
 Bash_WP-CLI_Update.sh --full --backup db --jobs 4 --report /var/log/wp/report.json
 ```
 
-* Version: **9.0.0** (finder 2.1.0)
+* Version: **9.0.1** (finder 2.1.0)
 * Requires: `bash >= 5.1`, GNU coreutils/findutils, WP-CLI, `root` (to switch into
   site owners), one of `runuser` / `sudo` / `su`
 * Optional: `flock`, `timeout` (or `perl`), `tar`, `gzip`, `nice`, `ionice`, `curl`,
@@ -37,7 +37,7 @@ Bash_WP-CLI_Update.sh --full --backup db --jobs 4 --report /var/log/wp/report.js
 
 ## Contents
 
-- [1. What changed in 8.0.0](#1-what-changed-in-800)
+- [1. What changed](#1-what-changed)
 - [2. Safety model](#2-safety-model)
 - [3. Install](#3-install)
 - [4. Quick start](#4-quick-start)
@@ -56,45 +56,76 @@ Bash_WP-CLI_Update.sh --full --backup db --jobs 4 --report /var/log/wp/report.js
 
 ---
 
-## 1. What changed in 8.0.0
+## 1. What changed
 
-> **8.1.0 makes the tool CVE-aware and moves the licence to MIT.** `--security`
-> compares every site's WordPress core version with the fixed releases for
-> [CVE-2026-119977](#15-security-cve-2026-119977) and exits 1 when a site needs an
-> update — read-only, so it is safe to gate a pipeline on it. `--harden`, the
-> `--harden-upgrade-dir` flag and the `HARDEN_UPGRADE_DIR=1` key append a marked deny
-> block for `wp-content/upgrade/` to each site's `.htaccess` (Apache/LiteSpeed) and
-> print the nginx directive, because nginx ignores `.htaccess`. `--health` gained a
-> CVE column, and a core run that leaves a site below the fixed release says so.
-> The licence is now MIT, so commercial use no longer needs a separate agreement.
-> **9.0.0 fixes the selective update path and raises the floor to bash 5.1.**
-> `--only-active`, `--exclude-plugins`, `--hold-plugins`, `--exclude-themes`,
-> `--hold-themes` and `--plugin-manage` asked WP-CLI for a `slug` field that does
-> not exist, so on WP-CLI 2.12.0 every site that used them failed with “cannot
-> enumerate plugins … nothing was updated” — a nightly `--full` run with
-> `EXCLUDE_PLUGINS` set updated nothing at all. The slug now comes from `name`, the
-> display name from `title`, and mu-plugins/dropins — which cannot be updated and
-> used to fail a healthy site — are skipped. `--all` is unchanged. The bash floor
-> moves from 4.2 (CentOS 7, end of life in 2024) to 5.1, which every distribution
-> still supported in 2026 ships; a host that only has bash 4.x stays on 8.1.1.
-> **8.1.1 is a test-only patch.** The fake `wp` in the fleet suite built its argv
-> record from several `write()` calls, so concurrent workers could merge two records
-> into one line and the invocation count flaked ("the batch stopped early"); the record
-> is now a single write. No manager behaviour changed.
+Newest first. Each entry is what an operator notices; the full text of every release,
+including the measured results, is in [CHANGELOG.md](CHANGELOG.md).
 
-> **8.0.2 is a patch on this release.** A configuration file that set a mode-restricted
-> key — `SKIP_IF_NO_UPDATES`, `HOLD_PLUGINS`, `EXCLUDE_THEMES` — made `--doctor`,
-> `--check`, `--health` and every list mode exit with a usage error, because those keys
-> were validated without asking which mode was running. The recommended production
-> profile in §11 sets `SKIP_IF_NO_UPDATES=1`, so a host configured exactly as documented
-> could not be diagnosed. The keys are now enforced only when they are typed on the
-> command line; from a file they are simply inert for modes that do not use them.
->
-> **8.0.1** replaced the `LICENSE` file — which still contained the GNU GPL v3 text
-> while the README and the scripts said PolyForm Noncommercial 1.0.0 — with the actual
-> PolyForm Noncommercial 1.0.0 text and a copyright line, extended `.gitattributes` to
-> the file types 8.0.0 introduced, and rewrote `legacy/README.md` so it names the
-> release and the tag each original is frozen at. Upgrading is a file copy, as always.
+### 9.0.0 — the selective update path works on WP-CLI 2.12; the floor is bash 5.1
+
+- **Fixed: `--only-active`, `--exclude-plugins`, `--hold-plugins`, `--exclude-themes`,
+  `--hold-themes` and `--plugin-manage` did nothing on WP-CLI 2.x.** They asked
+  `wp <kind> list` for a `slug` field that does not exist, so every site that used them
+  failed with “cannot enumerate plugins … nothing was updated”. A nightly `--full` run
+  with `EXCLUDE_PLUGINS` set updated nothing at all, and the exit code was the only
+  thing that said so. The slug now comes from `name` and the display name from `title`,
+  in one call; `--all` was never affected.
+- **Fixed: mu-plugins and dropins were sent to `plugin update`.** They are loaded from
+  `wp-content` but are not installable packages, so asking to update one failed a site
+  that was perfectly healthy. Entries with status `must-use` or `dropin` are skipped and
+  the reason is logged.
+- **Fixed: `--debug` aborted the run on a host with `SKIP_IF_NO_UPDATES=1`**
+  (`DBG: unbound variable`): two helpers that return a value on stdout captured their
+  own console line. That is the profile §11 recommends, so the combination was reachable
+  exactly where it hurt.
+- **Changed: the minimum bash is 5.1** (was 4.2). Bash 4.2 ships only on CentOS 7, which
+  reached end of life in June 2024, and on distributions that stopped receiving updates
+  years ago; every distribution still supported in 2026 ships 5.1 or newer. The manager,
+  the finder, the secret scanner and `install.sh` refuse an older bash with exit 3 and
+  the version they found. **Hosts with bash 4.x (RHEL/Rocky/Alma 8) stay on 8.1.1** —
+  which does contain the selection bug above.
+- Exclusion and holding match the slug **or** the display name, case- and
+  whitespace-insensitively, which is what this README has promised since 6.0.
+
+### 8.1.1 — test-only patch
+
+No manager, finder, mode, option, configuration key or exit code changed. The fake `wp`
+in the fleet suite built its argv record from several `write()` calls, so concurrent
+workers could merge two records into one line and the invocation count flaked (“the batch
+stopped early”); the record is now a single write. The release exists because a flaky
+gate is worse than no gate.
+
+### 8.1.0 — CVE-aware, and the licence moves to MIT
+
+- **`--security`** (read-only) compares every site's WordPress core version with the fixed
+  releases for [CVE-2026-119977](#15-security-cve-2026-119977) and exits 1 when a site is
+  exposed, so it can gate a pipeline.
+- **`--harden`**, the **`--harden-upgrade-dir`** flag and the **`HARDEN_UPGRADE_DIR=1`**
+  key append a marked deny block for `wp-content/upgrade/` to each site's `.htaccess`
+  (Apache, LiteSpeed) and print the nginx directive, because nginx ignores `.htaccess`.
+- **`--health`** gained a CVE column, and a core run that leaves a site below the fixed
+  release says so instead of reporting success.
+- The licence is now **MIT**, so commercial use no longer needs a separate agreement.
+
+### 8.0.2 — a patch on the merge
+
+A configuration file that set a mode-restricted key — `SKIP_IF_NO_UPDATES`,
+`HOLD_PLUGINS`, `EXCLUDE_THEMES` — made `--doctor`, `--check`, `--health` and every list
+mode exit with a usage error, because those keys were validated without asking which mode
+was running. The production profile in §11 sets `SKIP_IF_NO_UPDATES=1`, so a host
+configured exactly as documented could not be diagnosed. The keys are now enforced only
+when they are typed on the command line; from a file they are inert for modes that do not
+use them.
+
+### 8.0.1 — a patch on the merge
+
+Replaced the `LICENSE` file — which still contained the GNU GPL v3 text while the README
+and the scripts said PolyForm Noncommercial 1.0.0 — with the actual PolyForm text and a
+copyright line, extended `.gitattributes` to the file types 8.0.0 introduced, and rewrote
+`legacy/README.md` so it names the release and the tag each original is frozen at.
+Upgrading is a file copy, as always.
+
+### 8.0.0 — the merge
 
 8.0.0 is the merge of the 5.x/6.x lines of work: the 5.0 monolith in `main`, the
 `QWEN_Hybrid` refactor (6.2.0) and the `DeepSeek_Hybrid` refactor (6.1.0). The
@@ -161,7 +192,7 @@ Three ways, same result. Pick one:
 npm install -g bash-wp-cli-update
 
 # 2. the installer from the archive
-curl -LO https://github.com/paulmann/Bash_WP-CLI_Update/releases/latest/download/bash-wp-cli-update-9.0.0.tar.gz
+curl -LO https://github.com/paulmann/Bash_WP-CLI_Update/releases/latest/download/bash-wp-cli-update-9.0.1.tar.gz
 sudo ./install.sh --dry-run     # show every step
 sudo ./install.sh --systemd     # does it, plus the nightly timer
 ```

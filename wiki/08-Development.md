@@ -94,7 +94,7 @@ clean fix.
 ## Version consistency
 
 The manager, the finder and the documentation move together, and the finder is versioned
-separately (2.1.0 from 6.2.0 onwards). The current release is 9.0.0 with finder 2.1.0. A
+separately (2.1.0 from 6.2.0 onwards). The current release is 9.0.1 with finder 2.1.0. A
 bump touches `SCRIPT_VERSION` in `Bash_WP-CLI_Update.sh`, the `Version:` line and the
 archive name in `README.md`, `package.json`, the `CHANGELOG.md` section, and the version
 mentioned in `AGENTS.md`, `wp-cli-update.conf.example` and `PROJECT_MAP.md`.

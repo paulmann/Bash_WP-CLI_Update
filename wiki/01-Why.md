@@ -77,7 +77,7 @@ so the comparison stays checkable instead of being overwritten. The table is mai
 | `v7.0.1` | `QWEN-Agent_Mode` | a modular tree (`src/manager`, `src/finder`) built into one script |
 | `v8.0.0` | this tree | the merge: read-only modes, restore, fleet control, guards, reports |
 
-The current release is 9.0.0: the selective update path repaired, and the bash floor
+The current release is 9.0.1: the selective update path repaired, and the bash floor
 raised to 5.1. It also carries the security work described above and the move to MIT, so
 commercial use no longer needs a separate agreement.
 
