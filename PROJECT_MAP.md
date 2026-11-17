@@ -2,7 +2,7 @@
 
 File-by-file map of the repository, with the direction of every dependency.
 
-**Files: 73** · generated 2026-11-06 · `tests/test_static.sh` verifies the count
+**Files: 74** · generated 2026-11-17 · `tests/test_static.sh` verifies the count
 against `git ls-files`, so this document cannot go stale silently the way the
 auto-generated map of an earlier revision did (it declared 5 files while the
 branch shipped 11, in a second language, with a content fingerprint that did not

@@ -46,10 +46,17 @@ jobs:
           curl -fsSLO https://ftp.gnu.org/gnu/bash/bash-${{ matrix.bash }}.tar.gz
           tar xzf bash-${{ matrix.bash }}.tar.gz
           cd bash-${{ matrix.bash }}
-          ./configure --without-bash-malloc >/dev/null
+          # bash 4.2 is from 2010 and declares several helpers as `char *f ()`.
+          # Compilers that default to C23 read `()` as "takes no arguments" and
+          # refuse the call sites ("too many arguments to function 'xmalloc'"),
+          # which is what ubuntu-latest started doing in November 2026. gnu89
+          # restores the old meaning and is what lets the floor build there
+          # instead of pinning the job to an older image forever.
+          ./configure --without-bash-malloc CFLAGS='-std=gnu89 -O2' >/dev/null
           make -j"$(nproc)" >/dev/null
           sudo make install
           /usr/local/bin/bash --version | head -1
+          test "$(/usr/local/bin/bash -c 'echo ${BASH_VERSINFO[0]}.${BASH_VERSINFO[1]}')" = "${{ matrix.bash }}"
           # Put the new bash first so the suites and their shebangs use it.
           sudo ln -sf /usr/local/bin/bash /usr/local/bin/bash42
           echo "/usr/local/bin" >> "$GITHUB_PATH"

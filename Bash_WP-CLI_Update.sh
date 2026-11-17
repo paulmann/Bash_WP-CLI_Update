@@ -3256,9 +3256,10 @@ plugin_resolve_slug() { # SITE USER NAME -> slug
     local site="$1" user="$2" name="${3,,}"
     kind_list_json plugin "$site" "$user" status >/dev/null
     ((WP_STATUS == 0)) || return 1
-    local tsv n t _status
-    local -a found=()
-    # `title` last, for the same reason as in plugin_select_targets.
+    local tsv n t _status match='' matches=0 hit=0
+    # `title` last, for the same reason as in plugin_select_targets. Plain
+    # scalars, not an array: bash 4.2 treats an empty array as unset and the
+    # documented floor has to keep working.
     tsv="$(printf '%s' "$WP_OUTPUT" | json_to_tsv name status title)" || return 1
     while IFS=$'\t' read -r n _status t; do
         [ "$n" = 'name' ] && continue
@@ -3267,25 +3268,26 @@ plugin_resolve_slug() { # SITE USER NAME -> slug
             printf '%s' "$n"
             return 0
         fi
-        case "${n,,}" in
-            *"$name"*)
-                found+=("$n")
-                continue
-                ;;
-        esac
-        if [ -n "$t" ]; then
-            case "${t,,}" in *"$name"*) found+=("$n") ;; esac
+        # A row can match on the slug or on the title; count it once.
+        hit=0
+        case "${n,,}" in *"$name"*) hit=1 ;; esac
+        if ((hit == 0)) && [ -n "$t" ]; then
+            case "${t,,}" in *"$name"*) hit=1 ;; esac
+        fi
+        if ((hit == 1)); then
+            match="$n"
+            matches=$((matches + 1))
         fi
     done <<<"$tsv"
-    if ((${#found[@]} == 0)); then
+    if ((matches == 0)); then
         log_error "no plugin matching '${3}' on ${site}"
         return 1
     fi
-    if ((${#found[@]} > 1)); then
+    if ((matches > 1)); then
         log_error "'${3}' is ambiguous on ${site}; pass the exact slug"
         return 1
     fi
-    printf '%s' "${found[0]}"
+    printf '%s' "$match"
 }
 
 confirm_destructive() { # SLUG SITE
