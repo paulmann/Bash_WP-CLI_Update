@@ -14,7 +14,7 @@ jobs:
     name: shellcheck
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: install shellcheck
         run: |
           sudo apt-get update
@@ -45,7 +45,7 @@ jobs:
           - os: ubuntu-22.04
             bash: '5.1'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: the image really ships the bash this job claims
         run: |
@@ -78,7 +78,7 @@ jobs:
     name: documentation and version consistency
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: version agrees everywhere
         run: |
           v="$(sed -n "s/^SCRIPT_VERSION='\(.*\)'.*/\1/p" Bash_WP-CLI_Update.sh | head -1)"
