@@ -78,9 +78,8 @@ so the comparison stays checkable instead of being overwritten. The table is mai
 | `v8.0.0` | this tree | the merge: read-only modes, restore, fleet control, guards, reports |
 
 The current release is 9.0.0: the selective update path repaired, and the bash floor
-raised to 5.1, together with the security work described
-above, and the point at which the licence moved to MIT, so commercial use no longer
-needs a separate agreement.
+raised to 5.1. It also carries the security work described above and the move to MIT, so
+commercial use no longer needs a separate agreement.
 
 The three-way comparison measured the baselines before choosing one. The 6.0 tree
 (`main`) was 59 084 B, 1 569 lines, about 24 functions, 4 files and no test suite.

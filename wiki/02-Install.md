@@ -4,6 +4,12 @@ Three routes, one result: a manager on `PATH`, a finder on `PATH`, the directori
 writes to, and a configuration file only root can read. The tool is released under the MIT
 licence since 8.1.0.
 
+Requirements: **bash 5.1+**, GNU coreutils and findutils, WP-CLI, and `root` to switch into
+the owner of each site. `flock`, `timeout`, `nice`, `ionice`, `tar`, `gzip` and `curl` are
+used when present and degrade gracefully when they are not. The manager, the finder and the
+installer refuse an older bash with exit 3 and the version they found; hosts with bash 4.x
+(RHEL/Rocky/Alma 8) can stay on 8.1.1 but cannot run 9.0.0.
+
 ## Route 1: npm
 
 ```bash
