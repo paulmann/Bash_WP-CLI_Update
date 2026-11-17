@@ -510,6 +510,19 @@ printf '%s\n%s\n' "$SITES" "${WORK}/not-here" >"$broken_list"
 manager_run --check --sites "$broken_list" >"${WORK}/check2.txt" 2>&1
 expect_contains "${WORK}/check2.txt" 'not a directory' '--check flags a missing site'
 
+say '--check --site does not need a site list'
+# The list path falls back to the script directory when --site is used, so a
+# missing file there used to make `--check --site` exit 1 on a healthy host.
+manager_run --check --sites "${WORK}/no-such-list.txt" --site "$SITES" >"${WORK}/check3.txt" 2>&1
+rc=$?
+if [ "$rc" = '0' ]; then
+    ok '--check --site exits 0 without a list file'
+else
+    bad '--check --site failed without a list file' "exit ${rc}: $(grep -m1 'does not exist' "${WORK}/check3.txt")"
+fi
+expect_contains "${WORK}/check3.txt" 'not read: --site' 'the report says the list was not read'
+expect_not_contains "${WORK}/check3.txt" 'the file does not exist' 'the missing list is not reported as a problem'
+
 say '--status reports the previous run'
 manager_run --plugins >/dev/null 2>&1
 status_out="${WORK}/status.txt"

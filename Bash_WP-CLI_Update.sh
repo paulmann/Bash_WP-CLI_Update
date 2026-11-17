@@ -3452,7 +3452,13 @@ check_environment() {
 
     printf '\n%s== site list ==%s\n' "$C_BOLD" "$C_RESET"
     printf 'file            : %s\n' "$SITES_FILE"
-    if [ ! -f "$SITES_FILE" ]; then
+    if [ -n "$TARGET_SITE" ]; then
+        # --site names the site explicitly, so this run never reads the list.
+        # Reporting the missing list as a problem made `--check --site` exit 1 on
+        # a host where nothing was wrong, because the list path falls back to the
+        # script directory in that mode.
+        printf '                  not read: --site %s was given\n' "$TARGET_SITE"
+    elif [ ! -f "$SITES_FILE" ]; then
         printf '%s\n' "  ${C_RED}✗${C_RESET} the file does not exist (AUTO_DISCOVER=${AUTO_DISCOVER})"
         rc=1
     else
