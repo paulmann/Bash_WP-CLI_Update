@@ -101,8 +101,8 @@ emit_rows() { # kind: plugin|theme
     # The manager merges stderr into the same buffer, so this is what the counting
     # code has to survive (measured on battery-service.ru, 2026-11-18).
     if [ -f "${LOG}.noise" ]; then
-        printf 'PHP Warning:  Constant WP_DEBUG already defined in /var/www/x/wp-config.php on line 93\n' >&2
-        printf 'Deprecated: Creation of dynamic property Flatsome_Envato::\$slug is deprecated in /var/www/x/themes/flatsome/inc/classes/class-flatsome-envato.php on line 47\n' >&2
+        printf '%s\n' 'PHP Warning:  Constant WP_DEBUG already defined in /var/www/x/wp-config.php on line 93' >&2
+        printf '%s\n' 'Deprecated: Creation of dynamic property Flatsome_Envato is deprecated in /var/www/x/themes/flatsome/inc/classes/class-flatsome-envato.php on line 47' >&2
     fi
     [ -n "$fields" ] && IFS=',' read -r -a want <<<"$fields" || want=(name status update version)
     for f in "${want[@]}"; do
@@ -213,7 +213,7 @@ case "$cmd $sub" in
         # Hook: ${LOG}.broken simulates a site whose theme or plugin dies while
         # WordPress boots -- exactly what --check has to notice.
         if [ -f "${LOG}.broken" ]; then
-            printf 'PHP Parse error:  Unclosed \'{' on line 65 in %s/wp-content/themes/t/functions.php on line 222\n' "${SITE_PATH:-/var/www/x}" >&2
+            printf '%s\n' "PHP Parse error:  Unclosed '{' on line 65 in ${SITE_PATH:-/var/www/x}/wp-content/themes/t/functions.php on line 222" >&2
             exit 1
         fi
         echo 'Success: WordPress is installed.' ;;
