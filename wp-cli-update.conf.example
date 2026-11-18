@@ -1,4 +1,4 @@
-# Configuration example for Bash_WP-CLI_Update.sh 9.0.1
+# Configuration example for Bash_WP-CLI_Update.sh 9.1.0
 #
 # Copy it to one of these places and edit:
 #
@@ -231,6 +231,12 @@ MIN_FREE_MB=0
 # host add this to each server block instead:
 #     location ^~ /wp-content/upgrade/ { deny all; }
 HARDEN_UPGRADE_DIR=0
+
+# --check asks WordPress itself whether the site loads (`wp core is-installed`,
+# run as the site owner), so a theme or plugin that kills the bootstrap shows up
+# as a failed check instead of a tick. One extra wp call per site; set to 0 when
+# the check runs every minute from monitoring and the file-level answer is enough.
+WP_PROBE=1
 
 # ------------------------------------------------------------------ retention
 # Also drop backups older than this many days (0 = keep by count only).

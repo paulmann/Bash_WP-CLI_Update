@@ -1,4 +1,4 @@
-# Bash WP-CLI Update 9.0.1
+# Bash WP-CLI Update 9.1.0
 
 Maintenance automation for a fleet of WordPress installations, driven by WP-CLI and
 written in POSIX-friendly bash 5.1+.
@@ -28,7 +28,7 @@ JSON report, a change log and a restore path:
 Bash_WP-CLI_Update.sh --full --backup db --jobs 4 --report /var/log/wp/report.json
 ```
 
-* Version: **9.0.1** (finder 2.1.0)
+* Version: **9.1.0** (finder 2.2.0)
 * Requires: `bash >= 5.1`, GNU coreutils/findutils, WP-CLI, `root` (to switch into
   site owners), one of `runuser` / `sudo` / `su`
 * Optional: `flock`, `timeout` (or `perl`), `tar`, `gzip`, `nice`, `ionice`, `curl`,
@@ -60,6 +60,26 @@ Bash_WP-CLI_Update.sh --full --backup db --jobs 4 --report /var/log/wp/report.js
 
 Newest first. Each entry is what an operator notices; the full text of every release,
 including the measured results, is in [CHANGELOG.md](CHANGELOG.md).
+
+### 9.1.0 — a run can no longer claim success on a site it could not touch
+
+Five defects from one production fleet, and the common shape is "the run said yes".
+
+- **`--check` now proves the site loads.** It only looked at files, so a site whose
+  theme died with a parse error answered ✓ while every WP-CLI command on it failed.
+  Each site is probed with `wp core is-installed` as its owner; `--no-wp-probe`
+  (`WP_PROBE=false`) turns the probe off for a per-minute monitoring call.
+- **An aborted upgrader is a failure, not a success.** A plugin hooking the upgrader
+  makes WP-CLI print `-1`, exit 0 and leave `.maintenance` behind; the site then serves
+  503 to visitors. The output is now read as "nothing was applied", the update is
+  retried once with `--skip-plugins --skip-themes`, and the leftover flag is cleared
+  after the site with a warning.
+- **`--health` counts rows, not lines.** A site with `WP_DEBUG` printed deprecation
+  notices that were counted as pending plugins (20 where there were none) and
+  digit-stripped into the database size column.
+- **The finder skips copies and clones.** `*.wp-YYYYMMDD`, `*.bak`, `*-old` are no
+  longer listed as sites, and a second tree on the same database and table prefix is
+  skipped with a warning naming the first (`--allow-shared-db` keeps both).
 
 ### 9.0.0 — the selective update path works on WP-CLI 2.12; the floor is bash 5.1
 
@@ -192,7 +212,7 @@ Three ways, same result. Pick one:
 npm install -g bash-wp-cli-update
 
 # 2. the installer from the archive
-curl -LO https://github.com/paulmann/Bash_WP-CLI_Update/releases/latest/download/bash-wp-cli-update-9.0.1.tar.gz
+curl -LO https://github.com/paulmann/Bash_WP-CLI_Update/releases/latest/download/bash-wp-cli-update-9.1.0.tar.gz
 sudo ./install.sh --dry-run     # show every step
 sudo ./install.sh --systemd     # does it, plus the nightly timer
 ```
@@ -229,9 +249,23 @@ sudo wp-cli-update --doctor
 sudo wp-cli-update --check
 ```
 
+The finder leaves out what is not a site to update: directories carrying the
+`.no_wp_cli` marker, snapshot copies (`*.wp-YYYYMMDD`, `*.bak`, `*-old`), and a
+second tree that points at the same database and table prefix as another root —
+that last one is reported with the path of the root that won, and
+`--allow-shared-db` keeps both when two trees on one database is really what you
+mean. Read what it skipped: a count per reason is printed when anything is left
+out, and `--verbose` names every case.
+
 `--doctor` answers "why would a run fail before it starts": the wp binary, the user
 switch, the tools, the paths, the free space, the config permissions and the policy
 in force.
+
+`--check` answers the same question per site, and it now asks WordPress itself: one
+`wp core is-installed` per site, as the site owner, so a theme or plugin that kills the
+bootstrap is reported instead of a ✓. On a large fleet that probe costs about a second
+per site; for a probe that runs every minute pass `--no-wp-probe` (config
+`WP_PROBE=false`), and keep the per-site answer for the check that runs after a change.
 
 ---
 
@@ -287,7 +321,7 @@ Exactly one mode per run.
 | `--list-backups` | | backup files per site, newest first | no |
 | `--restore-db FILE` | | import FILE into the database (needs `--yes`) | yes |
 | `--harden` | | append the `wp-content/upgrade/` deny block to each site's `.htaccess` and print the nginx directive | yes |
-| `--check` | | environment plus every site in the list, changes nothing | no |
+| `--check` | | environment plus every site in the list — each site is probed with `wp core is-installed` (`--no-wp-probe` skips it) | no |
 | `--status` | | last run summary and log sizes | no |
 | `--doctor` | | host diagnosis, no site list needed | no |
 | `--completion SHELL` | | print a bash or zsh completion script | no |

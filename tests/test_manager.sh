@@ -493,11 +493,29 @@ check_out="${WORK}/check.txt"
 manager_run --check >"$check_out" 2>&1
 rc=$?
 if [ "$rc" = '0' ]; then ok '--check on a good tree exits 0'; else bad '--check exit code' "got ${rc}"; fi
+# 9.1.0: --check asks each site whether WordPress loads (one `wp core is-installed`
+# per site, as the owner), because a file-only check answered ✓ on a site whose
+# theme killed every wp command. It still changes nothing: the probe is a read.
+calls="$(grep -c 'ARGV' "$ARGV_LOG" 2>/dev/null)"
+calls="${calls:-0}"
+site_count="$(grep -c '' "$SITE_LIST")"
+if [ "$calls" = "$site_count" ]; then
+    ok "--check probed wp once per site (${calls} for ${site_count} site(s))"
+else
+    bad '--check probes wp once per site' "${calls} call(s) for ${site_count} site(s)"
+fi
+if grep -q '\[core\] \[is-installed\]' "$ARGV_LOG" 2>/dev/null; then
+    ok 'the probe is wp core is-installed'
+else
+    bad 'the probe is wp core is-installed' "$(cat "$ARGV_LOG")"
+fi
+argv_log_reset
+manager_run --check --no-wp-probe >/dev/null 2>&1
 calls="$(grep -c 'ARGV' "$ARGV_LOG" 2>/dev/null)"
 if [ "${calls:-0}" = '0' ]; then
-    ok '--check invoked wp zero times'
+    ok '--no-wp-probe leaves wp alone (0 calls)'
 else
-    bad '--check invoked wp' "${calls} call(s)"
+    bad '--no-wp-probe leaves wp alone' "${calls} call(s)"
 fi
 expect_contains "$check_out" 'wp-cli' '--check reports the wp binary'
 expect_contains "$check_out" 'user switch' '--check reports the switching mechanism'

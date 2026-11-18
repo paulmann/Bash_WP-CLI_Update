@@ -38,11 +38,12 @@ else
     printf '%s\n' "$argv_line" >>"$LOG"
 fi
 
-fmt='table' fields='' only_update='' size_fmt=''
+fmt='table' fields='' only_update='' size_fmt='' skip_all=0
 positional=()
 for a in "$@"; do
     case "$a" in
         --quiet) ;;            # honoured implicitly: the stub is quiet anyway
+        --skip-plugins | --skip-plugins=* | --skip-themes | --skip-themes=*) skip_all=1 ;;
         --format=*) fmt="${a#--format=}" ;;
         --fields=*) fields="${a#--fields=}" ;;
         --update=*) only_update="${a#--update=}" ;;
@@ -96,6 +97,13 @@ rows_for() { # kind -> ref to the array via name
 emit_rows() { # kind: plugin|theme
     local kind="$1" r sl st up v ti uv out f v_ emitted=0 count=0
     local -a want=()
+    # Hook: a site whose WP_DEBUG is on prints deprecation notices before the table.
+    # The manager merges stderr into the same buffer, so this is what the counting
+    # code has to survive (measured on battery-service.ru, 2026-11-18).
+    if [ -f "${LOG}.noise" ]; then
+        printf 'PHP Warning:  Constant WP_DEBUG already defined in /var/www/x/wp-config.php on line 93\n' >&2
+        printf 'Deprecated: Creation of dynamic property Flatsome_Envato::\$slug is deprecated in /var/www/x/themes/flatsome/inc/classes/class-flatsome-envato.php on line 47\n' >&2
+    fi
     [ -n "$fields" ] && IFS=',' read -r -a want <<<"$fields" || want=(name status update version)
     for f in "${want[@]}"; do
         case " $FIELDS_KNOWN " in
@@ -183,8 +191,7 @@ case "$cmd" in
 esac
 
 case "$cmd $sub" in
-    'core version')
-        # FAKE_CORE_VERSION is a file hook, not an environment variable: the
+    'core version')        # FAKE_CORE_VERSION is a file hook, not an environment variable: the
         # manager runs the stub in a clean environment, and a test must be able
         # to say "this site is on 7.1.4" without changing the stub's defaults.
         if [ -f "${LOG}.core-version" ]; then
@@ -202,7 +209,20 @@ case "$cmd $sub" in
         fi
         echo 'Success: WordPress is at the latest version.'
         exit 1 ;;                                  # like the real WP-CLI
-    'core update') echo 'Success: WordPress updated successfully.' ;;
+    'core is-installed')
+        # Hook: ${LOG}.broken simulates a site whose theme or plugin dies while
+        # WordPress boots -- exactly what --check has to notice.
+        if [ -f "${LOG}.broken" ]; then
+            printf 'PHP Parse error:  Unclosed \'{' on line 65 in %s/wp-content/themes/t/functions.php on line 222\n' "${SITE_PATH:-/var/www/x}" >&2
+            exit 1
+        fi
+        echo 'Success: WordPress is installed.' ;;
+    'core update')
+        if [ -f "${LOG}.abort-update-always" ] || { [ -f "${LOG}.abort-update" ] && [ "$skip_all" = '0' ]; }; then
+            echo '-1'
+            exit 0
+        fi
+        echo 'Success: WordPress updated successfully.' ;;
     'core update-db') echo 'Success: WordPress database upgraded successfully.' ;;
     'plugin list') emit_rows plugin ;;
     'theme list') emit_rows theme ;;
@@ -211,7 +231,12 @@ case "$cmd $sub" in
     'plugin deactivate') echo 'Success: Deactivated plugin.' ;;
     'plugin delete') echo 'Success: Deleted plugin.' ;;
     'plugin update')
-        # Test hooks: one slug can be made to fail, or to fail exactly once.
+        # Hook: the aborted upgrader. Real WP-CLI prints a bare "-1" and exits 0
+        # when a plugin hook kills the update; with --skip-plugins the retry works.
+        if [ -f "${LOG}.abort-update-always" ] || { [ -f "${LOG}.abort-update" ] && [ "$skip_all" = '0' ]; }; then
+            echo '-1'
+            exit 0
+        fi
         if [ -n "${FAKE_FAIL_ALWAYS:-}" ] && [ "$third" = "${FAKE_FAIL_ALWAYS}" ]; then
             echo 'Error: simulated permanent failure.' >&2
             exit 1
@@ -226,7 +251,12 @@ case "$cmd $sub" in
         fi
         printf '%s\n' "updated" >>"${LOG}.bumped" 2>/dev/null
         echo 'Success: Updated 2 of 2 plugins.' ;;
-    'theme update') echo 'Success: Updated 1 of 1 theme.' ;;
+    'theme update')
+        if [ -f "${LOG}.abort-update-always" ] || { [ -f "${LOG}.abort-update" ] && [ "$skip_all" = '0' ]; }; then
+            echo '-1'
+            exit 0
+        fi
+        echo 'Success: Updated 1 of 1 theme.' ;;
     'db export')
         # write something to the requested path, like the real one does
         out="${positional[2]:-}"

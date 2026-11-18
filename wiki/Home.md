@@ -30,7 +30,7 @@ maintenance run, not after.
 | Item | Value |
 |---|---|
 | Version | 9.0.1 |
-| Finder version | 2.1.0 (`Find_WP_Senior.sh`) |
+| Finder version | 2.2.0 (`Find_WP_Senior.sh`) |
 | Runtime | bash 5.1+, GNU coreutils and findutils, WP-CLI |
 | Privileges | root, plus one of `runuser` / `sudo` / `su` |
 | Optional tools | `flock`, `timeout` (or `perl`), `tar`, `gzip`, `nice`, `ionice`, `curl`, `mail` |

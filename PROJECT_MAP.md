@@ -2,7 +2,7 @@
 
 File-by-file map of the repository, with the direction of every dependency.
 
-**Files: 74** · generated 2026-11-17 · `tests/test_static.sh` verifies the count
+**Files: 75** · generated 2026-11-19 · `tests/test_static.sh` verifies the count
 against `git ls-files`, so this document cannot go stale silently the way the
 auto-generated map of an earlier revision did (it declared 5 files while the
 branch shipped 11, in a second language, with a content fingerprint that did not
@@ -22,7 +22,7 @@ same commit.
 | File | Version | Purpose | Depends on |
 |---|---|---|---|
 | `Bash_WP-CLI_Update.sh` | 9.0.1 | Runs WP-CLI maintenance over every site in the list, each as its owner. Modes (mutating, read-only, diagnostic and security), configuration layers, locking, logging, timeouts, licence handoff, backups and restore, retries and the circuit breaker, JSON reports and notifications, the CVE-2026-119977 assessment and the `wp-content/upgrade/` hardening, rendering. | `Find_WP_Senior.sh` (only when the site list is missing and `AUTO_DISCOVER` is on) · `wp` · `runuser`/`sudo`/`su` · `flock`, `timeout` or `perl` (optional) · `gzip`, `nice`, `ionice`, `curl`, `mail` (optional) |
-| `Find_WP_Senior.sh` | 2.1.0 | Scans named web roots for WordPress installations, honours `.no_wp_cli` and exclusions, deduplicates, enriches with metadata, writes the list atomically. | `find`, `sort`, `stat`, `mktemp` |
+| `Find_WP_Senior.sh` | 2.2.0 | Scans named web roots for WordPress installations, honours `.no_wp_cli` and exclusions, skips snapshot copies and a second tree on the same database and prefix, deduplicates, enriches with metadata, writes the list atomically. | `find`, `sort`, `stat`, `mktemp` |
 | `wp-cli-update.conf.example` | — | Every manager setting with its default and the reason it exists. Copy to `/etc/wp-cli-update.conf` or next to the script. | read by `Bash_WP-CLI_Update.sh` |
 
 The two scripts are independent executables: neither sources the other, and the
@@ -57,6 +57,7 @@ trailing whitespace) and the `--output` / `--sites` flags.
 | `tests/test_secretguard.sh` | Planted values in five name conventions, masking by default, `--strict`, the allowlist, `--history` for a value that was committed and then removed, false-positive classes, `--min-length`, `--quiet`, target arguments. | `tests/harness.sh`, `git` (SKIPs without it) |
 | `tests/test_v7.sh` | The 8.0.0 feature set: `--health` (read-only: no dump, no backup, no lock), `--secrets` (names, never values; permissions; stale copies), `--doctor`, `--completion`, `--report` (valid JSON), the change log, retries and their count, the circuit breaker, `--skip-if-no-updates`, plugin/theme policy lists, `--restore-db` (refuses without `--yes`, dumps first), the disk guard, age-based retention, `--url` detection, `--nice`/`--ionice`, config aliases and the new keys. | `tests/harness.sh`, `python3` (optional, validates the report) |
 | `tests/test_cve.sh` | The 8.1.0 security set: `--security` verdicts and exit codes for exposed and fixed versions, its JSON Lines records, the `--health` CVE column, `--harden` writing one marked block and backing up `.htaccess`, idempotence, `--harden-upgrade-dir` and `HARDEN_UPGRADE_DIR` applying it from a writing mode, the printed nginx directive, the refusal of the flag in read-only modes, and the post-run warning for a site that stays below the fixed release. | `tests/harness.sh` |
+| `tests/test_ops.sh` | The 9.1.0 set, all of it measured on a live fleet: `--check` probing a site with `wp core is-installed` (and `--no-wp-probe`), an aborted upgrader read as a failure with a retry that unloads plugin and theme code, the leftover `.maintenance` flag cleared and reported (and left alone by a dry run), `--health` counts that survive deprecation noise, and a finder that skips dated copies and a second root on one database. | `tests/harness.sh` |
 
 ## Documentation and repository hygiene
 

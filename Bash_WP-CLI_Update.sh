@@ -15,7 +15,7 @@
 # Project:     Bash WP-CLI Update
 # Repository:  https://github.com/paulmann/Bash_WP-CLI_Update
 # License:     MIT (see LICENSE)
-# Version:     9.0.1
+# Version:     9.1.0
 #
 # Purpose
 #   Run WP-CLI maintenance operations (core, plugins, themes, database, cron,
@@ -103,7 +103,7 @@ shopt -s inherit_errexit 2>/dev/null || true
 ###############################################################################
 
 PROG_NAME="${0##*/}"
-SCRIPT_VERSION='9.0.1'
+SCRIPT_VERSION='9.1.0'
 
 # A literal backtick, spelled by code point: the config parser has to reject it,
 # and writing the character directly would make this file fail the project's own
@@ -171,6 +171,7 @@ DEFAULT_URL_DETECT=1                 # derive --url from wp-config.php when able
 DEFAULT_LOG_JSON=0                   # 1 = one JSON object per log line
 DEFAULT_SKIP_IF_NO_UPDATES=0         # skip a site whose plugins/themes/core are current
 DEFAULT_HARDEN_UPGRADE_DIR=0         # 1 = ensure the wp-content/upgrade/ deny block in .htaccess
+DEFAULT_WP_PROBE=1                   # 1 = --check asks wp whether the site really loads
 
 # CVE-2026-119977: a race condition in the WordPress core update mechanism lets an
 # unauthenticated attacker execute code while a site is being updated (CVSS 8.1,
@@ -199,6 +200,8 @@ CONFIG_KEYS=(
     REPORT_FILE LOG_JSON DRY_RUN SKIP_IF_NO_UPDATES URL_DETECT WP_GLOBAL_ARGS
     # 8.1.0 additions
     HARDEN_UPGRADE_DIR
+    # 9.1.0 additions
+    WP_PROBE
 )
 
 # Configuration keys accepted under an older name, with the name to use instead.
@@ -236,6 +239,32 @@ skip_plugins_applies_to() { # SUBCOMMAND [SECOND]
 }
 
 have() { command -v "$1" >/dev/null 2>&1; }
+
+# is_update_command ARGS... -> 0 when the command goes through the WordPress upgrader.
+# Those are the commands whose output means "what changed on disk", so a bare
+# number in place of a result table is not a result -- see wp_update_aborted.
+is_update_command() { # SUBCOMMAND [SECOND]
+    case "${1:-}" in
+        plugin | theme) [ "${2:-}" = 'update' ] && return 0 ;;
+        core)
+            case "${2:-}" in update | update-db) return 0 ;; esac
+            ;;
+    esac
+    return 1
+}
+
+# wp_update_aborted OUTPUT -> 0 when the output is a bare number.
+# Measured 2026-11-18 on battery-service: a plugin whose hook kills the upgrader
+# makes WP-CLI print exactly `-1`, exit 0 and leave .maintenance behind, so the
+# run reported success while the site served 503. A bare number is never a valid
+# answer for an update: the result is a table or `Success: ...`.
+wp_update_aborted() { # OUTPUT
+    local out
+    out="$(printf '%s' "${1:-}" | tr -d '[:space:]')"
+    [ -n "$out" ] || return 1
+    [[ "$out" =~ ^-?[0-9]+$ ]] || return 1
+    return 0
+}
 
 # is_set NAME -> true when the variable is set, in the shell or in the
 # environment. `printenv` is what makes the second half work: an exported
@@ -720,7 +749,7 @@ config_validate_layer() {
             IONICE_CLASS) require_choice_conf "$key" "${CONF[$key]}" idle best-effort none ;;
             NOTIFY_ON) require_choice_conf "$key" "${CONF[$key]}" never failure always ;;
             BACKUP_COMPRESS | LOG_JSON | SKIP_IF_NO_UPDATES | URL_DETECT | DRY_RUN | \
-                HARDEN_UPGRADE_DIR)
+                HARDEN_UPGRADE_DIR | WP_PROBE)
                 require_bool_conf "$key" "${CONF[$key]}" ;;
         esac
     done
@@ -786,6 +815,7 @@ config_apply_all() {
     apply_conf URL_DETECT               URL_DETECT
     apply_conf WP_GLOBAL_ARGS           WP_GLOBAL_ARGS
     apply_conf HARDEN_UPGRADE_DIR       HARDEN_UPGRADE_DIR
+    apply_conf WP_PROBE                 WP_PROBE
 
     require_positive_int      LOG_MAX_BYTES            "$LOG_MAX_BYTES"
     require_non_negative_int  LOG_KEEP                 "$LOG_KEEP"
@@ -824,6 +854,7 @@ config_apply_all() {
     SKIP_IF_NO_UPDATES="$(require_bool SKIP_IF_NO_UPDATES "$SKIP_IF_NO_UPDATES")"
     URL_DETECT="$(require_bool URL_DETECT "$URL_DETECT")"
     HARDEN_UPGRADE_DIR="$(require_bool HARDEN_UPGRADE_DIR "$HARDEN_UPGRADE_DIR")"
+    WP_PROBE="$(require_bool WP_PROBE "$WP_PROBE")"
 
     # Values have passed validation, so they are pure digits -- but they may
     # carry leading zeros ('08', '007'). Every later use is arithmetic, and
@@ -963,6 +994,8 @@ STATS_SITES_FAILED=0
 STATS_SITES_SKIPPED=0
 STATS_OPS_OK=0
 STATS_OPS_FAILED=0
+STATS_FLAGS_REMOVED=0          # leftover .maintenance flags cleared after a run
+STATS_UPDATE_FALLBACKS=0       # updates retried with --skip-plugins --skip-themes
 VERIFY_FINDINGS=0
 LOCK_FD=''
 LOCK_HELD='false'
@@ -994,6 +1027,7 @@ SKIP_IF_NO_UPDATES="$DEFAULT_SKIP_IF_NO_UPDATES"
 URL_DETECT="$DEFAULT_URL_DETECT"
 WP_GLOBAL_ARGS=''
 HARDEN_UPGRADE_DIR="$DEFAULT_HARDEN_UPGRADE_DIR"
+WP_PROBE="$DEFAULT_WP_PROBE"
 HARDEN_NOTICE_SHOWN='false'
 RESTORE_SOURCE=''             # --restore-db FILE
 COMPLETION_SHELL=''
@@ -1649,9 +1683,20 @@ wp_exec() { # SITE USER ARGS...
 # run_wp: count the operation, log the failure, keep going.
 run_wp() { # SITE USER ARGS...
     local site="$1" user="$2"
+    local -a update_cmd=("${@:3}")
     wp_exec "$@"
     if [ "$WP_SKIPPED" = 'true' ]; then return 0; fi
     if ((WP_STATUS == 0)); then
+        # A bare number where an update result belongs is the aborted upgrader,
+        # not a success: nothing was applied and .maintenance is probably behind.
+        if is_update_command "${update_cmd[@]}" && wp_update_aborted "$WP_OUTPUT"; then
+            STATS_OPS_FAILED=$((STATS_OPS_FAILED + 1))
+            WP_UPDATE_ABORTED='true'
+            log_error "wp ${update_cmd[*]} aborted on ${site}: the upgrader answered '${WP_OUTPUT}' and exited 0; nothing was applied"
+            log_error_detail 'run_wp' "wp $*" "$WP_OUTPUT" '0'
+            print_error_box "$site" "wp ${update_cmd[*]}" "$WP_OUTPUT"
+            return 1
+        fi
         STATS_OPS_OK=$((STATS_OPS_OK + 1))
         if [ -n "$WP_OUTPUT" ] && [ "$QUIET" != 'true' ] &&
            [ "$OUTPUT_FORMAT" = 'table' ] && [ "$VERBOSE" = 'true' ]; then
@@ -1682,6 +1727,59 @@ run_wp_soft() { # SITE USER ARGS...
     fi
     log_warn "wp ${*:3} did not succeed on ${site} (exit ${WP_STATUS}); continuing"
     log_error_detail 'run_wp_soft' "wp $*" "$WP_OUTPUT" "$WP_STATUS"
+    return 1
+}
+
+# run_wp_update: an update that went through the upgrader.
+#
+# A plugin (or theme) that hooks the upgrader can abort it: WP-CLI prints a bare
+# number, exits 0 and leaves the site in maintenance mode. Files that are on disk
+# are all an update needs, so the retry runs with --skip-plugins --skip-themes;
+# the cost is that plugins which serve their own updates were not consulted in
+# that pass, and the operator is told so rather than left guessing.
+run_wp_update() { # SITE USER ARGS...
+    local site="$1" user="$2"
+    WP_UPDATE_ABORTED='false'
+    run_wp "$@" && return 0
+    [ "$WP_UPDATE_ABORTED" = 'true' ] || return 1
+    [ "$DRY_RUN" = 'true' ] && return 1
+    STATS_UPDATE_FALLBACKS=$((STATS_UPDATE_FALLBACKS + 1))
+    log_warn "${site}: wp ${*:3} aborted inside the upgrader; retrying once with --skip-plugins --skip-themes"
+    WP_UPDATE_ABORTED='false'
+    if run_wp "$site" "$user" "${@:3}" --skip-plugins --skip-themes; then
+        log_warn "${site}: the retry without plugin and theme code succeeded; plugins that run their own update server were not consulted"
+        return 0
+    fi
+    [ "$WP_UPDATE_ABORTED" = 'true' ] &&
+        log_error "${site}: the update aborted again with plugin and theme code unloaded; nothing was applied"
+    return 1
+}
+
+# cleanup_maintenance_flag: clear a site left in WordPress maintenance mode.
+#
+# The upgrader writes .maintenance and removes it on the way out; when it aborts
+# (see run_wp_update) the file stays and every visitor gets 503. The run holds the
+# fleet lock, so a flag seen after the mode has finished cannot belong to an update
+# that is still running. Removing it is reported as a warning, not a silent fix:
+# the operator has to know that an update did not complete.
+cleanup_maintenance_flag() { # SITE
+    local site="$1" flag="${1}/.maintenance" age='?' born now
+    [ -f "$flag" ] || return 0
+    if have stat; then
+        now="$(date +%s)"
+        born="$(stat -c %Y -- "$flag" 2>/dev/null)" || born=''
+        [ -n "$born" ] && age="$((now - born))s"
+    fi
+    if [ "$DRY_RUN" = 'true' ]; then
+        log_info "[dry-run] ${site}: a leftover .maintenance flag is present (age ${age}); a real run would remove it"
+        return 0
+    fi
+    if rm -f -- "$flag" 2>/dev/null; then
+        STATS_FLAGS_REMOVED=$((STATS_FLAGS_REMOVED + 1))
+        log_warn "${site}: removed a leftover .maintenance flag (age ${age}) -- the site was answering 503 to visitors"
+        return 0
+    fi
+    log_error "${site}: .maintenance is present and could not be removed; the site stays in maintenance mode"
     return 1
 }
 
@@ -2666,7 +2764,7 @@ astra_step() { # SITE USER STRICT(true|false)
 mode_core() { # SITE USER
     local site="$1" user="$2" rc=0
     [ "$VERBOSE" = 'true' ] && core_report_available "$site" "$user"
-    run_wp "$site" "$user" core update || rc=1
+    run_wp_update "$site" "$user" core update || rc=1
     # --skip-plugins on the schema upgrade is what WordPress itself does during
     # an update: a broken plugin must not be able to block the DB migration.
     run_wp "$site" "$user" core update-db --skip-plugins || rc=1
@@ -2687,7 +2785,7 @@ plugins_update_selected() { # SITE USER
         return 0
     fi
     log_info "${site}: updating ${#targets[@]} plugin(s): ${targets[*]}"
-    run_wp "$site" "$user" plugin update "${targets[@]}"
+    run_wp_update "$site" "$user" plugin update "${targets[@]}"
 }
 
 mode_plugins() { # SITE USER
@@ -2696,7 +2794,7 @@ mode_plugins() { # SITE USER
         plugins_update_selected "$1" "$2"
         return $?
     fi
-    run_wp "$1" "$2" plugin update --all
+    run_wp_update "$1" "$2" plugin update --all
 }
 
 # Excluding and holding themes is the same problem as plugins, so it is the same
@@ -2750,7 +2848,7 @@ themes_update_selected() { # SITE USER
         return 0
     fi
     log_info "${site}: updating ${#targets[@]} theme(s): ${targets[*]}"
-    run_wp "$site" "$user" theme update "${targets[@]}"
+    run_wp_update "$site" "$user" theme update "${targets[@]}"
 }
 
 mode_themes() { # SITE USER
@@ -2759,7 +2857,7 @@ mode_themes() { # SITE USER
         themes_update_selected "$1" "$2"
         return $?
     fi
-    run_wp "$1" "$2" theme update --all
+    run_wp_update "$1" "$2" theme update --all
 }
 
 mode_db_optimize() { # SITE USER
@@ -2776,7 +2874,7 @@ mode_cron() { run_wp "$1" "$2" cron event run --due-now; }
 mode_full() { # SITE USER
     local site="$1" user="$2" rc=0
     [ "$VERBOSE" = 'true' ] && core_report_available "$site" "$user"
-    run_wp "$site" "$user" core update || rc=1
+    run_wp_update "$site" "$user" core update || rc=1
     mode_plugins "$site" "$user" || rc=1
     mode_themes "$site" "$user" || rc=1
     run_wp "$site" "$user" core update-db --skip-plugins || rc=1
@@ -2834,9 +2932,12 @@ pending_count() { # SITE USER KIND
     # console echo of the check must not land in the caller's $().
     info_wp "$site" "$user" "$kind" list --update=available --format=csv --fields=name >/dev/null
     [ "$WP_STATUS" = '0' ] || { printf '0'; return 0; }
-    n="$(printf '%s\n' "$WP_OUTPUT" | grep -c '[^[:space:]]')"
+    n="$(printf '%s\n' "$WP_OUTPUT" | grep -cE '^[A-Za-z0-9._-]+$')"
     n="${n//[^0-9]/}"
     n="${n:-0}"
+    # Only slug-shaped lines are rows; a deprecation notice printed by the site
+    # (WP_DEBUG on a modern PHP) used to be counted as a plugin, which turned
+    # "nothing pending" into "20 pending" on battery-service.ru (2026-11-18).
     ((n > 0)) && n=$((n - 1))
     printf '%s' "$n"
 }
@@ -2849,7 +2950,11 @@ mode_health() { # SITE USER
     cp="$(pending_count "$site" "$user" plugin)"
     tp="$(pending_count "$site" "$user" theme)"
     info_wp "$site" "$user" db size --size_format=mb
-    [ "$WP_STATUS" = '0' ] && db="$(printf '%s' "$WP_OUTPUT" | tr -dc '0-9.')"
+    # The first number on the line, not every digit in the output: warnings from
+    # the site used to produce values like 9..1334939..133493 on the same host.
+    [ "$WP_STATUS" = '0' ] && db="$(printf '%s\n' "$WP_OUTPUT" |
+        awk 'match($0, /[0-9]+([.][0-9]+)?/) { print substr($0, RSTART, RLENGTH); exit }')"
+    [ -n "$db" ] || db='?'
     cp="${cp:-0}"; tp="${tp:-0}"
     status="$(cve_core_status "$core")"
     case "$status" in
@@ -2985,7 +3090,7 @@ _wp_cli_update() {
     modes='full core plugins themes db-optimize db-fix cron astra list-plugins plugin-manage verify health secrets security harden check status doctor list-sites list-backups restore-db completion'
     # Every mode and every option, generated from parse_args; the static suite
     # fails if this list drifts from --help.
-    opts='--action --allow-root --astra --astra-key --astra-slug --backup --backup-age-days --backup-compress --backup-dir --check --color --completion --config --core --cron --db-fix --db-optimize --debug --default-user --doctor --dry-run --error-log-file --exclude-plugins --exclude-themes --fail-on --fields --force --format --full --harden-upgrade-dir --health --help --hold-plugins --hold-themes --ionice --jobs --json --json-lines --json-log --keep-backups --kill-after --list-backups --list-modes --list-plugins --list-sites --lock-file --lock-wait --log-dir --log-file --log-level --mail-to --max-failures --max-sites --min-free-mb --name --nice --no-backup --no-color --no-discover --no-harden-upgrade-dir --no-lock --no-notify --no-url-detect --no-user-switch --notify --notify-on --only-active --option --page-limit --plugin-manage --plugins --print-config --quiet --report --restore-db --retry --retry-delay --run-timeout --secrets --security --signal --site --sites --sites-file --skip-if-no-updates --skip-plugins --skip-plugins-for-listing --status --strict --themes --timeout --url --user --user-env --verbose --verify --version --wp --wp-bin --wp-cli --yes --harden'
+    opts='--action --allow-root --astra --astra-key --astra-slug --backup --backup-age-days --backup-compress --backup-dir --check --color --completion --config --core --cron --db-fix --db-optimize --debug --default-user --doctor --dry-run --error-log-file --exclude-plugins --exclude-themes --fail-on --fields --force --format --full --harden-upgrade-dir --health --help --hold-plugins --hold-themes --ionice --jobs --json --json-lines --json-log --keep-backups --kill-after --list-backups --list-modes --list-plugins --list-sites --lock-file --lock-wait --log-dir --log-file --log-level --mail-to --max-failures --max-sites --min-free-mb --name --nice --no-backup --no-color --no-discover --no-harden-upgrade-dir --no-lock --no-notify --no-url-detect --no-user-switch --no-wp-probe --notify --notify-on --only-active --option --page-limit --plugin-manage --plugins --print-config --quiet --report --restore-db --retry --retry-delay --run-timeout --secrets --security --signal --site --sites --sites-file --skip-if-no-updates --skip-plugins --skip-plugins-for-listing --status --strict --themes --timeout --url --user --user-env --verbose --verify --version --wp --wp-bin --wp-cli --yes --harden'
     case "$prev" in
         --format) COMPREPLY=($(compgen -W 'table json csv tsv' -- "$cur")); return ;;
         --color|--allow-root) COMPREPLY=($(compgen -W 'auto always never' -- "$cur")); return ;;
@@ -3008,7 +3113,7 @@ EOS
 _wp_cli_update() {
     local -a modes opts
     modes=(full core plugins themes db-optimize db-fix cron astra list-plugins plugin-manage verify health secrets security harden check status doctor list-sites list-backups restore-db completion)
-    opts=(--action --allow-root --astra --astra-key --astra-slug --backup --backup-age-days --backup-compress --backup-dir --check --color --completion --config --core --cron --db-fix --db-optimize --debug --default-user --doctor --dry-run --error-log-file --exclude-plugins --exclude-themes --fail-on --fields --force --format --full --harden --harden-upgrade-dir --health --help --hold-plugins --hold-themes --ionice --jobs --json --json-lines --json-log --keep-backups --kill-after --list-backups --list-modes --list-plugins --list-sites --lock-file --lock-wait --log-dir --log-file --log-level --mail-to --max-failures --max-sites --min-free-mb --name --nice --no-backup --no-color --no-discover --no-harden-upgrade-dir --no-lock --no-notify --no-url-detect --no-user-switch --notify --notify-on --only-active --option --page-limit --plugin-manage --plugins --print-config --quiet --report --restore-db --retry --retry-delay --run-timeout --secrets --security --signal --site --sites --sites-file --skip-if-no-updates --skip-plugins --skip-plugins-for-listing --status --strict --themes --timeout --url --user --user-env --verbose --verify --version --wp --wp-bin --wp-cli --yes)
+    opts=(--action --allow-root --astra --astra-key --astra-slug --backup --backup-age-days --backup-compress --backup-dir --check --color --completion --config --core --cron --db-fix --db-optimize --debug --default-user --doctor --dry-run --error-log-file --exclude-plugins --exclude-themes --fail-on --fields --force --format --full --harden --harden-upgrade-dir --health --help --hold-plugins --hold-themes --ionice --jobs --json --json-lines --json-log --keep-backups --kill-after --list-backups --list-modes --list-plugins --list-sites --lock-file --lock-wait --log-dir --log-file --log-level --mail-to --max-failures --max-sites --min-free-mb --name --nice --no-backup --no-color --no-discover --no-harden-upgrade-dir --no-lock --no-notify --no-url-detect --no-user-switch --no-wp-probe --notify --notify-on --only-active --option --page-limit --plugin-manage --plugins --print-config --quiet --report --restore-db --retry --retry-delay --run-timeout --secrets --security --signal --site --sites --sites-file --skip-if-no-updates --skip-plugins --skip-plugins-for-listing --status --strict --themes --timeout --url --user --user-env --verbose --verify --version --wp --wp-bin --wp-cli --yes)
     _arguments '*: :->args'
     compadd -- "${modes[@]}" "${opts[@]}"
 }
@@ -3409,6 +3514,25 @@ check_report() { # SITE USER -> exit code
         printf '%s\n' "  ${C_RED}✗${C_RESET} owner: cannot be determined"
         rc=1
     fi
+    # A site can have a perfect wp-config.php and a dead WP-CLI: a theme with a
+    # parse error made --check answer ✓ while every command on that site died
+    # (battery-service.com, logic-cell.ru, 2026-11-18). `core is-installed` boots
+    # WordPress the way a run would, theme and plugins included.
+    if [ "$WP_PROBE" = 'true' ]; then
+        if [ -n "$user" ] && wp_ensure; then
+            info_wp "$site" "$user" core is-installed
+            if [ "$WP_SKIPPED" = 'true' ]; then
+                printf '%s\n' "  ${C_YELLOW}!${C_RESET} wp: probe skipped (dry run)"
+            elif ((WP_STATUS == 0)); then
+                printf '%s\n' "  ${C_GREEN}✓${C_RESET} wp loads"
+            else
+                printf '%s\n' "  ${C_RED}✗${C_RESET} wp: ${WP_OUTPUT%%$'\n'*}"
+                rc=1
+            fi
+        else
+            printf '%s\n' "  ${C_YELLOW}!${C_RESET} wp: not probed (no owner or no WP-CLI)"
+        fi
+    fi
     return "$rc"
 }
 
@@ -3639,6 +3763,10 @@ print_summary() { # RC
     printf '  %-22s %s\n' 'operations ok:' "$STATS_OPS_OK"
     printf '  %-22s %s\n' 'operations failed:' "$STATS_OPS_FAILED"
     printf '  %-22s %s\n' 'warnings:' "$STATS_WARNINGS"
+    ((STATS_FLAGS_REMOVED > 0)) &&
+        printf '  %-22s %s\n' 'maintenance flags:' "${STATS_FLAGS_REMOVED} cleared after the run"
+    ((STATS_UPDATE_FALLBACKS > 0)) &&
+        printf '  %-22s %s\n' 'update fallbacks:' "${STATS_UPDATE_FALLBACKS} retried with --skip-plugins"
     ((STATS_RETRIES > 0)) && printf '  %-22s %s\n' 'retries:' "$STATS_RETRIES"
     ((STATS_CHANGES > 0)) && printf '  %-22s %s\n' 'changes applied:' "$STATS_CHANGES"
     [ "$ABORT" = 'true' ] && printf '  %-22s %srun aborted, remaining sites skipped%s\n' 'aborted:' "$C_YELLOW" "$C_RESET"
@@ -3726,6 +3854,9 @@ ${C_BOLD}Modes (exactly one):${C_RESET}
       --restore-db FILE  import FILE into the database of each site; --yes is
                          mandatory and a fresh dump is taken first
       --check            validate the environment and every site, change nothing
+                         (each site is probed with "wp core is-installed", so a site
+                         whose theme or plugin dies on load is reported, not assumed
+                         healthy; --no-wp-probe turns the probe off)
       --status           print the last run summary and the log sizes
       --doctor           diagnose the host (tools, paths, permissions) and exit
       --completion SH    print a completion script for bash or zsh
@@ -3810,6 +3941,8 @@ ${C_BOLD}Safety:${C_RESET}
                          also pass --skip-plugins to list commands (default off)
       --fail-on WHEN     any | all | never - when to exit non-zero (default ${DEFAULT_FAIL_ON})
       --no-lock          do not take the lock (only for nested or manual runs)
+      --no-wp-probe      --check does not ask wp whether the site loads (cheaper, and
+                         for a per-minute monitoring probe)
       --no-discover      do not run the finder when the site list is missing
 
 ${C_BOLD}Fleet control:${C_RESET}
@@ -3942,7 +4075,7 @@ print_config() {
         RETRY RETRY_DELAY MAX_FAILURES RUN_TIMEOUT LOCK_WAIT BACKUP_AGE_DAYS
         BACKUP_COMPRESS DEFAULT_USER NOTIFY_WEBHOOK NOTIFY_ON NOTIFY_TIMEOUT MAIL_TO
         REPORT_FILE LOG_JSON SKIP_IF_NO_UPDATES URL_DETECT WP_GLOBAL_ARGS
-        HARDEN_UPGRADE_DIR
+        HARDEN_UPGRADE_DIR WP_PROBE
     )
     local -a vars=(
         WP_CLI_PATH SITES_FILE DISCOVER_SCRIPT LOG_FILE ERROR_LOG_FILE LOCK_FILE
@@ -3955,7 +4088,7 @@ print_config() {
         RETRY RETRY_DELAY MAX_FAILURES RUN_TIMEOUT LOCK_WAIT BACKUP_AGE_DAYS
         BACKUP_COMPRESS DEFAULT_USER NOTIFY_WEBHOOK NOTIFY_ON NOTIFY_TIMEOUT MAIL_TO
         REPORT_FILE LOG_JSON SKIP_IF_NO_UPDATES URL_DETECT WP_GLOBAL_ARGS
-        HARDEN_UPGRADE_DIR
+        HARDEN_UPGRADE_DIR WP_PROBE
     )
     local i value
     printf '\n%-24s %-34s %-14s %s\n' 'SETTING' 'EFFECTIVE VALUE' 'FROM' 'CLI OVERRIDE'
@@ -4138,6 +4271,7 @@ parse_args() {
             --only-active) ONLY_ACTIVE='true'; CLI_SET[ONLY_ACTIVE]=1 ;;
             --strict) STRICT='true'; CLI_SET[STRICT]=1 ;;
             --no-user-switch) NO_USER_SWITCH='true'; CLI_SET[NO_USER_SWITCH]=1 ;;
+            --no-wp-probe) WP_PROBE='false'; CLI_SET[WP_PROBE]=1 ;;
             --list-sites) LIST_SITES='true' ;;
             --no-lock) NO_LOCK='true' ;;
             --no-discover) AUTO_DISCOVER='false'; CLI_SET[AUTO_DISCOVER]=1 ;;
@@ -4713,6 +4847,11 @@ process_site() { # SITE USER
         log_warn "${site}: attempt ${attempt} failed; retrying in ${RETRY_DELAY}s (${attempt} of $((RETRY + 1)) attempts)"
         sleep "$RETRY_DELAY"
     done
+    # An aborted upgrader leaves the site in maintenance mode; clear it before the
+    # result is reported, so "OK" cannot mean "503 for visitors".
+    if ! mode_is_readonly; then
+        cleanup_maintenance_flag "$site" || rc=1
+    fi
     # An update that finished is not the same as a site that is no longer exposed:
     # a site can stay on an unfixed release (a failed core update, a pinned
     # version, a manual copy). Say so, in the log, on the same run.

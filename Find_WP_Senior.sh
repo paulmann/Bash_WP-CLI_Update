@@ -12,7 +12,7 @@
 # Project:     Bash WP-CLI Update
 # Repository:  https://github.com/paulmann/Bash_WP-CLI_Update
 # License:     MIT
-# Version:     2.1.0
+# Version:     2.2.0
 #
 # Purpose
 #   Scan one or more web roots for WordPress installations (a directory holding
@@ -63,7 +63,7 @@ set -uo pipefail
 shopt -s inherit_errexit 2>/dev/null || true
 
 PROG_NAME="${0##*/}"
-SCRIPT_VERSION='2.1.0'
+SCRIPT_VERSION='2.2.0'
 
 EXIT_OK=0
 EXIT_ERROR=1
@@ -114,6 +114,12 @@ DEFAULT_SEARCH_ROOTS=(
 DEFAULT_EXCLUDE_NAMES=(
     .git .svn .hg node_modules vendor composer
     cache tmp temp backup backups old proc sys dev
+    # Snapshot copies of an installation. Measured 2026-11-18:
+    # /var/www/wizard/data/www/batterywizard.ru.wp-20261028 was listed as a site
+    # and would have been updated as if it were live.
+    '*.wp-[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]'
+    '*-wp-[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]'
+    '*_bak*' '*.bak' '*.bak-*' '*~' '*.orig' '*.prev' '*-old' '*-OLD' '*-copy'
 )
 
 DEFAULT_MAX_DEPTH=8
@@ -148,6 +154,9 @@ SKIPPED_OPTOUT=0
 SKIPPED_INVALID=0
 SKIPPED_EXCLUDED=0
 SKIPPED_DUPLICATE=0
+SKIPPED_SHAREDDB=0
+ALLOW_SHARED_DB='false'
+declare -A SEEN_DB=()
 SKIPPED_UNREADABLE=0
 START_TIME=0
 
@@ -306,6 +315,30 @@ db_name_of() { # DIR
 # 6. Scanning
 ###############################################################################
 
+# db_identity DIR -> "HOST|DB|PREFIX" on stdout, or nothing when wp-config.php does
+# not state all of it. Two installations that point at the same database with the
+# same table prefix are one site seen twice (a copy of the tree, a staging leftover,
+# a labelled snapshot). Measured 2026-11-18:
+# /var/www/batteryservice/data/www/cadex.batteryservice.ru shares database `cadex`
+# with /var/www/cadex/data/www/cadex.com.ru -- listing both updates one database
+# twice and dumps it twice.
+db_identity() { # DIR
+    local dir="${1:-}" cfg="${1:-}/wp-config.php" line host='' prefix='' db
+    [ -r "$cfg" ] || return 1
+    db="$(db_name_of "$dir")" || return 1
+    while IFS= read -r line || [ -n "$line" ]; do
+        if [ -z "$host" ] &&
+            [[ "$line" =~ define\([[:space:]]*[\']DB_HOST[\'][[:space:]]*,[[:space:]]*[\']([^\']*)[\'] ]]; then
+            host="${BASH_REMATCH[1]}"
+        fi
+        if [ -z "$prefix" ] &&
+            [[ "$line" =~ \$table_prefix[[:space:]]*=[[:space:]]*[\'\"]([^\'\"]*)[\'\"] ]]; then
+            prefix="${BASH_REMATCH[1]}"
+        fi
+    done <"$cfg"
+    printf '%s|%s|%s' "${host:-localhost}" "$db" "${prefix:-wp_}"
+}
+
 # build_find_args ROOT -> argv on stdout, one element per line.
 #
 # The expression is:
@@ -393,6 +426,21 @@ scan_root() { # ROOT
             SKIPPED_INVALID=$((SKIPPED_INVALID + 1))
             log_debug "not a WordPress root, skipped: ${site}"
             continue
+        fi
+        # A second tree on the same database and prefix is the same site: updating
+        # both would update one database twice and dump it twice. The first path in
+        # sorted order wins; the loser is reported with the winner's path.
+        if [ "$ALLOW_SHARED_DB" != 'true' ]; then
+            local ident=''
+            ident="$(db_identity "$site")" || ident=''
+            if [ -n "$ident" ]; then
+                if [ -n "${SEEN_DB[$ident]-}" ]; then
+                    SKIPPED_SHAREDDB=$((SKIPPED_SHAREDDB + 1))
+                    log_warn "same database as ${SEEN_DB[$ident]}, skipped: ${site} (${ident})"
+                    continue
+                fi
+                SEEN_DB["$ident"]="$site"
+            fi
         fi
         printf '%s\0' "$site"
     done < <(find "${fargs[@]}" 2>/dev/null)
@@ -633,6 +681,8 @@ Options:
   -X, --exclude-path PATH exclude this path and everything below it (repeatable)
       --no-default-excludes
                           start with an empty exclusion list
+      --allow-shared-db   keep roots that share a database and prefix with another
+                          root (default: the second one is skipped and reported)
       --format FMT        paths | tsv | csv | json (default: paths)
       --delimiter CHAR    field delimiter for csv (default: ',')
       --skip-existing     drop sites already present in the output file
@@ -713,6 +763,7 @@ parse_args() {
                 fi
                 shift ;;
             --no-default-excludes) USE_DEFAULT_EXCLUDES='false' ;;
+            --allow-shared-db) ALLOW_SHARED_DB='true' ;;
             --format) need_value "$arg" "${2:-}"; OUTPUT_FORMAT="${OPT_VALUE,,}"; shift ;;
             --delimiter) need_value "$arg" "${2:-}"; DELIMITER="$OPT_VALUE"; shift ;;
             --skip-existing) SKIP_EXISTING='true' ;;
@@ -808,9 +859,9 @@ resolve_excludes() {
 }
 
 report_skipped() {
-    local total=$((SKIPPED_OPTOUT + SKIPPED_INVALID + SKIPPED_EXCLUDED + SKIPPED_UNREADABLE + SKIPPED_DUPLICATE))
+    local total=$((SKIPPED_OPTOUT + SKIPPED_INVALID + SKIPPED_EXCLUDED + SKIPPED_UNREADABLE + SKIPPED_DUPLICATE + SKIPPED_SHAREDDB))
     ((total > 0)) || return 0
-    log_info "skipped: ${SKIPPED_OPTOUT} opt-out, ${SKIPPED_INVALID} not a WordPress root, ${SKIPPED_EXCLUDED} excluded, ${SKIPPED_DUPLICATE} already listed, ${SKIPPED_UNREADABLE} unreadable root"
+    log_info "skipped: ${SKIPPED_OPTOUT} opt-out, ${SKIPPED_INVALID} not a WordPress root, ${SKIPPED_EXCLUDED} excluded, ${SKIPPED_DUPLICATE} already listed, ${SKIPPED_SHAREDDB} same database as another root, ${SKIPPED_UNREADABLE} unreadable root"
 }
 
 ###############################################################################

@@ -16,6 +16,50 @@ draft of 8.0.0 — is in [docs/RELEASE-HISTORY.md](docs/RELEASE-HISTORY.md).
 
 ## [Unreleased]
 
+## [9.1.0] - 2026-11-19
+
+Five defects found while maintaining a 27-site fleet on one host. None is cosmetic:
+each one let a run report something that was not true.
+
+### Added
+
+- **`--check` now asks WordPress whether the site loads.** It used to look at
+  `wp-config.php`, `wp-includes/version.php` and the owner, so a site whose theme died
+  with a parse error answered ✓ while every WP-CLI command on it failed — measured on
+  two sites on 2026-11-18, where the fleet run could not touch them at all. The probe
+  is one `wp core is-installed` per site, run as the site owner; `--no-wp-probe`
+  (config `WP_PROBE=false`) drops it for a per-minute monitoring probe.
+- **An aborted upgrader is a failure, and the update is retried without plugin code.**
+  A plugin hooking the upgrader makes WP-CLI print a bare `-1`, exit 0 and leave
+  `.maintenance` behind; the run used to count that as success. It is now read as
+  "nothing was applied", logged with the exact output, and retried once with
+  `--skip-plugins --skip-themes` — the files on disk are all an update needs. The
+  summary counts the fallback and the warning says which plugins were not consulted.
+- **A leftover `.maintenance` flag is cleared after the site is processed**, with a
+  warning that names the age of the flag. While it exists the site answers 503 to every
+  visitor, which is what happened on 2026-11-18 to a site whose run reported success.
+  A dry run only says what it would do.
+
+### Fixed
+
+- `--health` counted every non-empty line of `plugin list` as a plugin, so a site with
+  `WP_DEBUG` on a modern PHP reported 20 pending plugin updates where there were none,
+  and the size column printed every digit of the deprecation notices
+  (`9..1334939..133493`). Rows are now matched by slug shape and the size is the first
+  number on the line; the same site reports 0 pending and `47.31` MiB.
+- **The finder (2.2.0) listed dated copies of an installation** (`*.wp-YYYYMMDD`, `*.bak`, `*-old`)
+  as if they were live sites, and a second tree on the same database and table prefix
+  as a second site — listing both updates one database twice and dumps it twice.
+  Copies are excluded by name pattern; a shared database is detected by reading
+  `DB_HOST`, `DB_NAME` and `$table_prefix`, the second root is skipped with a warning
+  naming the first, and `--allow-shared-db` keeps both when that is what the operator
+  wants.
+
+### Changed
+
+- New configuration key `WP_PROBE` (default `true`, environment
+  `WP_CLI_UPDATE_WP_PROBE`, command line `--no-wp-probe`).
+
 ## [9.0.1] - 2026-11-17
 
 Documentation release. No script, option, configuration key or exit code changed; the
@@ -719,7 +763,8 @@ without output, `--help` is not a flag, commands are built by string
 concatenation, no lock, no log rotation, no dry run, and the Astra key is edited
 into the script.
 
-[Unreleased]: https://github.com/paulmann/Bash_WP-CLI_Update/compare/v9.0.1...HEAD
+[Unreleased]: https://github.com/paulmann/Bash_WP-CLI_Update/compare/v9.1.0...HEAD
+[9.1.0]: https://github.com/paulmann/Bash_WP-CLI_Update/compare/v9.0.1...v9.1.0
 [9.0.1]: https://github.com/paulmann/Bash_WP-CLI_Update/compare/v9.0.0...v9.0.1
 [9.0.0]: https://github.com/paulmann/Bash_WP-CLI_Update/compare/v8.1.1...v9.0.0
 [8.1.1]: https://github.com/paulmann/Bash_WP-CLI_Update/compare/v8.1.0...v8.1.1
